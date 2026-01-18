@@ -1,0 +1,29 @@
+from pydantic_settings import BaseSettings
+from functools import lru_cache
+
+
+class Settings(BaseSettings):
+    # Application
+    app_name: str = "WIM-Z Cloud Relay"
+    debug: bool = False
+
+    # JWT Configuration
+    jwt_secret_key: str = "change-this-to-a-secure-secret-key-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 1440  # 24 hours
+
+    # Device HMAC secret for registration
+    device_secret: str = "change-this-device-secret-in-production"
+
+    # WebSocket settings
+    ws_heartbeat_interval: int = 30  # seconds
+    ws_connection_timeout: int = 60  # seconds
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
