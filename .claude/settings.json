@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(pip list:*)",
+      "Bash(pip show:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(uvicorn:*)",
+      "Bash(curl:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(chmod:*)",
+      "Bash(cat:*)",
+      "Bash(echo:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)",
+      "Read(/home/morgan/wimzrelay/**)",
+      "Read(/home/morgan/**)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "spinnerTipsEnabled": false
+}
