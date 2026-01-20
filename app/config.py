@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     ws_heartbeat_interval: int = 30  # seconds
     ws_connection_timeout: int = 60  # seconds
 
+    # Cloudflare TURN credentials
+    cloudflare_turn_key_id: str = ""
+    cloudflare_turn_api_token: str = ""
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
