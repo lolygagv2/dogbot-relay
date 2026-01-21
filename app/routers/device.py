@@ -16,7 +16,6 @@ from app.models import (
     DeviceRegister,
     DeviceRegisterResponse,
 )
-from app.routers.auth import add_device_to_user
 
 router = APIRouter(prefix="/api/device", tags=["Device Management"])
 
@@ -113,9 +112,6 @@ async def pair_device(
 
     # Update connection manager
     manager.set_device_owner(device_id, user_id)
-
-    # Add device to user's device list
-    add_device_to_user(user_id, device_id)
 
     return DevicePairResponse(
         success=True,

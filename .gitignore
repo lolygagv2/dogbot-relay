@@ -39,6 +39,9 @@ env/
 # Logs
 *.log
 
+# Database
+data/
+
 # OS
 .DS_Store
 Thumbs.db
