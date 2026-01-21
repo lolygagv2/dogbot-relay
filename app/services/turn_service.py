@@ -1,14 +1,15 @@
-import os
 import httpx
-from typing import Optional
+
+from app.config import get_settings
 
 
 class TURNService:
     """Generate short-lived TURN credentials from Cloudflare."""
 
     def __init__(self):
-        self.turn_key_id = os.getenv("CLOUDFLARE_TURN_KEY_ID")
-        self.turn_api_token = os.getenv("CLOUDFLARE_TURN_API_TOKEN")
+        settings = get_settings()
+        self.turn_key_id = settings.cloudflare_turn_key_id
+        self.turn_api_token = settings.cloudflare_turn_api_token
         self.base_url = "https://rtc.live.cloudflare.com/v1/turn/keys"
 
     async def generate_credentials(self, ttl: int = 3600) -> dict:
