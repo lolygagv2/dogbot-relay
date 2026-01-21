@@ -23,10 +23,15 @@ class ConnectionManager:
         self.app_connections: dict[str, list[WebSocket]] = {}
 
         # device_id -> user_id mapping (which user owns which device)
-        self.device_owners: dict[str, str] = {}
+        # Auto-pair user_000001 with wimz_robot_01 for testing
+        self.device_owners: dict[str, str] = {
+            "wimz_robot_01": "user_000001"
+        }
 
         # WebSocket -> metadata for reverse lookups
         self.connection_metadata: dict[WebSocket, dict] = {}
+
+        logger.info("ConnectionManager initialized with auto-pairing: wimz_robot_01 -> user_000001")
 
     async def connect_robot(self, websocket: WebSocket, device_id: str, owner_id: Optional[str] = None):
         """Register a robot WebSocket connection."""
@@ -109,10 +114,14 @@ class ConnectionManager:
         if websocket:
             try:
                 await websocket.send_json(message)
+                msg_type = message.get("type") or message.get("command") or "unknown"
+                logger.info(f"[SEND->ROBOT] {device_id}: {msg_type}")
                 return True
             except Exception as e:
                 logger.error(f"Failed to send to robot {device_id}: {e}")
                 await self.disconnect_robot(websocket)
+        else:
+            logger.warning(f"[SEND->ROBOT] {device_id}: robot not connected")
         return False
 
     async def send_to_user_apps(self, user_id: str, message: dict) -> int:
@@ -133,6 +142,12 @@ class ConnectionManager:
         for ws in failed:
             await self.disconnect_app(ws)
 
+        msg_type = message.get("type") or message.get("event") or "unknown"
+        if sent_count > 0:
+            logger.info(f"[SEND->APP] {user_id}: {msg_type} (sent to {sent_count} session(s))")
+        else:
+            logger.warning(f"[SEND->APP] {user_id}: {msg_type} - no app sessions connected")
+
         return sent_count
 
     async def forward_command_to_robot(
@@ -145,10 +160,13 @@ class ConnectionManager:
         Forward a command from app to robot.
         Validates that the user owns the device.
         """
+        cmd_type = command.get("command") or command.get("type") or "unknown"
+        logger.info(f"[ROUTE] App({user_id}) -> Robot({device_id}): {cmd_type}")
+
         # Check if user owns this device
         owner = self.device_owners.get(device_id)
         if owner != user_id:
-            logger.warning(f"User {user_id} tried to command device {device_id} owned by {owner}")
+            logger.warning(f"[ROUTE DENIED] User {user_id} not authorized for device {device_id} (owner: {owner})")
             return False
 
         return await self.send_to_robot(device_id, command)
@@ -158,11 +176,14 @@ class ConnectionManager:
         Forward an event from robot to the owner's apps.
         Returns count of apps that received the message.
         """
+        event_type = event.get("event") or event.get("type") or "unknown"
         owner_id = self.device_owners.get(device_id)
+
         if not owner_id:
-            logger.warning(f"No owner found for device {device_id}")
+            logger.warning(f"[ROUTE] Robot({device_id}) -> ??? : {event_type} - no owner found")
             return 0
 
+        logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): {event_type}")
         return await self.send_to_user_apps(owner_id, event)
 
     def set_device_owner(self, device_id: str, user_id: str):
