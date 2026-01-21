@@ -107,6 +107,65 @@ def verify_device_signature(device_id: str, signature: str, device_secret: str) 
     return hmac.compare_digest(signature, expected)
 
 
+def verify_device_signature_with_timestamp(
+    device_id: str,
+    timestamp: str | None,
+    signature: str,
+    device_secret: str
+) -> bool:
+    """
+    Verify device signature, trying multiple formats for flexibility.
+
+    Tries these message formats:
+    1. device_id + timestamp (concatenated)
+    2. device_id:timestamp (colon-separated)
+    3. timestamp + device_id
+    4. device_id only (no timestamp)
+
+    Returns True if any format matches.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    def compute_sig(message: str) -> str:
+        return hmac.new(
+            device_secret.encode(),
+            message.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+    # Build list of messages to try
+    messages_to_try = []
+
+    if timestamp:
+        messages_to_try.extend([
+            f"{device_id}{timestamp}",      # device_id + timestamp
+            f"{device_id}:{timestamp}",     # device_id:timestamp
+            f"{timestamp}{device_id}",      # timestamp + device_id
+            f"{timestamp}:{device_id}",     # timestamp:device_id
+        ])
+
+    # Always try device_id only as fallback
+    messages_to_try.append(device_id)
+
+    # Try each format
+    for msg in messages_to_try:
+        expected = compute_sig(msg)
+        if hmac.compare_digest(signature.lower(), expected.lower()):
+            logger.info(f"Signature matched with message format: {msg[:20]}...")
+            return True
+        logger.debug(f"Tried '{msg[:30]}...': expected={expected[:16]}, got={signature[:16]}")
+
+    # Log all attempted formats for debugging
+    logger.warning(f"No signature format matched for device {device_id}")
+    logger.warning(f"  Received signature: {signature}")
+    logger.warning(f"  Timestamp provided: {timestamp}")
+    for msg in messages_to_try[:3]:  # Log first 3 attempts
+        logger.warning(f"  Tried '{msg}' -> {compute_sig(msg)}")
+
+    return False
+
+
 def generate_pairing_code() -> str:
     """Generate a 6-character pairing code for device pairing."""
     return secrets.token_hex(3).upper()

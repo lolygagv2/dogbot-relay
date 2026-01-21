@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 
-from app.auth import decode_token, verify_device_signature
+from app.auth import decode_token, verify_device_signature, verify_device_signature_with_timestamp
 from app.config import Settings, get_settings
 from app.connection_manager import ConnectionManager, get_connection_manager
 from app.routers.device import get_device_data, update_device_online_status
@@ -210,6 +210,7 @@ async def websocket_device_endpoint(
     websocket: WebSocket,
     device_id: str = Query(None),
     sig: str = Query(None),
+    timestamp: str = Query(None),
     settings: Settings = Depends(get_settings),
     manager: ConnectionManager = Depends(get_connection_manager)
 ):
@@ -218,14 +219,18 @@ async def websocket_device_endpoint(
     Robots connect with their device_id and HMAC signature.
 
     Supports two auth methods:
-    1. Query params: /ws/device?device_id=xxx&sig=xxx
-    2. Headers: X-Device-ID, X-Signature (X-Timestamp ignored - not used in HMAC)
+    1. Query params: /ws/device?device_id=xxx&sig=xxx&timestamp=xxx
+    2. Headers: X-Device-ID, X-Signature, X-Timestamp
+
+    Signature is HMAC-SHA256(device_id + timestamp, device_secret)
     """
     # Try to get credentials from headers if not in query params
     if not device_id:
         device_id = websocket.headers.get("x-device-id")
     if not sig:
         sig = websocket.headers.get("x-signature")
+    if not timestamp:
+        timestamp = websocket.headers.get("x-timestamp")
 
     # Validate we have required params
     if not device_id or not sig:
@@ -234,18 +239,17 @@ async def websocket_device_endpoint(
         return
 
     # Log what we received for debugging
-    logger.info(f"Device auth attempt: device_id={device_id}, sig={sig[:16]}...")
+    logger.info(f"Device auth attempt: device_id={device_id}, timestamp={timestamp}, sig={sig[:16]}...")
 
-    # Verify device signature
-    if not verify_device_signature(device_id, sig, settings.device_secret):
-        # Log expected vs received for debugging
-        from app.auth import generate_device_signature
-        expected = generate_device_signature(device_id, settings.device_secret)
-        logger.warning(f"Signature mismatch for {device_id}")
-        logger.warning(f"  Received: {sig}")
-        logger.warning(f"  Expected: {expected}")
+    # Verify device signature - try with timestamp first, then without
+    sig_valid = verify_device_signature_with_timestamp(device_id, timestamp, sig, settings.device_secret)
+
+    if not sig_valid:
+        logger.warning(f"Signature verification failed for {device_id}")
         await websocket.close(code=4001, reason="Invalid device signature")
         return
+
+    logger.info(f"Device {device_id} authenticated successfully")
 
     # Get device data and owner
     device = get_device_data(device_id)
