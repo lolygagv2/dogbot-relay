@@ -208,17 +208,42 @@ def cleanup_sessions_for_device(device_id: str):
 @router.websocket("/ws/device")
 async def websocket_device_endpoint(
     websocket: WebSocket,
-    device_id: str = Query(...),
-    sig: str = Query(...),
+    device_id: str = Query(None),
+    sig: str = Query(None),
     settings: Settings = Depends(get_settings),
     manager: ConnectionManager = Depends(get_connection_manager)
 ):
     """
     WebSocket endpoint for robot devices.
     Robots connect with their device_id and HMAC signature.
+
+    Supports two auth methods:
+    1. Query params: /ws/device?device_id=xxx&sig=xxx
+    2. Headers: X-Device-ID, X-Signature (X-Timestamp ignored - not used in HMAC)
     """
+    # Try to get credentials from headers if not in query params
+    if not device_id:
+        device_id = websocket.headers.get("x-device-id")
+    if not sig:
+        sig = websocket.headers.get("x-signature")
+
+    # Validate we have required params
+    if not device_id or not sig:
+        logger.warning(f"Missing device_id or sig. device_id={device_id}, sig={bool(sig)}")
+        await websocket.close(code=4000, reason="Missing device_id or sig parameter")
+        return
+
+    # Log what we received for debugging
+    logger.info(f"Device auth attempt: device_id={device_id}, sig={sig[:16]}...")
+
     # Verify device signature
     if not verify_device_signature(device_id, sig, settings.device_secret):
+        # Log expected vs received for debugging
+        from app.auth import generate_device_signature
+        expected = generate_device_signature(device_id, settings.device_secret)
+        logger.warning(f"Signature mismatch for {device_id}")
+        logger.warning(f"  Received: {sig}")
+        logger.warning(f"  Expected: {expected}")
         await websocket.close(code=4001, reason="Invalid device signature")
         return
 
