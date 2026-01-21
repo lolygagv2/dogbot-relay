@@ -68,7 +68,11 @@ class ConnectionManager:
             "connected_at": datetime.now(timezone.utc)
         }
 
+        # Debug: log device ownership state
+        user_devices = self.get_user_devices(user_id)
         logger.info(f"App session connected for user {user_id}")
+        logger.info(f"  -> device_owners: {self.device_owners}")
+        logger.info(f"  -> user's devices: {user_devices}")
 
     async def disconnect_robot(self, websocket: WebSocket):
         """Remove a robot WebSocket connection."""

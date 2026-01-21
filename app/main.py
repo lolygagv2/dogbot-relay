@@ -54,6 +54,17 @@ async def get_stats():
     return manager.get_stats()
 
 
+@app.get("/debug/pairing", tags=["Debug"])
+async def debug_pairing():
+    """Debug endpoint to check device ownership state."""
+    manager = get_connection_manager()
+    return {
+        "device_owners": manager.device_owners,
+        "robot_connections": list(manager.robot_connections.keys()),
+        "app_connections": {user_id: len(sessions) for user_id, sessions in manager.app_connections.items()}
+    }
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize resources on startup."""
