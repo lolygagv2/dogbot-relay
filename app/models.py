@@ -38,6 +38,20 @@ class ErrorSeverity(str, Enum):
     CRITICAL = "critical"
 
 
+class DogColor(str, Enum):
+    BLACK = "black"
+    YELLOW = "yellow"
+    BROWN = "brown"
+    WHITE = "white"
+    MIXED = "mixed"
+
+
+class DogRole(str, Enum):
+    OWNER = "owner"
+    CARETAKER = "caretaker"
+    VIEWER = "viewer"
+
+
 # ============== User & Auth Models ==============
 
 class UserCreate(BaseModel):
@@ -66,6 +80,47 @@ class AuthResult(BaseModel):
     type: Literal["auth_result"] = "auth_result"
     success: bool
     message: Optional[str] = None
+
+
+# ============== Dog Models ==============
+
+class DogCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    breed: Optional[str] = None
+    color: Optional[DogColor] = None
+    aruco_marker_id: Optional[int] = None
+
+
+class DogUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=50)
+    breed: Optional[str] = None
+    color: Optional[DogColor] = None
+    profile_photo_url: Optional[str] = None
+    aruco_marker_id: Optional[int] = None
+
+
+class DogPhotoCreate(BaseModel):
+    photo_url: str
+    is_profile_photo: bool = False
+
+
+class Dog(BaseModel):
+    id: str
+    name: str
+    breed: Optional[str] = None
+    color: Optional[DogColor] = None
+    profile_photo_url: Optional[str] = None
+    aruco_marker_id: Optional[int] = None
+    role: Optional[DogRole] = None
+    created_at: datetime
+
+
+class DogPhoto(BaseModel):
+    id: str
+    dog_id: str
+    photo_url: str
+    is_profile_photo: bool
+    captured_at: datetime
 
 
 # ============== Device Models ==============
