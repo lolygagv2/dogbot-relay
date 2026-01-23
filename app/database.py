@@ -449,5 +449,131 @@ def get_dog_photos(dog_id: str) -> list[dict]:
     ]
 
 
+# ============== Device Pairing Functions ==============
+
+def create_device_pairing(user_id: str, device_id: str) -> dict:
+    """Create or update a device pairing."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    paired_at = datetime.now(timezone.utc).isoformat()
+
+    # Check if device exists in robots table
+    cursor.execute("SELECT id FROM robots WHERE device_id = ?", (device_id,))
+    robot = cursor.fetchone()
+
+    if robot:
+        # Update existing robot's owner
+        cursor.execute(
+            "UPDATE robots SET owner_user_id = ? WHERE device_id = ?",
+            (user_id, device_id)
+        )
+    else:
+        # Create new robot entry
+        robot_id = f"robot_{device_id}"
+        cursor.execute(
+            """INSERT INTO robots (id, device_id, owner_user_id, name, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (robot_id, device_id, user_id, f"WIM-Z {device_id[-6:]}", paired_at)
+        )
+
+    conn.commit()
+    conn.close()
+
+    return {"user_id": user_id, "device_id": device_id, "paired_at": paired_at}
+
+
+def delete_device_pairing(device_id: str) -> bool:
+    """Remove device pairing (set owner to NULL)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "UPDATE robots SET owner_user_id = NULL WHERE device_id = ?",
+        (device_id,)
+    )
+    deleted = cursor.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    return deleted
+
+
+def get_device_owner(device_id: str) -> Optional[str]:
+    """Get the owner user_id for a device."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT owner_user_id FROM robots WHERE device_id = ?",
+        (device_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    return row["owner_user_id"] if row else None
+
+
+def get_all_device_pairings() -> dict[str, str]:
+    """Get all device_id -> user_id pairings for loading into memory."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT device_id, owner_user_id FROM robots WHERE owner_user_id IS NOT NULL"
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return {row["device_id"]: row["owner_user_id"] for row in rows}
+
+
+def get_user_paired_devices(user_id: str) -> list[str]:
+    """Get all device_ids paired with a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT device_id FROM robots WHERE owner_user_id = ?",
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [row["device_id"] for row in rows]
+
+
+def seed_default_pairings():
+    """Seed default pairings for testing if they don't exist."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Check if we already have pairings
+    cursor.execute("SELECT COUNT(*) FROM robots WHERE owner_user_id IS NOT NULL")
+    if cursor.fetchone()[0] > 0:
+        conn.close()
+        return  # Already seeded
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Seed default test pairings
+    default_pairings = [
+        ("robot_001", "wimz_robot_01", "user_000001", "WIM-Z Robot 01"),
+        ("robot_002", "wimz_robot_02", "user_000001", "WIM-Z Robot 02"),
+    ]
+
+    for robot_id, device_id, owner_id, name in default_pairings:
+        cursor.execute(
+            """INSERT OR IGNORE INTO robots (id, device_id, owner_user_id, name, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (robot_id, device_id, owner_id, name, now)
+        )
+
+    conn.commit()
+    conn.close()
+
+
 # Initialize database on module import
 init_db()
+seed_default_pairings()

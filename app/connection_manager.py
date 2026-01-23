@@ -6,6 +6,8 @@ from typing import Optional
 
 from fastapi import WebSocket
 
+from app.database import get_all_device_pairings
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,13 +25,15 @@ class ConnectionManager:
         self.app_connections: dict[str, list[WebSocket]] = {}
 
         # device_id -> user_id mapping (which user owns which device)
-        # Dynamic - users pair devices via /api/user/pair-device
-        self.device_owners: dict[str, str] = {}
+        # Loaded from database on startup, kept in sync via pairing endpoints
+        self.device_owners: dict[str, str] = get_all_device_pairings()
 
         # WebSocket -> metadata for reverse lookups
         self.connection_metadata: dict[WebSocket, dict] = {}
 
-        logger.info("ConnectionManager initialized (no pre-paired devices)")
+        logger.info(f"ConnectionManager initialized with {len(self.device_owners)} device pairings from DB")
+        for device_id, user_id in self.device_owners.items():
+            logger.info(f"  {device_id} -> {user_id}")
 
     async def connect_robot(self, websocket: WebSocket, device_id: str, owner_id: Optional[str] = None):
         """Register a robot WebSocket connection."""
