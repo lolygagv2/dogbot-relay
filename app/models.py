@@ -144,6 +144,16 @@ class DevicePairResponse(BaseModel):
     device_id: str
 
 
+class UserPairDeviceRequest(BaseModel):
+    device_id: str = Field(..., min_length=1)
+
+
+class UserPairDeviceResponse(BaseModel):
+    success: bool
+    device_id: str
+    message: str
+
+
 class Device(BaseModel):
     device_id: str
     name: str = "WIM-Z Robot"

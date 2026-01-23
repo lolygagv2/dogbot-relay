@@ -23,15 +23,13 @@ class ConnectionManager:
         self.app_connections: dict[str, list[WebSocket]] = {}
 
         # device_id -> user_id mapping (which user owns which device)
-        # Auto-pair user_000001 with wimz_robot_01 for testing
-        self.device_owners: dict[str, str] = {
-            "wimz_robot_01": "user_000001"
-        }
+        # Dynamic - users pair devices via /api/user/pair-device
+        self.device_owners: dict[str, str] = {}
 
         # WebSocket -> metadata for reverse lookups
         self.connection_metadata: dict[WebSocket, dict] = {}
 
-        logger.info("ConnectionManager initialized with auto-pairing: wimz_robot_01 -> user_000001")
+        logger.info("ConnectionManager initialized (no pre-paired devices)")
 
     async def connect_robot(self, websocket: WebSocket, device_id: str, owner_id: Optional[str] = None):
         """Register a robot WebSocket connection."""
@@ -194,6 +192,14 @@ class ConnectionManager:
         """Associate a device with an owner."""
         self.device_owners[device_id] = user_id
         logger.info(f"Device {device_id} assigned to user {user_id}")
+
+    def remove_device_owner(self, device_id: str) -> bool:
+        """Remove device ownership. Returns True if device was paired."""
+        if device_id in self.device_owners:
+            del self.device_owners[device_id]
+            logger.info(f"Device {device_id} unpaired")
+            return True
+        return False
 
     def get_device_owner(self, device_id: str) -> Optional[str]:
         """Get the owner of a device."""
