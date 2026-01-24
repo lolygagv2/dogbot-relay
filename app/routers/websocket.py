@@ -300,7 +300,21 @@ async def websocket_device_endpoint(
                 await handle_webrtc_close(message, manager)
                 continue
 
-            # Forward events to owner's apps
+            # Handle status_update from robot
+            if msg_type == "status_update":
+                # Ensure device_id is set
+                if "device_id" not in message:
+                    message["device_id"] = device_id
+
+                owner_id = manager.get_device_owner(device_id)
+                if owner_id:
+                    await manager.send_to_user_apps(owner_id, message)
+                    logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): status_update")
+                else:
+                    logger.warning(f"[ROUTE] Robot({device_id}) -> ???: status_update (no owner)")
+                continue
+
+            # Forward events to owner's apps (legacy "event" field format)
             if "event" in message:
                 # Add timestamp if not present
                 if "timestamp" not in message:
@@ -310,8 +324,9 @@ async def websocket_device_endpoint(
                 if "device_id" not in message:
                     message["device_id"] = device_id
 
+                owner_id = manager.get_device_owner(device_id)
                 await manager.forward_event_to_owner(device_id, message)
-                logger.debug(f"Forwarded event from robot {device_id}: {message.get('event')}")
+                logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): event={message.get('event')}")
 
     except WebSocketDisconnect:
         logger.info(f"Robot {device_id} disconnected")
@@ -408,7 +423,7 @@ async def websocket_app_endpoint(
                         "device_paired": device_paired,
                         "robot_online": robot_online
                     })
-                    logger.info(f"Status request for {device_id}: paired={device_paired}, online={robot_online}")
+                    logger.info(f"[ROUTE] App({user_id}) get_status: device={device_id}, paired={device_paired}, online={robot_online}")
                 continue
 
             # Handle WebRTC signaling from app
@@ -431,8 +446,6 @@ async def websocket_app_endpoint(
             # Handle commands to robots
             if "command" in message:
                 cmd_type = message.get("command")
-                # Log raw message keys to debug routing issues
-                logger.info(f"Command message keys: {list(message.keys())}")
 
                 # Get target device - check "device_id" first, then "target_device"
                 target_device = message.get("device_id") or message.get("target_device")
@@ -440,14 +453,12 @@ async def websocket_app_endpoint(
                 message.pop("device_id", None)
                 message.pop("target_device", None)
 
-                logger.info(f"App command from {user_id}: target={target_device}, command={cmd_type}")
-
                 if not target_device:
                     # Default to first owned device
                     user_devices = manager.get_user_devices(user_id)
                     if user_devices:
                         target_device = user_devices[0]
-                        logger.info(f"No target specified, defaulting to first device: {target_device}")
+                        logger.info(f"[ROUTE] No device specified, defaulting to: {target_device}")
 
                 if not target_device:
                     await websocket.send_json({
@@ -455,27 +466,30 @@ async def websocket_app_endpoint(
                         "code": "NO_DEVICE",
                         "message": "No target device specified and no devices paired"
                     })
+                    logger.warning(f"[ROUTE] App({user_id}) -> ???: {cmd_type} (no device)")
                     continue
 
                 # Forward command to robot
                 success = await manager.forward_command_to_robot(user_id, target_device, message)
 
-                if not success:
-                    # Check if device is offline
+                if success:
+                    logger.info(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type}")
+                else:
+                    # Check why it failed
                     if not manager.is_robot_online(target_device):
                         await websocket.send_json({
                             "type": "error",
                             "code": "DEVICE_OFFLINE",
                             "message": f"Device {target_device} is offline"
                         })
+                        logger.warning(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type} FAILED (offline)")
                     else:
                         await websocket.send_json({
                             "type": "error",
                             "code": "FORWARD_FAILED",
                             "message": f"Failed to forward command to device {target_device}"
                         })
-                else:
-                    logger.info(f"Routed to robot: {target_device}")
+                        logger.warning(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type} FAILED (not authorized)")
 
     except WebSocketDisconnect:
         logger.info(f"App disconnected for user {user_id}")
@@ -634,13 +648,25 @@ async def websocket_generic_endpoint(
                     await handle_webrtc_close(message, manager)
                     continue
 
-                # Forward events to owner's apps
+                # Handle status_update from robot
+                if msg_type == "status_update":
+                    if "device_id" not in message:
+                        message["device_id"] = identifier
+                    owner_id = manager.get_device_owner(identifier)
+                    if owner_id:
+                        await manager.send_to_user_apps(owner_id, message)
+                        logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): status_update")
+                    continue
+
+                # Forward events to owner's apps (legacy "event" field format)
                 if "event" in message:
                     if "timestamp" not in message:
                         message["timestamp"] = datetime.now(timezone.utc).isoformat()
                     if "device_id" not in message:
                         message["device_id"] = identifier
+                    owner_id = manager.get_device_owner(identifier)
                     await manager.forward_event_to_owner(identifier, message)
+                    logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): event={message.get('event')}")
 
             elif connection_type == "app":
                 # Handle get_status request
@@ -655,7 +681,7 @@ async def websocket_generic_endpoint(
                             "device_paired": device_paired,
                             "robot_online": robot_online
                         })
-                        logger.info(f"Status request for {device_id}: paired={device_paired}, online={robot_online}")
+                        logger.info(f"[ROUTE] App({identifier}) get_status: device={device_id}, paired={device_paired}, online={robot_online}")
                     continue
 
                 if msg_type == "webrtc_request":
@@ -674,25 +700,26 @@ async def websocket_generic_endpoint(
                 # Forward commands to robot
                 if "command" in message:
                     cmd_type = message.get("command")
-                    logger.info(f"Command message keys: {list(message.keys())}")
 
                     # Get target device - check "device_id" first, then "target_device"
                     target_device = message.get("device_id") or message.get("target_device")
                     message.pop("device_id", None)
                     message.pop("target_device", None)
 
-                    logger.info(f"App command from {identifier}: target={target_device}, command={cmd_type}")
-
                     if not target_device:
                         user_devices = manager.get_user_devices(identifier)
                         if user_devices:
                             target_device = user_devices[0]
-                            logger.info(f"No target specified, defaulting to first device: {target_device}")
+                            logger.info(f"[ROUTE] No device specified, defaulting to: {target_device}")
 
                     if target_device:
                         success = await manager.forward_command_to_robot(identifier, target_device, message)
                         if success:
-                            logger.info(f"Routed to robot: {target_device}")
+                            logger.info(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type}")
+                        else:
+                            logger.warning(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type} FAILED")
+                    else:
+                        logger.warning(f"[ROUTE] App({identifier}) -> ???: {cmd_type} (no device)")
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {connection_type} {identifier}")
