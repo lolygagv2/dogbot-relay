@@ -431,8 +431,8 @@ async def websocket_app_endpoint(
             # Handle commands to robots
             if "command" in message:
                 cmd_type = message.get("command")
-                # Get target device (from message or default to first device)
-                target_device = message.pop("target_device", None)
+                # Get target device - check both "device_id" and "target_device" fields
+                target_device = message.pop("device_id", None) or message.pop("target_device", None)
 
                 logger.info(f"App command from {user_id}: device={target_device}, command={cmd_type}")
 
@@ -668,7 +668,8 @@ async def websocket_generic_endpoint(
                 # Forward commands to robot
                 if "command" in message:
                     cmd_type = message.get("command")
-                    target_device = message.pop("target_device", None)
+                    # Check both "device_id" and "target_device" fields
+                    target_device = message.pop("device_id", None) or message.pop("target_device", None)
                     logger.info(f"App command from {identifier}: device={target_device}, command={cmd_type}")
 
                     if not target_device:
