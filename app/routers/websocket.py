@@ -408,7 +408,7 @@ async def websocket_app_endpoint(
                         "device_paired": device_paired,
                         "robot_online": robot_online
                     })
-                    logger.debug(f"Status request from {user_id} for {device_id}: paired={device_paired}, online={robot_online}")
+                    logger.info(f"Status request for {device_id}: paired={device_paired}, online={robot_online}")
                 continue
 
             # Handle WebRTC signaling from app
@@ -430,14 +430,18 @@ async def websocket_app_endpoint(
 
             # Handle commands to robots
             if "command" in message:
+                cmd_type = message.get("command")
                 # Get target device (from message or default to first device)
                 target_device = message.pop("target_device", None)
+
+                logger.info(f"App command from {user_id}: device={target_device}, command={cmd_type}")
 
                 if not target_device:
                     # Default to first owned device
                     user_devices = manager.get_user_devices(user_id)
                     if user_devices:
                         target_device = user_devices[0]
+                        logger.info(f"No target specified, defaulting to first device: {target_device}")
 
                 if not target_device:
                     await websocket.send_json({
@@ -465,7 +469,7 @@ async def websocket_app_endpoint(
                             "message": f"Failed to forward command to device {target_device}"
                         })
                 else:
-                    logger.debug(f"Forwarded command from user {user_id} to robot {target_device}: {message.get('command')}")
+                    logger.info(f"Routed to robot: {target_device}")
 
     except WebSocketDisconnect:
         logger.info(f"App disconnected for user {user_id}")
@@ -645,6 +649,7 @@ async def websocket_generic_endpoint(
                             "device_paired": device_paired,
                             "robot_online": robot_online
                         })
+                        logger.info(f"Status request for {device_id}: paired={device_paired}, online={robot_online}")
                     continue
 
                 if msg_type == "webrtc_request":
@@ -662,14 +667,20 @@ async def websocket_generic_endpoint(
 
                 # Forward commands to robot
                 if "command" in message:
+                    cmd_type = message.get("command")
                     target_device = message.pop("target_device", None)
+                    logger.info(f"App command from {identifier}: device={target_device}, command={cmd_type}")
+
                     if not target_device:
                         user_devices = manager.get_user_devices(identifier)
                         if user_devices:
                             target_device = user_devices[0]
+                            logger.info(f"No target specified, defaulting to first device: {target_device}")
 
                     if target_device:
-                        await manager.forward_command_to_robot(identifier, target_device, message)
+                        success = await manager.forward_command_to_robot(identifier, target_device, message)
+                        if success:
+                            logger.info(f"Routed to robot: {target_device}")
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {connection_type} {identifier}")
