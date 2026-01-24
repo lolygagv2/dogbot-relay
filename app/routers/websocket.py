@@ -259,16 +259,15 @@ async def websocket_device_endpoint(
     await manager.connect_robot(websocket, device_id, owner_id)
     update_device_online_status(device_id, True)
 
-    # Notify owner's apps that robot is online
+    # Broadcast robot_status to owner's apps
+    owner_id = manager.get_device_owner(device_id)
     if owner_id:
         await manager.send_to_user_apps(owner_id, {
-            "event": "device_status",
-            "data": {
-                "device_id": device_id,
-                "is_online": True
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "type": "robot_status",
+            "device_id": device_id,
+            "online": True
         })
+        logger.info(f"Broadcast robot_status online=true for {device_id} to user {owner_id}")
 
     try:
         while True:
@@ -322,19 +321,20 @@ async def websocket_device_endpoint(
         # Clean up WebRTC sessions for this device
         cleanup_sessions_for_device(device_id)
 
+        # Get owner before disconnect clears state
+        owner_id = manager.get_device_owner(device_id)
+
         await manager.disconnect_robot(websocket)
         update_device_online_status(device_id, False)
 
-        # Notify owner's apps that robot is offline
+        # Broadcast robot_status offline to owner's apps
         if owner_id:
             await manager.send_to_user_apps(owner_id, {
-                "event": "device_status",
-                "data": {
-                    "device_id": device_id,
-                    "is_online": False
-                },
-                "timestamp": datetime.now(timezone.utc).isoformat()
+                "type": "robot_status",
+                "device_id": device_id,
+                "online": False
             })
+            logger.info(f"Broadcast robot_status online=false for {device_id} to user {owner_id}")
 
 
 @router.websocket("/ws/app")
@@ -369,16 +369,13 @@ async def websocket_app_endpoint(
         "user_id": user_id
     })
 
-    # Send current status of user's devices
+    # Send current status of user's paired devices
     user_devices = manager.get_user_devices(user_id)
     for device_id in user_devices:
         await websocket.send_json({
-            "event": "device_status",
-            "data": {
-                "device_id": device_id,
-                "is_online": manager.is_robot_online(device_id)
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "type": "robot_status",
+            "device_id": device_id,
+            "online": manager.is_robot_online(device_id)
         })
 
     try:
@@ -397,6 +394,21 @@ async def websocket_app_endpoint(
             # Handle ping/pong
             if msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
+                continue
+
+            # Handle get_status request
+            if msg_type == "get_status":
+                device_id = message.get("device_id")
+                if device_id:
+                    device_paired = manager.get_device_owner(device_id) == user_id
+                    robot_online = manager.is_robot_online(device_id)
+                    await websocket.send_json({
+                        "type": "status_response",
+                        "device_id": device_id,
+                        "device_paired": device_paired,
+                        "robot_online": robot_online
+                    })
+                    logger.debug(f"Status request from {user_id} for {device_id}: paired={device_paired}, online={robot_online}")
                 continue
 
             # Handle WebRTC signaling from app
@@ -621,6 +633,20 @@ async def websocket_generic_endpoint(
                     await manager.forward_event_to_owner(identifier, message)
 
             elif connection_type == "app":
+                # Handle get_status request
+                if msg_type == "get_status":
+                    device_id = message.get("device_id")
+                    if device_id:
+                        device_paired = manager.get_device_owner(device_id) == identifier
+                        robot_online = manager.is_robot_online(device_id)
+                        await websocket.send_json({
+                            "type": "status_response",
+                            "device_id": device_id,
+                            "device_paired": device_paired,
+                            "robot_online": robot_online
+                        })
+                    continue
+
                 if msg_type == "webrtc_request":
                     await handle_webrtc_request(websocket, message, identifier, manager)
                     continue
