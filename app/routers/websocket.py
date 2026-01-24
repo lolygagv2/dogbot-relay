@@ -431,10 +431,16 @@ async def websocket_app_endpoint(
             # Handle commands to robots
             if "command" in message:
                 cmd_type = message.get("command")
-                # Get target device - check both "device_id" and "target_device" fields
-                target_device = message.pop("device_id", None) or message.pop("target_device", None)
+                # Log raw message keys to debug routing issues
+                logger.info(f"Command message keys: {list(message.keys())}")
 
-                logger.info(f"App command from {user_id}: device={target_device}, command={cmd_type}")
+                # Get target device - check "device_id" first, then "target_device"
+                target_device = message.get("device_id") or message.get("target_device")
+                # Remove routing fields before forwarding to robot
+                message.pop("device_id", None)
+                message.pop("target_device", None)
+
+                logger.info(f"App command from {user_id}: target={target_device}, command={cmd_type}")
 
                 if not target_device:
                     # Default to first owned device
@@ -668,9 +674,14 @@ async def websocket_generic_endpoint(
                 # Forward commands to robot
                 if "command" in message:
                     cmd_type = message.get("command")
-                    # Check both "device_id" and "target_device" fields
-                    target_device = message.pop("device_id", None) or message.pop("target_device", None)
-                    logger.info(f"App command from {identifier}: device={target_device}, command={cmd_type}")
+                    logger.info(f"Command message keys: {list(message.keys())}")
+
+                    # Get target device - check "device_id" first, then "target_device"
+                    target_device = message.get("device_id") or message.get("target_device")
+                    message.pop("device_id", None)
+                    message.pop("target_device", None)
+
+                    logger.info(f"App command from {identifier}: target={target_device}, command={cmd_type}")
 
                     if not target_device:
                         user_devices = manager.get_user_devices(identifier)
