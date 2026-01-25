@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from app.auth import decode_token, verify_device_signature, verify_device_signature_with_timestamp
 from app.config import Settings, get_settings
 from app.connection_manager import ConnectionManager, get_connection_manager
+from app.database import get_device_owner as db_get_device_owner
 from app.routers.device import get_device_data, update_device_online_status
 from app.services.turn_service import turn_service
 
@@ -251,9 +252,12 @@ async def websocket_device_endpoint(
 
     logger.info(f"Device {device_id} authenticated successfully")
 
-    # Get device data and owner
-    device = get_device_data(device_id)
-    owner_id = device.get("owner_id") if device else None
+    # Get owner from database (authoritative source for pairings)
+    owner_id = db_get_device_owner(device_id)
+    if owner_id:
+        logger.info(f"Device {device_id} paired to user {owner_id} (from DB)")
+    else:
+        logger.warning(f"Device {device_id} has no owner in database")
 
     # Connect the robot
     await manager.connect_robot(websocket, device_id, owner_id)
@@ -559,9 +563,12 @@ async def websocket_generic_endpoint(
             connection_type = "robot"
             identifier = device_id
 
-            # Get owner
-            device = get_device_data(device_id)
-            owner_id = device.get("owner_id") if device else None
+            # Get owner from database (authoritative source)
+            owner_id = db_get_device_owner(device_id)
+            if owner_id:
+                logger.info(f"Device {device_id} paired to user {owner_id} (from DB)")
+            else:
+                logger.warning(f"Device {device_id} has no owner in database")
 
             # Register in manager (but don't call accept() again)
             if device_id in manager.robot_connections:

@@ -1,7 +1,10 @@
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # Database path
 DB_PATH = Path(__file__).parent.parent / "data" / "wimz.db"
@@ -480,6 +483,7 @@ def create_device_pairing(user_id: str, device_id: str) -> dict:
     conn.commit()
     conn.close()
 
+    logger.info(f"[PAIRING] Created: device {device_id} -> user {user_id}")
     return {"user_id": user_id, "device_id": device_id, "paired_at": paired_at}
 
 
@@ -497,6 +501,8 @@ def delete_device_pairing(device_id: str) -> bool:
     conn.commit()
     conn.close()
 
+    if deleted:
+        logger.info(f"[PAIRING] Deleted: device {device_id} unpaired")
     return deleted
 
 
@@ -553,6 +559,7 @@ def seed_default_pairings():
     cursor.execute("SELECT COUNT(*) FROM robots WHERE owner_user_id IS NOT NULL")
     if cursor.fetchone()[0] > 0:
         conn.close()
+        logger.debug("[PAIRING] Seed skipped - pairings already exist")
         return  # Already seeded
 
     now = datetime.now(timezone.utc).isoformat()
@@ -569,6 +576,7 @@ def seed_default_pairings():
                VALUES (?, ?, ?, ?, ?)""",
             (robot_id, device_id, owner_id, name, now)
         )
+        logger.info(f"[PAIRING] Seeded: device {device_id} -> user {owner_id}")
 
     conn.commit()
     conn.close()
