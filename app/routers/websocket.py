@@ -331,6 +331,19 @@ async def websocket_device_endpoint(
                 owner_id = manager.get_device_owner(device_id)
                 await manager.forward_event_to_owner(device_id, message)
                 logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): event={message.get('event')}")
+                continue
+
+            # Catch-all: forward any other type-based message to owner's apps
+            if msg_type:
+                if "device_id" not in message:
+                    message["device_id"] = device_id
+
+                owner_id = manager.get_device_owner(device_id)
+                if owner_id:
+                    await manager.send_to_user_apps(owner_id, message)
+                    logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): {msg_type}")
+                else:
+                    logger.warning(f"[ROUTE] Robot({device_id}) -> ???: {msg_type} (no owner)")
 
     except WebSocketDisconnect:
         logger.info(f"Robot {device_id} disconnected")
@@ -413,6 +426,13 @@ async def websocket_app_endpoint(
             # Handle ping/pong
             if msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
+                continue
+
+            # Handle debug_log from app - log to server, don't forward
+            if msg_type == "debug_log":
+                tag = message.get("tag", "APP")
+                msg = message.get("message", "")
+                logger.info(f"[APP-DEBUG][{tag}] {msg}")
                 continue
 
             # Handle get_status request
@@ -674,8 +694,27 @@ async def websocket_generic_endpoint(
                     owner_id = manager.get_device_owner(identifier)
                     await manager.forward_event_to_owner(identifier, message)
                     logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): event={message.get('event')}")
+                    continue
+
+                # Catch-all: forward any other type-based message to owner's apps
+                if msg_type:
+                    if "device_id" not in message:
+                        message["device_id"] = identifier
+                    owner_id = manager.get_device_owner(identifier)
+                    if owner_id:
+                        await manager.send_to_user_apps(owner_id, message)
+                        logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): {msg_type}")
+                    else:
+                        logger.warning(f"[ROUTE] Robot({identifier}) -> ???: {msg_type} (no owner)")
 
             elif connection_type == "app":
+                # Handle debug_log from app - log to server, don't forward
+                if msg_type == "debug_log":
+                    tag = message.get("tag", "APP")
+                    msg = message.get("message", "")
+                    logger.info(f"[APP-DEBUG][{tag}] {msg}")
+                    continue
+
                 # Handle get_status request
                 if msg_type == "get_status":
                     device_id = message.get("device_id")
