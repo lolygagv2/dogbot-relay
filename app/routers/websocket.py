@@ -286,6 +286,10 @@ async def websocket_device_endpoint(
 
             msg_type = message.get("type")
 
+            # Log large payloads (audio, photos)
+            if len(data) > 10000:
+                logger.info(f"[LARGE] Robot({device_id}): {msg_type}, ~{len(data)//1000}KB")
+
             # Handle ping/pong
             if msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
@@ -422,6 +426,10 @@ async def websocket_app_endpoint(
                 continue
 
             msg_type = message.get("type")
+
+            # Log large payloads (audio, photos)
+            if len(data) > 10000:
+                logger.info(f"[LARGE] App({user_id}): {msg_type or message.get('command')}, ~{len(data)//1000}KB")
 
             # Handle ping/pong
             if msg_type == "ping":
@@ -657,6 +665,10 @@ async def websocket_generic_endpoint(
                 continue
 
             msg_type = message.get("type")
+
+            # Log large payloads (audio, photos)
+            if len(data) > 10000:
+                logger.info(f"[LARGE] {connection_type}({identifier}): {msg_type or message.get('command')}, ~{len(data)//1000}KB")
 
             # Handle ping/pong
             if msg_type == "ping":
