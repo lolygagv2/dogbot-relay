@@ -1,6 +1,6 @@
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -89,6 +89,40 @@ def init_db():
             is_profile_photo INTEGER DEFAULT 0,
             captured_at TEXT NOT NULL,
             FOREIGN KEY (dog_id) REFERENCES dogs(id)
+        )
+    """)
+
+    # Dog metrics table (daily aggregates)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS dog_metrics (
+            dog_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            treat_count INTEGER DEFAULT 0,
+            detection_count INTEGER DEFAULT 0,
+            mission_attempts INTEGER DEFAULT 0,
+            mission_successes INTEGER DEFAULT 0,
+            session_minutes REAL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(dog_id, date),
+            FOREIGN KEY (dog_id) REFERENCES dogs(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
+    # Mission log table (individual mission events)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS mission_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dog_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            mission_type TEXT NOT NULL,
+            result TEXT NOT NULL,
+            details TEXT,
+            timestamp TEXT NOT NULL,
+            FOREIGN KEY (dog_id) REFERENCES dogs(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
@@ -580,6 +614,146 @@ def seed_default_pairings():
 
     conn.commit()
     conn.close()
+
+
+# ============== Dog Metrics Functions ==============
+
+def log_metric(dog_id: str, user_id: str, metric_type: str, value: int = 1) -> dict:
+    """Upsert a daily metric row. metric_type must be one of: treat_count, detection_count, session_minutes."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    today = date.today().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Validate metric_type is a known column
+    valid_metrics = ("treat_count", "detection_count", "mission_attempts", "mission_successes", "session_minutes")
+    if metric_type not in valid_metrics:
+        conn.close()
+        raise ValueError(f"Invalid metric_type: {metric_type}. Must be one of {valid_metrics}")
+
+    cursor.execute(
+        f"""INSERT INTO dog_metrics (dog_id, user_id, date, {metric_type}, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(dog_id, date) DO UPDATE SET
+                {metric_type} = {metric_type} + ?,
+                updated_at = ?""",
+        (dog_id, user_id, today, value, now, now, value, now)
+    )
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[METRICS] Logged {metric_type}+={value} for dog {dog_id}")
+    return {"dog_id": dog_id, "metric_type": metric_type, "value": value, "date": today}
+
+
+def log_mission(dog_id: str, user_id: str, mission_type: str, result: str, details: str = None) -> dict:
+    """Log a mission event and update daily metrics."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now(timezone.utc).isoformat()
+    today = date.today().isoformat()
+
+    # Insert mission log entry
+    cursor.execute(
+        """INSERT INTO mission_log (dog_id, user_id, mission_type, result, details, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (dog_id, user_id, mission_type, result, details, now)
+    )
+
+    # Upsert daily metrics: always increment attempts, increment successes if result is "success"
+    success_increment = 1 if result == "success" else 0
+    cursor.execute(
+        """INSERT INTO dog_metrics (dog_id, user_id, date, mission_attempts, mission_successes, created_at, updated_at)
+           VALUES (?, ?, ?, 1, ?, ?, ?)
+           ON CONFLICT(dog_id, date) DO UPDATE SET
+               mission_attempts = mission_attempts + 1,
+               mission_successes = mission_successes + ?,
+               updated_at = ?""",
+        (dog_id, user_id, today, success_increment, now, now, success_increment, now)
+    )
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[METRICS] Mission logged: dog={dog_id}, type={mission_type}, result={result}")
+    return {"dog_id": dog_id, "mission_type": mission_type, "result": result, "timestamp": now}
+
+
+def get_metrics(dog_id: str, user_id: str, since_date: str = None) -> dict:
+    """Get aggregated metrics for a dog since a given date. Returns summed totals."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    if since_date:
+        cursor.execute(
+            """SELECT
+                COALESCE(SUM(treat_count), 0) as treat_count,
+                COALESCE(SUM(detection_count), 0) as detection_count,
+                COALESCE(SUM(mission_attempts), 0) as mission_attempts,
+                COALESCE(SUM(mission_successes), 0) as mission_successes,
+                COALESCE(SUM(session_minutes), 0) as session_minutes
+            FROM dog_metrics
+            WHERE dog_id = ? AND user_id = ? AND date >= ?""",
+            (dog_id, user_id, since_date)
+        )
+    else:
+        cursor.execute(
+            """SELECT
+                COALESCE(SUM(treat_count), 0) as treat_count,
+                COALESCE(SUM(detection_count), 0) as detection_count,
+                COALESCE(SUM(mission_attempts), 0) as mission_attempts,
+                COALESCE(SUM(mission_successes), 0) as mission_successes,
+                COALESCE(SUM(session_minutes), 0) as session_minutes
+            FROM dog_metrics
+            WHERE dog_id = ? AND user_id = ?""",
+            (dog_id, user_id)
+        )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return {
+        "dog_id": dog_id,
+        "treat_count": row["treat_count"],
+        "detection_count": row["detection_count"],
+        "mission_attempts": row["mission_attempts"],
+        "mission_successes": row["mission_successes"],
+        "session_minutes": round(row["session_minutes"], 1),
+    }
+
+
+def get_metric_history(dog_id: str, user_id: str, days: int = 7) -> list[dict]:
+    """Get daily metric breakdown for the last N days."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    since_date = (date.today() - timedelta(days=days)).isoformat()
+
+    cursor.execute(
+        """SELECT date, treat_count, detection_count, mission_attempts, mission_successes, session_minutes
+           FROM dog_metrics
+           WHERE dog_id = ? AND user_id = ? AND date >= ?
+           ORDER BY date ASC""",
+        (dog_id, user_id, since_date)
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "date": row["date"],
+            "treat_count": row["treat_count"],
+            "detection_count": row["detection_count"],
+            "mission_attempts": row["mission_attempts"],
+            "mission_successes": row["mission_successes"],
+            "session_minutes": round(row["session_minutes"], 1),
+        }
+        for row in rows
+    ]
 
 
 # Initialize database on module import

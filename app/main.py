@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.connection_manager import get_connection_manager
 from app.models import HealthResponse
-from app.routers import auth, device, dogs, turn, user, websocket
+from app.routers import auth, device, dogs, metrics, turn, user, websocket
 
 # Configure logging
 logging.basicConfig(
@@ -38,6 +38,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(device.router)
 app.include_router(dogs.router)
+app.include_router(metrics.router)
 app.include_router(turn.router)
 app.include_router(user.router)
 app.include_router(websocket.router)
@@ -78,6 +79,13 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup resources on shutdown."""
     logger.info("Shutting down relay server")
+    manager = get_connection_manager()
+    # Cancel all grace period timers
+    for user_id, task in list(manager.grace_timers.items()):
+        task.cancel()
+        logger.info(f"[SHUTDOWN] Cancelled grace timer for user {user_id}")
+    manager.grace_timers.clear()
+    manager.grace_webrtc_sessions.clear()
 
 
 if __name__ == "__main__":

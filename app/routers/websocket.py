@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from app.auth import decode_token, verify_device_signature, verify_device_signature_with_timestamp
 from app.config import Settings, get_settings
 from app.connection_manager import ConnectionManager, get_connection_manager
-from app.database import get_device_owner as db_get_device_owner
+from app.database import (
+    get_device_owner as db_get_device_owner,
+    get_metrics as db_get_metrics,
+    get_user_dogs,
+    log_metric as db_log_metric,
+    log_mission as db_log_mission,
+)
 from app.routers.device import get_device_data, update_device_online_status
 from app.services.turn_service import turn_service
 
@@ -383,6 +389,32 @@ async def websocket_device_endpoint(
                 logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): event={message.get('event')}")
                 continue
 
+            # Handle metric_event from robot
+            if msg_type == "metric_event":
+                owner_id = manager.get_device_owner(device_id)
+                if owner_id:
+                    dog_id = message.get("dog_id")
+                    metric_type = message.get("metric_type")
+                    value = message.get("value", 1)
+                    mission_type = message.get("mission_type")
+                    mission_result = message.get("mission_result")
+                    details = message.get("details")
+
+                    if dog_id and mission_type and mission_result:
+                        db_log_mission(dog_id, owner_id, mission_type, mission_result, details)
+                    elif dog_id and metric_type:
+                        try:
+                            db_log_metric(dog_id, owner_id, metric_type, value)
+                        except ValueError as e:
+                            logger.warning(f"[METRICS] Invalid metric from robot {device_id}: {e}")
+                            continue
+
+                    # Forward to owner's apps
+                    message["device_id"] = device_id
+                    await manager.send_to_user_apps(owner_id, message)
+                    logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): metric_event")
+                continue
+
             # Catch-all: forward any other type-based message to owner's apps
             if msg_type:
                 if "device_id" not in message:
@@ -444,6 +476,21 @@ async def websocket_app_endpoint(
     # Connect the app
     await manager.connect_app(websocket, user_id)
 
+    # Check for grace period reconnection
+    restored_sessions = manager.cancel_grace_period(user_id)
+    if restored_sessions:
+        # Restore WebRTC sessions: update app_ws reference to new websocket
+        for session_id, device_id in restored_sessions:
+            if session_id in webrtc_sessions:
+                webrtc_sessions[session_id]["app_ws"] = websocket
+                logger.info(f"[GRACE] Restored WebRTC session {session_id} for device {device_id}")
+                await websocket.send_json({
+                    "type": "session_restored",
+                    "session_id": session_id,
+                    "device_id": device_id,
+                })
+        logger.info(f"[GRACE] User {user_id} reconnected, restored {len(restored_sessions)} session(s)")
+
     # Send connection acknowledgment
     await websocket.send_json({
         "type": "auth_result",
@@ -460,10 +507,28 @@ async def websocket_app_endpoint(
             "online": manager.is_robot_online(device_id)
         })
 
+    # Send today's metrics for each of the user's dogs
+    try:
+        user_dogs = get_user_dogs(user_id)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        for dog in user_dogs:
+            dog_metrics = db_get_metrics(dog["id"], user_id, today)
+            await websocket.send_json({
+                "type": "metrics_sync",
+                "dog_id": dog["id"],
+                "period": "daily",
+                **dog_metrics,
+            })
+    except Exception as e:
+        logger.error(f"[METRICS] Failed to send metrics_sync to user {user_id}: {e}")
+
     try:
         while True:
             # Receive message from app
             data = await websocket.receive_text()
+
+            # Track activity for grace period
+            manager.update_activity(user_id)
 
             try:
                 message = json.loads(data)
@@ -574,9 +639,35 @@ async def websocket_app_endpoint(
     except Exception as e:
         logger.error(f"Error in app websocket for user {user_id}: {e}")
     finally:
-        # Clean up WebRTC sessions for this websocket
-        cleanup_sessions_for_websocket(websocket, manager)
+        # Collect WebRTC session data for this websocket BEFORE removing
+        saved_sessions = []
+        for session_id, session in webrtc_sessions.items():
+            if session.get("app_ws") == websocket:
+                saved_sessions.append((session_id, session.get("device_id")))
+
+        # Disconnect this websocket from the manager
         await manager.disconnect_app(websocket)
+
+        # Check if user still has other active connections
+        has_other_connections = (
+            user_id in manager.app_connections
+            and len(manager.app_connections[user_id]) > 0
+        )
+
+        if has_other_connections:
+            # User still connected on another session — clean up this WS's sessions normally
+            for session_id, device_id in saved_sessions:
+                webrtc_sessions.pop(session_id, None)
+                if device_id and manager.webrtc_sessions.get(device_id) == session_id:
+                    del manager.webrtc_sessions[device_id]
+                    logger.info(f"[WEBRTC] Removed session {session_id} for device {device_id} (app has other connections)")
+        elif user_id in manager.grace_timers:
+            # Already in grace period (e.g., another WS just disconnected) — append sessions
+            manager.grace_webrtc_sessions.setdefault(user_id, []).extend(saved_sessions)
+            logger.info(f"[GRACE] Appended {len(saved_sessions)} session(s) to existing grace period for user {user_id}")
+        else:
+            # Last connection — start grace period
+            manager.start_grace_period(user_id, saved_sessions)
 
 
 @router.websocket("/ws")
@@ -701,9 +792,44 @@ async def websocket_generic_endpoint(
             "success": True
         })
 
+        # Send initial data for app connections
+        if connection_type == "app":
+            # Check for grace period reconnection
+            restored_sessions = manager.cancel_grace_period(identifier)
+            if restored_sessions:
+                for session_id, dev_id in restored_sessions:
+                    if session_id in webrtc_sessions:
+                        webrtc_sessions[session_id]["app_ws"] = websocket
+                        logger.info(f"[GRACE] Restored WebRTC session {session_id} for device {dev_id}")
+                        await websocket.send_json({
+                            "type": "session_restored",
+                            "session_id": session_id,
+                            "device_id": dev_id,
+                        })
+                logger.info(f"[GRACE] User {identifier} reconnected, restored {len(restored_sessions)} session(s)")
+
+            # Send today's metrics for each of the user's dogs
+            try:
+                user_dogs_list = get_user_dogs(identifier)
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                for dog in user_dogs_list:
+                    dog_metrics = db_get_metrics(dog["id"], identifier, today)
+                    await websocket.send_json({
+                        "type": "metrics_sync",
+                        "dog_id": dog["id"],
+                        "period": "daily",
+                        **dog_metrics,
+                    })
+            except Exception as e:
+                logger.error(f"[METRICS] Failed to send metrics_sync to user {identifier}: {e}")
+
         # Main message loop
         while True:
             data = await websocket.receive_text()
+
+            # Track activity for grace period (app connections)
+            if connection_type == "app":
+                manager.update_activity(identifier)
 
             try:
                 message = json.loads(data)
@@ -752,6 +878,31 @@ async def websocket_generic_endpoint(
                     owner_id = manager.get_device_owner(identifier)
                     await manager.forward_event_to_owner(identifier, message)
                     logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): event={message.get('event')}")
+                    continue
+
+                # Handle metric_event from robot
+                if msg_type == "metric_event":
+                    owner_id = manager.get_device_owner(identifier)
+                    if owner_id:
+                        dog_id = message.get("dog_id")
+                        metric_type = message.get("metric_type")
+                        value = message.get("value", 1)
+                        mission_type = message.get("mission_type")
+                        mission_result = message.get("mission_result")
+                        details = message.get("details")
+
+                        if dog_id and mission_type and mission_result:
+                            db_log_mission(dog_id, owner_id, mission_type, mission_result, details)
+                        elif dog_id and metric_type:
+                            try:
+                                db_log_metric(dog_id, owner_id, metric_type, value)
+                            except ValueError as e:
+                                logger.warning(f"[METRICS] Invalid metric from robot {identifier}: {e}")
+                                continue
+
+                        message["device_id"] = identifier
+                        await manager.send_to_user_apps(owner_id, message)
+                        logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): metric_event")
                     continue
 
                 # Catch-all: forward any other type-based message to owner's apps
@@ -836,5 +987,29 @@ async def websocket_generic_endpoint(
                 await manager.disconnect_robot(websocket)
                 update_device_online_status(identifier, False)
             elif connection_type == "app":
-                cleanup_sessions_for_websocket(websocket, manager)
+                # Collect WebRTC session data for this websocket BEFORE removing
+                saved_sessions = []
+                for session_id, session in webrtc_sessions.items():
+                    if session.get("app_ws") == websocket:
+                        saved_sessions.append((session_id, session.get("device_id")))
+
+                # Disconnect this websocket from the manager
                 await manager.disconnect_app(websocket)
+
+                # Check if user still has other active connections
+                has_other_connections = (
+                    identifier in manager.app_connections
+                    and len(manager.app_connections[identifier]) > 0
+                )
+
+                if has_other_connections:
+                    for session_id, device_id in saved_sessions:
+                        webrtc_sessions.pop(session_id, None)
+                        if device_id and manager.webrtc_sessions.get(device_id) == session_id:
+                            del manager.webrtc_sessions[device_id]
+                            logger.info(f"[WEBRTC] Removed session {session_id} for device {device_id} (app has other connections)")
+                elif identifier in manager.grace_timers:
+                    manager.grace_webrtc_sessions.setdefault(identifier, []).extend(saved_sessions)
+                    logger.info(f"[GRACE] Appended {len(saved_sessions)} session(s) to existing grace period for user {identifier}")
+                else:
+                    manager.start_grace_period(identifier, saved_sessions)

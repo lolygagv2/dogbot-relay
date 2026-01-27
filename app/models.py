@@ -301,5 +301,16 @@ class ErrorResponse(BaseModel):
     error: dict
 
 
+# ============== Metrics Models ==============
+
+class MetricEventRequest(BaseModel):
+    dog_id: str
+    metric_type: str = Field(..., description="One of: treat_count, detection_count, session_minutes")
+    value: int = 1
+    mission_type: Optional[str] = None
+    mission_result: Optional[str] = None
+    details: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"

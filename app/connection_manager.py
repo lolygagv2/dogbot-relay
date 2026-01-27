@@ -18,6 +18,8 @@ class ConnectionManager:
     Handles message routing between connected devices.
     """
 
+    GRACE_PERIOD_SECONDS = 300  # 5 minutes
+
     def __init__(self):
         # device_id -> WebSocket connection for robots
         self.robot_connections: dict[str, WebSocket] = {}
@@ -34,6 +36,14 @@ class ConnectionManager:
 
         # device_id -> session_id: enforce single active WebRTC session per device
         self.webrtc_sessions: dict[str, str] = {}
+
+        # Grace period state for session persistence on phone lock
+        # user_id -> asyncio.Task that will clean up after grace period
+        self.grace_timers: dict[str, asyncio.Task] = {}
+        # user_id -> list of (session_id, device_id) saved WebRTC sessions
+        self.grace_webrtc_sessions: dict[str, list[tuple[str, str]]] = {}
+        # user_id -> datetime of last activity
+        self.last_activity: dict[str, datetime] = {}
 
         logger.info(f"ConnectionManager initialized with {len(self.device_owners)} device pairings from DB")
         for device_id, user_id in self.device_owners.items():
@@ -117,6 +127,76 @@ class ConnectionManager:
             await websocket.close()
         except Exception:
             pass
+
+    def update_activity(self, user_id: str):
+        """Update last activity timestamp for a user."""
+        self.last_activity[user_id] = datetime.now(timezone.utc)
+
+    def start_grace_period(self, user_id: str, webrtc_session_data: list[tuple[str, str]]):
+        """
+        Start a grace period for a disconnected user.
+        Saves WebRTC session data and schedules cleanup after GRACE_PERIOD_SECONDS.
+        """
+        # Cancel existing timer if any
+        if user_id in self.grace_timers:
+            self.grace_timers[user_id].cancel()
+            logger.info(f"[GRACE] Cancelled existing grace timer for user {user_id}")
+
+        # Save or extend WebRTC sessions
+        if user_id in self.grace_webrtc_sessions:
+            self.grace_webrtc_sessions[user_id].extend(webrtc_session_data)
+        else:
+            self.grace_webrtc_sessions[user_id] = list(webrtc_session_data)
+
+        # Schedule cleanup
+        task = asyncio.create_task(self._execute_grace_cleanup(user_id))
+        self.grace_timers[user_id] = task
+        logger.info(f"[GRACE] Started {self.GRACE_PERIOD_SECONDS}s grace period for user {user_id} "
+                     f"(preserving {len(webrtc_session_data)} WebRTC session(s))")
+
+    def cancel_grace_period(self, user_id: str) -> Optional[list[tuple[str, str]]]:
+        """
+        Cancel grace period for a reconnecting user.
+        Returns saved WebRTC session data if any, or None.
+        """
+        if user_id not in self.grace_timers:
+            return None
+
+        self.grace_timers[user_id].cancel()
+        del self.grace_timers[user_id]
+
+        saved_sessions = self.grace_webrtc_sessions.pop(user_id, None)
+        logger.info(f"[GRACE] Cancelled grace period for user {user_id} "
+                     f"(restoring {len(saved_sessions) if saved_sessions else 0} WebRTC session(s))")
+        return saved_sessions
+
+    async def _execute_grace_cleanup(self, user_id: str):
+        """Execute cleanup after grace period expires."""
+        try:
+            await asyncio.sleep(self.GRACE_PERIOD_SECONDS)
+        except asyncio.CancelledError:
+            logger.info(f"[GRACE] Grace cleanup cancelled for user {user_id} (reconnected)")
+            return
+
+        logger.info(f"[GRACE] Grace period expired for user {user_id}, cleaning up")
+
+        # Clean up saved WebRTC sessions
+        saved_sessions = self.grace_webrtc_sessions.pop(user_id, [])
+        for session_id, device_id in saved_sessions:
+            if device_id and self.webrtc_sessions.get(device_id) == session_id:
+                del self.webrtc_sessions[device_id]
+                # Notify robot to close session
+                await self.send_to_robot(device_id, {
+                    "type": "webrtc_close",
+                    "session_id": session_id
+                })
+                logger.info(f"[GRACE] Closed WebRTC session {session_id} for device {device_id}")
+
+        # Remove timer reference
+        self.grace_timers.pop(user_id, None)
+        self.last_activity.pop(user_id, None)
+
+        logger.info(f"[GRACE] Cleanup complete for user {user_id}")
 
     async def send_to_robot(self, device_id: str, message: dict) -> bool:
         """Send a message to a specific robot."""
@@ -218,8 +298,10 @@ class ConnectionManager:
         return device_id in self.robot_connections
 
     def is_user_online(self, user_id: str) -> bool:
-        """Check if a user has any active app connections."""
-        return user_id in self.app_connections and len(self.app_connections[user_id]) > 0
+        """Check if a user has any active app connections or is in grace period."""
+        has_connections = user_id in self.app_connections and len(self.app_connections[user_id]) > 0
+        in_grace = user_id in self.grace_timers
+        return has_connections or in_grace
 
     def get_user_devices(self, user_id: str) -> list[str]:
         """Get all device IDs owned by a user."""
@@ -235,7 +317,8 @@ class ConnectionManager:
             "users_online": len(self.app_connections),
             "total_app_sessions": sum(len(sessions) for sessions in self.app_connections.values()),
             "registered_devices": len(self.device_owners),
-            "active_webrtc_sessions": len(self.webrtc_sessions)
+            "active_webrtc_sessions": len(self.webrtc_sessions),
+            "grace_period_users": len(self.grace_timers),
         }
 
     async def create_webrtc_session(self, device_id: str, user_id: str) -> str:
