@@ -1,6 +1,5 @@
 import json
 import logging
-import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
@@ -65,14 +64,26 @@ async def handle_webrtc_request(
         })
         return
 
-    # Generate session ID
-    session_id = str(uuid.uuid4())
+    # Close any existing session for this device before creating a new one
+    # This returns a new session_id and notifies the robot to close the old one
+    session_id = await manager.create_webrtc_session(device_id, user_id)
+
+    # Clean old sessions for this device from routing table
+    old_session_ids = [
+        sid for sid, s in webrtc_sessions.items()
+        if s.get("device_id") == device_id
+    ]
+    for old_sid in old_session_ids:
+        webrtc_sessions.pop(old_sid, None)
+        logger.info(f"[WEBRTC] Removed stale routing entry {old_sid} for device {device_id}")
 
     # Generate TURN credentials
     try:
         ice_servers = await turn_service.generate_credentials(ttl=3600)
     except Exception as e:
         logger.error(f"TURN credential generation failed: {e}")
+        # Roll back session tracking on failure
+        await manager.close_webrtc_session(session_id, device_id)
         await websocket.send_json({
             "type": "error",
             "code": "TURN_ERROR",
@@ -80,7 +91,7 @@ async def handle_webrtc_request(
         })
         return
 
-    # Track session
+    # Track session in routing table
     webrtc_sessions[session_id] = {
         "app_ws": websocket,
         "device_id": device_id,
@@ -102,20 +113,25 @@ async def handle_webrtc_request(
         "ice_servers": ice_servers.get("iceServers", ice_servers)
     })
 
-    logger.info(f"WebRTC session {session_id} initiated: user {user_id} -> device {device_id}")
+    logger.info(f"[WEBRTC] Session {session_id} initiated: user {user_id} -> device {device_id}")
+    logger.info(f"[WEBRTC] Routing table entries: {len(webrtc_sessions)}, Manager active sessions: {manager.webrtc_sessions}")
 
 
-async def handle_webrtc_offer(message: dict, device_id: str):
+async def handle_webrtc_offer(message: dict, device_id: str, manager: ConnectionManager):
     """Forward WebRTC offer from robot to app."""
     session_id = message.get("session_id")
     session = webrtc_sessions.get(session_id)
 
+    logger.info(f"[WEBRTC] Offer from device {device_id}, session {session_id}, active device session: {manager.webrtc_sessions.get(device_id)}")
+
     if session and session["app_ws"] and session["device_id"] == device_id:
         try:
             await session["app_ws"].send_json(message)
-            logger.debug(f"Forwarded WebRTC offer for session {session_id}")
+            logger.info(f"[WEBRTC] Forwarded offer for session {session_id}")
         except Exception as e:
-            logger.error(f"Failed to forward offer for session {session_id}: {e}")
+            logger.error(f"[WEBRTC] Failed to forward offer for session {session_id}: {e}")
+    else:
+        logger.warning(f"[WEBRTC] Ignoring offer for unknown/stale session {session_id}")
 
 
 async def handle_webrtc_answer(message: dict, user_id: str, manager: ConnectionManager):
@@ -123,13 +139,17 @@ async def handle_webrtc_answer(message: dict, user_id: str, manager: ConnectionM
     session_id = message.get("session_id")
     session = webrtc_sessions.get(session_id)
 
+    logger.info(f"[WEBRTC] Answer from user {user_id}, session {session_id}")
+
     if session and session["user_id"] == user_id:
         device_id = session["device_id"]
         success = await manager.send_to_robot(device_id, message)
         if success:
-            logger.debug(f"Forwarded WebRTC answer for session {session_id}")
+            logger.info(f"[WEBRTC] Forwarded answer for session {session_id} to device {device_id}")
         else:
-            logger.error(f"Failed to forward answer for session {session_id}")
+            logger.error(f"[WEBRTC] Failed to forward answer for session {session_id}")
+    else:
+        logger.warning(f"[WEBRTC] Ignoring answer for unknown/stale session {session_id}")
 
 
 async def handle_webrtc_ice(
@@ -143,6 +163,7 @@ async def handle_webrtc_ice(
     session = webrtc_sessions.get(session_id)
 
     if not session:
+        logger.debug(f"[WEBRTC] ICE candidate for unknown session {session_id} from {from_type} {identifier}")
         return
 
     if from_type == "robot":
@@ -151,7 +172,7 @@ async def handle_webrtc_ice(
             try:
                 await session["app_ws"].send_json(message)
             except Exception as e:
-                logger.error(f"Failed to forward ICE to app: {e}")
+                logger.error(f"[WEBRTC] Failed to forward ICE to app: {e}")
     else:
         # From app, forward to robot
         if session["user_id"] == identifier:
@@ -160,39 +181,56 @@ async def handle_webrtc_ice(
 
 
 async def handle_webrtc_close(message: dict, manager: ConnectionManager):
-    """Clean up WebRTC session."""
+    """Clean up WebRTC session. Only notifies robot if this is the active session for the device."""
     session_id = message.get("session_id")
     session = webrtc_sessions.pop(session_id, None)
 
     if session:
-        close_msg = {"type": "webrtc_close", "session_id": session_id}
+        device_id = session["device_id"]
+        active_session = manager.webrtc_sessions.get(device_id)
+        is_active = active_session == session_id
+
+        logger.info(f"[WEBRTC] Close requested for session {session_id} (device {device_id}), active={is_active}, current active={active_session}")
 
         # Notify app
         if session["app_ws"]:
             try:
-                await session["app_ws"].send_json(close_msg)
+                await session["app_ws"].send_json({"type": "webrtc_close", "session_id": session_id})
             except Exception:
                 pass
 
-        # Notify robot
-        await manager.send_to_robot(session["device_id"], close_msg)
+        # Only notify robot and clean up manager tracking if this is the active session
+        # Stale session closes should NOT trigger robot mode revert
+        if is_active:
+            await manager.close_webrtc_session(session_id, device_id)
+            logger.info(f"[WEBRTC] Active session {session_id} closed for device {device_id}")
+        else:
+            logger.info(f"[WEBRTC] Stale session {session_id} cleaned from routing table (device {device_id} active session unaffected)")
+    else:
+        logger.warning(f"[WEBRTC] Close requested for unknown session {session_id}")
 
-        logger.info(f"WebRTC session {session_id} closed")
 
-
-def cleanup_sessions_for_websocket(websocket: WebSocket):
+def cleanup_sessions_for_websocket(websocket: WebSocket, manager: ConnectionManager = None):
     """Remove all WebRTC sessions associated with a websocket."""
     sessions_to_remove = []
     for session_id, session in webrtc_sessions.items():
         if session.get("app_ws") == websocket:
-            sessions_to_remove.append(session_id)
+            sessions_to_remove.append((session_id, session.get("device_id")))
 
-    for session_id in sessions_to_remove:
+    for session_id, device_id in sessions_to_remove:
         webrtc_sessions.pop(session_id, None)
-        logger.info(f"Cleaned up WebRTC session {session_id} due to disconnect")
+        # Also clean manager tracking if this was the active session
+        if manager and device_id and manager.webrtc_sessions.get(device_id) == session_id:
+            del manager.webrtc_sessions[device_id]
+            logger.info(f"[WEBRTC] Removed active session {session_id} for device {device_id} (app disconnect)")
+        else:
+            logger.info(f"[WEBRTC] Removed routing entry {session_id} (app disconnect)")
+
+    if manager:
+        logger.info(f"[WEBRTC] Active sessions after app cleanup: {manager.webrtc_sessions}")
 
 
-def cleanup_sessions_for_device(device_id: str):
+def cleanup_sessions_for_device(device_id: str, manager: ConnectionManager = None):
     """Remove all WebRTC sessions associated with a device."""
     sessions_to_remove = []
     for session_id, session in webrtc_sessions.items():
@@ -201,7 +239,15 @@ def cleanup_sessions_for_device(device_id: str):
 
     for session_id in sessions_to_remove:
         webrtc_sessions.pop(session_id, None)
-        logger.info(f"Cleaned up WebRTC session {session_id} due to device disconnect")
+        logger.info(f"[WEBRTC] Removed routing entry {session_id} (device {device_id} disconnect)")
+
+    # Also clean manager tracking
+    if manager and device_id in manager.webrtc_sessions:
+        removed_session = manager.webrtc_sessions.pop(device_id)
+        logger.info(f"[WEBRTC] Removed active session {removed_session} for device {device_id} (device disconnect)")
+
+    if manager:
+        logger.info(f"[WEBRTC] Active sessions after device cleanup: {manager.webrtc_sessions}")
 
 
 # ============== WebSocket Endpoints ==============
@@ -297,7 +343,7 @@ async def websocket_device_endpoint(
 
             # Handle WebRTC signaling from robot
             if msg_type == "webrtc_offer":
-                await handle_webrtc_offer(message, device_id)
+                await handle_webrtc_offer(message, device_id, manager)
                 continue
 
             if msg_type == "webrtc_ice":
@@ -355,7 +401,7 @@ async def websocket_device_endpoint(
         logger.error(f"Error in robot websocket {device_id}: {e}")
     finally:
         # Clean up WebRTC sessions for this device
-        cleanup_sessions_for_device(device_id)
+        cleanup_sessions_for_device(device_id, manager)
 
         # Get owner before disconnect clears state
         owner_id = manager.get_device_owner(device_id)
@@ -529,7 +575,7 @@ async def websocket_app_endpoint(
         logger.error(f"Error in app websocket for user {user_id}: {e}")
     finally:
         # Clean up WebRTC sessions for this websocket
-        cleanup_sessions_for_websocket(websocket)
+        cleanup_sessions_for_websocket(websocket, manager)
         await manager.disconnect_app(websocket)
 
 
@@ -678,7 +724,7 @@ async def websocket_generic_endpoint(
             # Handle WebRTC signaling
             if connection_type == "robot":
                 if msg_type == "webrtc_offer":
-                    await handle_webrtc_offer(message, identifier)
+                    await handle_webrtc_offer(message, identifier, manager)
                     continue
                 if msg_type == "webrtc_ice":
                     await handle_webrtc_ice(message, "robot", identifier, manager)
@@ -786,9 +832,9 @@ async def websocket_generic_endpoint(
     finally:
         if authenticated:
             if connection_type == "robot":
-                cleanup_sessions_for_device(identifier)
+                cleanup_sessions_for_device(identifier, manager)
                 await manager.disconnect_robot(websocket)
                 update_device_online_status(identifier, False)
             elif connection_type == "app":
-                cleanup_sessions_for_websocket(websocket)
+                cleanup_sessions_for_websocket(websocket, manager)
                 await manager.disconnect_app(websocket)

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,6 +31,9 @@ class ConnectionManager:
 
         # WebSocket -> metadata for reverse lookups
         self.connection_metadata: dict[WebSocket, dict] = {}
+
+        # device_id -> session_id: enforce single active WebRTC session per device
+        self.webrtc_sessions: dict[str, str] = {}
 
         logger.info(f"ConnectionManager initialized with {len(self.device_owners)} device pairings from DB")
         for device_id, user_id in self.device_owners.items():
@@ -230,8 +234,38 @@ class ConnectionManager:
             "robots_online": len(self.robot_connections),
             "users_online": len(self.app_connections),
             "total_app_sessions": sum(len(sessions) for sessions in self.app_connections.values()),
-            "registered_devices": len(self.device_owners)
+            "registered_devices": len(self.device_owners),
+            "active_webrtc_sessions": len(self.webrtc_sessions)
         }
+
+    async def create_webrtc_session(self, device_id: str, user_id: str) -> str:
+        """Create a new WebRTC session for a device, closing any existing session first."""
+        if device_id in self.webrtc_sessions:
+            old_session_id = self.webrtc_sessions[device_id]
+            logger.warning(f"[WEBRTC] Closing existing session {old_session_id} for device {device_id} before creating new one")
+            await self.close_webrtc_session(old_session_id, device_id)
+
+        new_session_id = str(uuid.uuid4())
+        self.webrtc_sessions[device_id] = new_session_id
+        logger.info(f"[WEBRTC] Created session {new_session_id} for device {device_id} (user {user_id})")
+        logger.info(f"[WEBRTC] Active sessions: {self.webrtc_sessions}")
+        return new_session_id
+
+    async def close_webrtc_session(self, session_id: str, device_id: str = None):
+        """Close a WebRTC session. Only removes and notifies robot if session_id matches the active one."""
+        if device_id and self.webrtc_sessions.get(device_id) == session_id:
+            del self.webrtc_sessions[device_id]
+            logger.info(f"[WEBRTC] Removed active session {session_id} for device {device_id}")
+
+            # Notify robot to close this specific session
+            await self.send_to_robot(device_id, {
+                "type": "webrtc_close",
+                "session_id": session_id
+            })
+        elif device_id:
+            logger.info(f"[WEBRTC] Ignoring close for stale session {session_id} (device {device_id} active session: {self.webrtc_sessions.get(device_id)})")
+
+        logger.info(f"[WEBRTC] Active sessions after close: {self.webrtc_sessions}")
 
 
 # Global connection manager instance
