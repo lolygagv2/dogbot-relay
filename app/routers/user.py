@@ -95,6 +95,44 @@ async def unpair_device(
     )
 
 
+@router.delete("/devices/{device_id}")
+async def delete_user_device(
+    device_id: str,
+    current_user: dict = Depends(get_current_user),
+    manager: ConnectionManager = Depends(get_connection_manager)
+):
+    """
+    Unpair a device from the current user by device_id in path.
+
+    RESTful alternative to POST /api/user/unpair-device.
+    Removes pairing from database and in-memory cache.
+    """
+    user_id = current_user["user_id"]
+
+    # Check ownership from DB
+    current_owner = db_get_device_owner(device_id)
+    if not current_owner:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Device {device_id} is not paired with any user"
+        )
+
+    if current_owner != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to unpair this device"
+        )
+
+    # Remove pairing from database
+    delete_device_pairing(device_id)
+
+    # Update in-memory cache
+    manager.remove_device_owner(device_id)
+    logger.info(f"User {user_id} unpaired device {device_id} via DELETE - removed from DB")
+
+    return {"status": "ok", "message": f"Device {device_id} unpaired"}
+
+
 @router.get("/devices")
 async def get_user_devices(
     current_user: dict = Depends(get_current_user),
