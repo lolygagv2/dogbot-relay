@@ -513,11 +513,11 @@ async def websocket_app_endpoint(
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         for dog in user_dogs:
             dog_metrics = db_get_metrics(dog["id"], user_id, today)
+            dog_metrics.pop("dog_id", None)
             await websocket.send_json({
                 "type": "metrics_sync",
                 "dog_id": dog["id"],
-                "period": "daily",
-                **dog_metrics,
+                "metrics": dog_metrics,
             })
     except Exception as e:
         logger.error(f"[METRICS] Failed to send metrics_sync to user {user_id}: {e}")
@@ -814,11 +814,11 @@ async def websocket_generic_endpoint(
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 for dog in user_dogs_list:
                     dog_metrics = db_get_metrics(dog["id"], identifier, today)
+                    dog_metrics.pop("dog_id", None)
                     await websocket.send_json({
                         "type": "metrics_sync",
                         "dog_id": dog["id"],
-                        "period": "daily",
-                        **dog_metrics,
+                        "metrics": dog_metrics,
                     })
             except Exception as e:
                 logger.error(f"[METRICS] Failed to send metrics_sync to user {identifier}: {e}")
