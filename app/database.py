@@ -50,9 +50,30 @@ def init_db():
             profile_photo_url TEXT,
             aruco_marker_id INTEGER,
             visual_features TEXT,
-            created_at TEXT NOT NULL
+            user_id TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
+
+    # Migration: add user_id column to dogs if it doesn't exist
+    cursor.execute("PRAGMA table_info(dogs)")
+    dog_columns = [col[1] for col in cursor.fetchall()]
+    if "user_id" not in dog_columns:
+        cursor.execute("ALTER TABLE dogs ADD COLUMN user_id TEXT REFERENCES users(id)")
+        # Backfill user_id from user_dogs where role='owner'
+        cursor.execute("""
+            UPDATE dogs SET user_id = (
+                SELECT ud.user_id FROM user_dogs ud
+                WHERE ud.dog_id = dogs.id AND ud.role = 'owner'
+                LIMIT 1
+            )
+            WHERE user_id IS NULL
+        """)
+        logger.info("[MIGRATION] Added user_id column to dogs table and backfilled from user_dogs")
+
+    # Index on dogs.user_id for fast lookup
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_dogs_user_id ON dogs(user_id)")
 
     # User-dog relationship (many-to-many)
     cursor.execute("""
@@ -233,6 +254,7 @@ def get_dog_count() -> int:
 def create_dog(
     dog_id: str,
     name: str,
+    user_id: str,
     breed: Optional[str] = None,
     color: Optional[str] = None,
     profile_photo_url: Optional[str] = None,
@@ -245,9 +267,9 @@ def create_dog(
     created_at = datetime.now(timezone.utc).isoformat()
 
     cursor.execute(
-        """INSERT INTO dogs (id, name, breed, color, profile_photo_url, aruco_marker_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (dog_id, name, breed, color, profile_photo_url, aruco_marker_id, created_at)
+        """INSERT INTO dogs (id, name, user_id, breed, color, profile_photo_url, aruco_marker_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (dog_id, name, user_id, breed, color, profile_photo_url, aruco_marker_id, created_at)
     )
 
     conn.commit()
@@ -256,12 +278,28 @@ def create_dog(
     return {
         "id": dog_id,
         "name": name,
+        "user_id": user_id,
         "breed": breed,
         "color": color,
         "profile_photo_url": profile_photo_url,
         "aruco_marker_id": aruco_marker_id,
         "created_at": created_at
     }
+
+
+def check_duplicate_dog_name(user_id: str, name: str) -> bool:
+    """Check if a dog with the same name (case-insensitive) already exists for this user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM dogs WHERE user_id = ? AND LOWER(name) = LOWER(?)",
+        (user_id, name)
+    )
+    count = cursor.fetchone()[0]
+    conn.close()
+
+    return count > 0
 
 
 def get_dog_by_id(dog_id: str) -> Optional[dict]:
@@ -306,15 +344,26 @@ def update_dog(dog_id: str, **fields) -> Optional[dict]:
     return get_dog_by_id(dog_id)
 
 
-def delete_dog(dog_id: str) -> bool:
-    """Delete a dog and its relationships."""
+def delete_dog(dog_id: str, user_id: str = None) -> bool:
+    """Delete a dog and its relationships. If user_id is provided, only delete if owned by that user."""
     conn = get_connection()
     cursor = conn.cursor()
+
+    # Verify ownership if user_id provided
+    if user_id:
+        cursor.execute("SELECT id FROM dogs WHERE id = ? AND user_id = ?", (dog_id, user_id))
+        if not cursor.fetchone():
+            conn.close()
+            return False
 
     # Delete user_dogs relationships first
     cursor.execute("DELETE FROM user_dogs WHERE dog_id = ?", (dog_id,))
     # Delete dog photos
     cursor.execute("DELETE FROM dog_photos WHERE dog_id = ?", (dog_id,))
+    # Delete dog metrics
+    cursor.execute("DELETE FROM dog_metrics WHERE dog_id = ?", (dog_id,))
+    # Delete mission logs
+    cursor.execute("DELETE FROM mission_log WHERE dog_id = ?", (dog_id,))
     # Delete the dog
     cursor.execute("DELETE FROM dogs WHERE id = ?", (dog_id,))
     deleted = cursor.rowcount > 0

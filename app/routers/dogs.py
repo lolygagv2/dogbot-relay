@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth import get_current_user
 from app.database import (
     add_user_dog,
+    check_duplicate_dog_name,
     create_dog,
     create_dog_photo,
     delete_dog,
@@ -63,20 +64,28 @@ async def create_dog_profile(
     """Create a new dog profile. The current user becomes the owner."""
     user_id = current_user["user_id"]
 
+    # Check for duplicate name (case-insensitive) for this user
+    if check_duplicate_dog_name(user_id, dog_data.name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"A dog named '{dog_data.name}' already exists"
+        )
+
     # Generate dog ID
     count = get_dog_count()
     dog_id = f"dog_{count + 1:06d}"
 
-    # Create the dog
+    # Create the dog with user_id ownership
     dog = create_dog(
         dog_id=dog_id,
         name=dog_data.name,
+        user_id=user_id,
         breed=dog_data.breed,
         color=dog_data.color.value if dog_data.color else None,
         aruco_marker_id=dog_data.aruco_marker_id
     )
 
-    # Add user as owner
+    # Add user as owner in relationship table
     add_user_dog(user_id, dog_id, "owner")
 
     logger.info(f"User {user_id} created dog {dog_id}: {dog_data.name}")
@@ -207,7 +216,7 @@ async def delete_dog_profile(
             detail="Only owners can delete dog profiles"
         )
 
-    deleted = delete_dog(dog_id)
+    deleted = delete_dog(dog_id, user_id=user_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
