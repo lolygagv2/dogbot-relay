@@ -39,7 +39,9 @@ async def list_user_dogs(
 ):
     """List all dogs for the current user with their role."""
     user_id = current_user["user_id"]
+    logger.info(f"GET /dogs for user {user_id}")
     dogs = get_user_dogs(user_id)
+    logger.info(f"Returning {len(dogs)} dog(s) for user {user_id}")
 
     return [
         Dog(
@@ -201,16 +203,19 @@ async def delete_dog_profile(
 ):
     """Delete a dog profile. Requires owner role."""
     user_id = current_user["user_id"]
+    logger.info(f"DELETE /dogs/{dog_id} for user {user_id}")
 
     # Check user is owner
     role = get_user_dog_role(user_id, dog_id)
     if role is None:
+        logger.warning(f"Dog {dog_id} not found or not accessible by user {user_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Dog not found or access denied"
         )
 
     if role != "owner":
+        logger.warning(f"User {user_id} has role '{role}' for dog {dog_id}, owner required")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only owners can delete dog profiles"
@@ -218,12 +223,13 @@ async def delete_dog_profile(
 
     deleted = delete_dog(dog_id, user_id=user_id)
     if not deleted:
+        logger.warning(f"Dog {dog_id} delete failed for user {user_id} (ownership mismatch)")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Dog not found"
         )
 
-    logger.info(f"User {user_id} deleted dog {dog_id}")
+    logger.info(f"Deleted dog {dog_id} for user {user_id}")
 
 
 @router.get("/{dog_id}/photos", response_model=list[DogPhoto])
