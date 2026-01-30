@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
@@ -24,6 +25,25 @@ router = APIRouter(tags=["WebSocket"])
 # Track active WebRTC sessions
 # session_id -> {"app_ws": WebSocket, "device_id": str, "user_id": str}
 webrtc_sessions: dict[str, dict] = {}
+
+# Stale command threshold in milliseconds
+STALE_COMMAND_THRESHOLD_MS = 2000
+
+
+def is_stale_command(message: dict) -> tuple[bool, int]:
+    """
+    Check if a command is stale based on its timestamp.
+    Returns (is_stale, age_ms).
+    Commands without timestamps are not considered stale.
+    """
+    ts = message.get("timestamp")
+    if ts is None:
+        return False, 0
+
+    now_ms = int(time.time() * 1000)
+    age_ms = now_ms - ts
+
+    return age_ms > STALE_COMMAND_THRESHOLD_MS, age_ms
 
 
 # ============== WebRTC Signaling Handlers ==============
@@ -615,6 +635,17 @@ async def websocket_app_endpoint(
             if "command" in message:
                 cmd_type = message.get("command")
 
+                # Check for stale commands (older than 2 seconds)
+                stale, age_ms = is_stale_command(message)
+                if stale:
+                    logger.warning(f"[STALE] Dropping stale command from App({user_id}): {cmd_type} (age={age_ms}ms)")
+                    await websocket.send_json({
+                        "type": "error",
+                        "code": "STALE_COMMAND",
+                        "message": f"Command too old ({age_ms}ms), dropped"
+                    })
+                    continue
+
                 # Get target device - check "device_id" first, then "target_device"
                 target_device = message.get("device_id") or message.get("target_device")
                 # Remove routing fields before forwarding to robot
@@ -992,6 +1023,17 @@ async def websocket_generic_endpoint(
                 # Forward commands to robot
                 if "command" in message:
                     cmd_type = message.get("command")
+
+                    # Check for stale commands (older than 2 seconds)
+                    stale, age_ms = is_stale_command(message)
+                    if stale:
+                        logger.warning(f"[STALE] Dropping stale command from App({identifier}): {cmd_type} (age={age_ms}ms)")
+                        await websocket.send_json({
+                            "type": "error",
+                            "code": "STALE_COMMAND",
+                            "message": f"Command too old ({age_ms}ms), dropped"
+                        })
+                        continue
 
                     # Get target device - check "device_id" first, then "target_device"
                     target_device = message.get("device_id") or message.get("target_device")
