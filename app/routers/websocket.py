@@ -83,9 +83,11 @@ async def handle_webrtc_request(
         webrtc_sessions.pop(old_sid, None)
         logger.info(f"[WEBRTC] Removed stale routing entry {old_sid} for device {device_id}")
 
-    # Generate TURN credentials
+    # Generate TURN credentials with 24-hour TTL
+    settings = get_settings()
     try:
-        ice_servers = await turn_service.generate_credentials(ttl=3600)
+        ice_servers = await turn_service.generate_credentials(ttl=settings.turn_credential_ttl)
+        logger.info(f"[TURN] Generated credentials for WebRTC session {session_id}, TTL={settings.turn_credential_ttl}s")
     except Exception as e:
         logger.error(f"TURN credential generation failed: {e}")
         # Roll back session tracking on failure
@@ -315,15 +317,21 @@ async def websocket_device_endpoint(
     await manager.connect_robot(websocket, device_id, owner_id)
     update_device_online_status(device_id, True)
 
-    # Broadcast robot_status to owner's apps
+    # Broadcast robot_connected event to owner's apps
     owner_id = manager.get_device_owner(device_id)
     if owner_id:
+        await manager.send_to_user_apps(owner_id, {
+            "type": "event",
+            "event": "robot_connected",
+            "device_id": device_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
         await manager.send_to_user_apps(owner_id, {
             "type": "robot_status",
             "device_id": device_id,
             "online": True
         })
-        logger.info(f"Broadcast robot_status online=true for {device_id} to user {owner_id}")
+        logger.info(f"Broadcast robot_connected and robot_status online=true for {device_id} to user {owner_id}")
 
     try:
         while True:
@@ -384,9 +392,20 @@ async def websocket_device_endpoint(
                 if "device_id" not in message:
                     message["device_id"] = device_id
 
+                event_name = message.get("event")
                 owner_id = manager.get_device_owner(device_id)
+
+                # Enhanced logging for mission events
+                if event_name == "mission_progress":
+                    data = message.get("data", {})
+                    logger.info(f"[MISSION] Progress event from {device_id}: status={data.get('status')} "
+                                f"stage={data.get('stage')}/{data.get('total_stages')} "
+                                f"mission_type={data.get('mission_type')}")
+                elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
+                    logger.info(f"[EVENT] {event_name} from {device_id}: {message.get('data', {})}")
+
                 await manager.forward_event_to_owner(device_id, message)
-                logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): event={message.get('event')}")
+                logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): event={event_name}")
                 continue
 
             # Handle metric_event from robot
@@ -441,14 +460,20 @@ async def websocket_device_endpoint(
         await manager.disconnect_robot(websocket)
         update_device_online_status(device_id, False)
 
-        # Broadcast robot_status offline to owner's apps
+        # Broadcast robot_disconnected event and robot_status offline to owner's apps
         if owner_id:
+            await manager.send_to_user_apps(owner_id, {
+                "type": "event",
+                "event": "robot_disconnected",
+                "device_id": device_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
             await manager.send_to_user_apps(owner_id, {
                 "type": "robot_status",
                 "device_id": device_id,
                 "online": False
             })
-            logger.info(f"Broadcast robot_status online=false for {device_id} to user {owner_id}")
+            logger.info(f"Broadcast robot_disconnected and robot_status online=false for {device_id} to user {owner_id}")
 
 
 @router.websocket("/ws/app")
@@ -875,9 +900,21 @@ async def websocket_generic_endpoint(
                         message["timestamp"] = datetime.now(timezone.utc).isoformat()
                     if "device_id" not in message:
                         message["device_id"] = identifier
+
+                    event_name = message.get("event")
                     owner_id = manager.get_device_owner(identifier)
+
+                    # Enhanced logging for mission events
+                    if event_name == "mission_progress":
+                        data = message.get("data", {})
+                        logger.info(f"[MISSION] Progress event from {identifier}: status={data.get('status')} "
+                                    f"stage={data.get('stage')}/{data.get('total_stages')} "
+                                    f"mission_type={data.get('mission_type')}")
+                    elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
+                        logger.info(f"[EVENT] {event_name} from {identifier}: {message.get('data', {})}")
+
                     await manager.forward_event_to_owner(identifier, message)
-                    logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): event={message.get('event')}")
+                    logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): event={event_name}")
                     continue
 
                 # Handle metric_event from robot

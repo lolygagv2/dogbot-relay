@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     cloudflare_turn_key_id: str = ""
     cloudflare_turn_api_token: str = ""
 
+    # TURN credential TTL (24 hours default for stability)
+    turn_credential_ttl: int = 86400  # 24 hours in seconds
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
