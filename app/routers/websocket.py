@@ -33,7 +33,23 @@ STALE_COMMAND_THRESHOLD_MS = 2000
 LARGE_MESSAGE_THRESHOLD = 5 * 1024 * 1024
 
 # Event types that should be logged for verification (P2: Build 34)
-TRACKED_EVENTS = {"mission_progress", "mode_changed", "dog_detected", "treat_dispensed"}
+# Extended in Build 34 Task 2 & 3 to include upload and mission completion events
+TRACKED_EVENTS = {
+    # Mission events
+    "mission_progress",
+    "mission_complete",
+    "mission_stopped",
+    # Mode/detection events
+    "mode_changed",
+    "dog_detected",
+    "treat_dispensed",
+    # Upload events (Robot -> App)
+    "upload_complete",
+    "upload_error",
+    "upload_result",
+    # Audio state
+    "audio_state",
+}
 
 
 def is_stale_command(message: dict) -> tuple[bool, int]:
@@ -409,6 +425,50 @@ async def websocket_device_endpoint(
                     logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): status_update")
                 else:
                     logger.warning(f"[ROUTE] Robot({device_id}) -> ???: status_update (no owner)")
+                continue
+
+            # Handle upload result events from robot (Build 34 Task 2)
+            if msg_type in ("upload_complete", "upload_error", "upload_result"):
+                if "device_id" not in message:
+                    message["device_id"] = device_id
+                if "timestamp" not in message:
+                    message["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+                owner_id = manager.get_device_owner(device_id)
+                filename = message.get("filename", "unknown")
+                success = message.get("success", False)
+                error = message.get("error")
+
+                if success:
+                    logger.info(f"[UPLOAD] Success from {device_id}: {filename}")
+                else:
+                    logger.warning(f"[UPLOAD] Failed from {device_id}: {filename} - {error}")
+
+                if owner_id:
+                    delivered = await manager.send_to_user_apps(owner_id, message)
+                    if delivered > 0:
+                        logger.info(f"[EVENT-OK] {msg_type} delivered to {delivered} app(s) for user {owner_id}")
+                    else:
+                        logger.warning(f"[EVENT-FAIL] {msg_type} NOT delivered - user {owner_id} has no connected apps")
+                else:
+                    logger.warning(f"[ROUTE] Robot({device_id}) -> ???: {msg_type} (no owner)")
+                continue
+
+            # Handle audio_state events from robot (Build 34 Task 3)
+            if msg_type == "audio_state":
+                if "device_id" not in message:
+                    message["device_id"] = device_id
+
+                owner_id = manager.get_device_owner(device_id)
+                state = message.get("state", "unknown")
+                logger.info(f"[AUDIO] State from {device_id}: {state}")
+
+                if owner_id:
+                    delivered = await manager.send_to_user_apps(owner_id, message)
+                    if delivered > 0:
+                        logger.info(f"[EVENT-OK] audio_state delivered to {delivered} app(s)")
+                    else:
+                        logger.warning(f"[EVENT-FAIL] audio_state NOT delivered - no apps connected")
                 continue
 
             # Forward events to owner's apps (legacy "event" field format)
@@ -968,6 +1028,48 @@ async def websocket_generic_endpoint(
                     if owner_id:
                         await manager.send_to_user_apps(owner_id, message)
                         logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): status_update")
+                    continue
+
+                # Handle upload result events from robot (Build 34 Task 2)
+                if msg_type in ("upload_complete", "upload_error", "upload_result"):
+                    if "device_id" not in message:
+                        message["device_id"] = identifier
+                    if "timestamp" not in message:
+                        message["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+                    owner_id = manager.get_device_owner(identifier)
+                    filename = message.get("filename", "unknown")
+                    success = message.get("success", False)
+                    error = message.get("error")
+
+                    if success:
+                        logger.info(f"[UPLOAD] Success from {identifier}: {filename}")
+                    else:
+                        logger.warning(f"[UPLOAD] Failed from {identifier}: {filename} - {error}")
+
+                    if owner_id:
+                        delivered = await manager.send_to_user_apps(owner_id, message)
+                        if delivered > 0:
+                            logger.info(f"[EVENT-OK] {msg_type} delivered to {delivered} app(s)")
+                        else:
+                            logger.warning(f"[EVENT-FAIL] {msg_type} NOT delivered - no apps connected")
+                    continue
+
+                # Handle audio_state events from robot (Build 34 Task 3)
+                if msg_type == "audio_state":
+                    if "device_id" not in message:
+                        message["device_id"] = identifier
+
+                    owner_id = manager.get_device_owner(identifier)
+                    state = message.get("state", "unknown")
+                    logger.info(f"[AUDIO] State from {identifier}: {state}")
+
+                    if owner_id:
+                        delivered = await manager.send_to_user_apps(owner_id, message)
+                        if delivered > 0:
+                            logger.info(f"[EVENT-OK] audio_state delivered to {delivered} app(s)")
+                        else:
+                            logger.warning(f"[EVENT-FAIL] audio_state NOT delivered")
                     continue
 
                 # Forward events to owner's apps (legacy "event" field format)

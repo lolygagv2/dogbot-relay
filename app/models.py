@@ -314,3 +314,55 @@ class MetricEventRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
+
+
+# ============== Schedule Models (Build 34) ==============
+
+class ScheduleType(str, Enum):
+    ONCE = "once"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
+class ScheduleCreate(BaseModel):
+    id: Optional[str] = None  # Client can provide, or server generates
+    mission_id: str
+    dog_id: str
+    name: Optional[str] = None
+    type: ScheduleType = ScheduleType.DAILY
+    hour: int = Field(9, ge=0, le=23)
+    minute: int = Field(0, ge=0, le=59)
+    weekdays: Optional[list[int]] = None  # 0=Sun, 1=Mon, etc.
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    mission_id: Optional[str] = None
+    dog_id: Optional[str] = None
+    name: Optional[str] = None
+    type: Optional[ScheduleType] = None
+    hour: Optional[int] = Field(None, ge=0, le=23)
+    minute: Optional[int] = Field(None, ge=0, le=59)
+    weekdays: Optional[list[int]] = None
+    enabled: Optional[bool] = None
+
+
+class Schedule(BaseModel):
+    id: str
+    user_id: str
+    dog_id: str
+    mission_id: str
+    name: Optional[str] = None
+    type: ScheduleType
+    hour: int
+    minute: int
+    weekdays: Optional[list[int]] = None
+    enabled: bool
+    next_run: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class ScheduleListResponse(BaseModel):
+    schedules: list[Schedule]
+    scheduling_enabled: bool

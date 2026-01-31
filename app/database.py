@@ -147,6 +147,37 @@ def init_db():
         )
     """)
 
+    # Mission schedules table (Build 34)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS mission_schedules (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            dog_id TEXT NOT NULL,
+            mission_id TEXT NOT NULL,
+            name TEXT,
+            type TEXT NOT NULL DEFAULT 'daily',
+            hour INTEGER NOT NULL DEFAULT 9,
+            minute INTEGER NOT NULL DEFAULT 0,
+            weekdays TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            next_run TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (dog_id) REFERENCES dogs(id)
+        )
+    """)
+
+    # Global scheduling enabled flag per user
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id TEXT PRIMARY KEY,
+            scheduling_enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -803,6 +834,191 @@ def get_metric_history(dog_id: str, user_id: str, days: int = 7) -> list[dict]:
         }
         for row in rows
     ]
+
+
+# ============== Mission Schedule Functions (Build 34) ==============
+
+def create_schedule(
+    schedule_id: str,
+    user_id: str,
+    dog_id: str,
+    mission_id: str,
+    schedule_type: str = "daily",
+    hour: int = 9,
+    minute: int = 0,
+    weekdays: list[int] = None,
+    name: str = None,
+    enabled: bool = True
+) -> dict:
+    """Create a new mission schedule."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now(timezone.utc).isoformat()
+    weekdays_str = ",".join(map(str, weekdays)) if weekdays else None
+
+    cursor.execute(
+        """INSERT INTO mission_schedules
+           (id, user_id, dog_id, mission_id, name, type, hour, minute, weekdays, enabled, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (schedule_id, user_id, dog_id, mission_id, name, schedule_type, hour, minute, weekdays_str, 1 if enabled else 0, now, now)
+    )
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[SCHEDULE] Created: {schedule_id} for user {user_id}, mission {mission_id}")
+    return get_schedule_by_id(schedule_id)
+
+
+def get_schedule_by_id(schedule_id: str) -> Optional[dict]:
+    """Get a schedule by ID."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM mission_schedules WHERE id = ?", (schedule_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return _row_to_schedule(row)
+    return None
+
+
+def get_user_schedules(user_id: str) -> list[dict]:
+    """Get all schedules for a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM mission_schedules WHERE user_id = ? ORDER BY hour, minute",
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [_row_to_schedule(row) for row in rows]
+
+
+def update_schedule(schedule_id: str, user_id: str, **fields) -> Optional[dict]:
+    """Update a schedule. Returns None if not found or not owned by user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Verify ownership
+    cursor.execute("SELECT id FROM mission_schedules WHERE id = ? AND user_id = ?", (schedule_id, user_id))
+    if not cursor.fetchone():
+        conn.close()
+        return None
+
+    # Handle weekdays conversion
+    if "weekdays" in fields and fields["weekdays"] is not None:
+        fields["weekdays"] = ",".join(map(str, fields["weekdays"]))
+
+    # Handle enabled conversion
+    if "enabled" in fields:
+        fields["enabled"] = 1 if fields["enabled"] else 0
+
+    # Rename 'type' field if present (reserved word)
+    if "type" in fields:
+        fields["type"] = fields.pop("type")
+
+    if not fields:
+        conn.close()
+        return get_schedule_by_id(schedule_id)
+
+    now = datetime.now(timezone.utc).isoformat()
+    fields["updated_at"] = now
+
+    set_clauses = ", ".join([f"{key} = ?" for key in fields.keys()])
+    values = list(fields.values()) + [schedule_id]
+
+    cursor.execute(f"UPDATE mission_schedules SET {set_clauses} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[SCHEDULE] Updated: {schedule_id}")
+    return get_schedule_by_id(schedule_id)
+
+
+def delete_schedule(schedule_id: str, user_id: str) -> bool:
+    """Delete a schedule. Returns False if not found or not owned by user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "DELETE FROM mission_schedules WHERE id = ? AND user_id = ?",
+        (schedule_id, user_id)
+    )
+    deleted = cursor.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    if deleted:
+        logger.info(f"[SCHEDULE] Deleted: {schedule_id}")
+    return deleted
+
+
+def _row_to_schedule(row) -> dict:
+    """Convert a database row to a schedule dict."""
+    weekdays = None
+    if row["weekdays"]:
+        weekdays = [int(d) for d in row["weekdays"].split(",")]
+
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "dog_id": row["dog_id"],
+        "mission_id": row["mission_id"],
+        "name": row["name"],
+        "type": row["type"],
+        "hour": row["hour"],
+        "minute": row["minute"],
+        "weekdays": weekdays,
+        "enabled": bool(row["enabled"]),
+        "next_run": row["next_run"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+# ============== User Settings Functions (Build 34) ==============
+
+def get_scheduling_enabled(user_id: str) -> bool:
+    """Check if scheduling is enabled for a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT scheduling_enabled FROM user_settings WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    # Default to enabled if no setting exists
+    return bool(row["scheduling_enabled"]) if row else True
+
+
+def set_scheduling_enabled(user_id: str, enabled: bool) -> bool:
+    """Enable or disable scheduling for a user."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    cursor.execute(
+        """INSERT INTO user_settings (user_id, scheduling_enabled, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+               scheduling_enabled = ?,
+               updated_at = ?""",
+        (user_id, 1 if enabled else 0, now, 1 if enabled else 0, now)
+    )
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[SCHEDULE] User {user_id} scheduling {'enabled' if enabled else 'disabled'}")
+    return True
 
 
 # Initialize database on module import
