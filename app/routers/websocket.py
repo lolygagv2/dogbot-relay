@@ -543,7 +543,7 @@ async def websocket_app_endpoint(
         "user_id": user_id
     })
 
-    # Send current status of user's paired devices
+    # Send current status of user's paired devices and notify robots that user is online
     user_devices = manager.get_user_devices(user_id)
     for device_id in user_devices:
         await websocket.send_json({
@@ -551,6 +551,13 @@ async def websocket_app_endpoint(
             "device_id": device_id,
             "online": manager.is_robot_online(device_id)
         })
+        # Notify robot that user has connected (if robot is online)
+        if manager.is_robot_online(device_id):
+            await manager.send_to_robot(device_id, {
+                "type": "user_connected",
+                "user_id": user_id
+            })
+            logger.info(f"Sent user_connected to robot {device_id} for user {user_id}")
 
     # Send today's metrics for each of the user's dogs
     try:
@@ -863,6 +870,22 @@ async def websocket_generic_endpoint(
                             "device_id": dev_id,
                         })
                 logger.info(f"[GRACE] User {identifier} reconnected, restored {len(restored_sessions)} session(s)")
+
+            # Send current status of user's paired devices and notify robots that user is online
+            user_devices = manager.get_user_devices(identifier)
+            for device_id in user_devices:
+                await websocket.send_json({
+                    "type": "robot_status",
+                    "device_id": device_id,
+                    "online": manager.is_robot_online(device_id)
+                })
+                # Notify robot that user has connected (if robot is online)
+                if manager.is_robot_online(device_id):
+                    await manager.send_to_robot(device_id, {
+                        "type": "user_connected",
+                        "user_id": identifier
+                    })
+                    logger.info(f"Sent user_connected to robot {device_id} for user {identifier}")
 
             # Send today's metrics for each of the user's dogs
             try:

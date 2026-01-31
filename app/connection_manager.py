@@ -192,6 +192,16 @@ class ConnectionManager:
                 })
                 logger.info(f"[GRACE] Closed WebRTC session {session_id} for device {device_id}")
 
+        # Notify all user's robots that the user has disconnected
+        # This allows robots to clear any user-specific state
+        user_devices = self.get_user_devices(user_id)
+        for device_id in user_devices:
+            await self.send_to_robot(device_id, {
+                "type": "user_disconnected",
+                "user_id": user_id
+            })
+            logger.info(f"[GRACE] Sent user_disconnected to robot {device_id}")
+
         # Remove timer reference
         self.grace_timers.pop(user_id, None)
         self.last_activity.pop(user_id, None)
