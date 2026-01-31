@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # WebSocket settings
     ws_heartbeat_interval: int = 30  # seconds
     ws_connection_timeout: int = 60  # seconds
+    ws_max_message_size: int = 20 * 1024 * 1024  # 20MB for MP3 uploads
+    ws_ping_interval: int = 30  # seconds between pings
+    ws_ping_timeout: int = 20  # seconds to wait for pong
 
     # Cloudflare TURN credentials
     cloudflare_turn_key_id: str = ""

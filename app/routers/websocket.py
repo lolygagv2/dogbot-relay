@@ -29,6 +29,12 @@ webrtc_sessions: dict[str, dict] = {}
 # Stale command threshold in milliseconds
 STALE_COMMAND_THRESHOLD_MS = 2000
 
+# Large message threshold for special handling (5MB)
+LARGE_MESSAGE_THRESHOLD = 5 * 1024 * 1024
+
+# Event types that should be logged for verification (P2: Build 34)
+TRACKED_EVENTS = {"mission_progress", "mode_changed", "dog_detected", "treat_dispensed"}
+
 
 def is_stale_command(message: dict) -> tuple[bool, int]:
     """
@@ -366,9 +372,12 @@ async def websocket_device_endpoint(
 
             msg_type = message.get("type")
 
-            # Log large payloads (audio, photos)
-            if len(data) > 10000:
-                logger.info(f"[LARGE] Robot({device_id}): {msg_type}, ~{len(data)//1000}KB")
+            # Log large payloads with connection health monitoring (P1: Build 34)
+            msg_size = len(data)
+            if msg_size > LARGE_MESSAGE_THRESHOLD:
+                logger.warning(f"[LARGE-MSG] Robot({device_id}): {msg_type}, {msg_size//1024//1024}MB - may affect connection stability")
+            elif msg_size > 10000:
+                logger.info(f"[LARGE] Robot({device_id}): {msg_type}, ~{msg_size//1000}KB")
 
             # Handle ping/pong
             if msg_type == "ping":
@@ -424,8 +433,15 @@ async def websocket_device_endpoint(
                 elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                     logger.info(f"[EVENT] {event_name} from {device_id}: {message.get('data', {})}")
 
-                await manager.forward_event_to_owner(device_id, message)
-                logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): event={event_name}")
+                # Forward event and verify delivery (P2: Build 34 - Event Forwarding Verification)
+                delivered_count = await manager.forward_event_to_owner(device_id, message)
+                if event_name in TRACKED_EVENTS:
+                    if delivered_count > 0:
+                        logger.info(f"[EVENT-OK] {event_name} delivered to {delivered_count} app(s) for user {owner_id}")
+                    else:
+                        logger.warning(f"[EVENT-FAIL] {event_name} NOT delivered - user {owner_id} has no connected apps")
+                else:
+                    logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): event={event_name}")
                 continue
 
             # Handle metric_event from robot
@@ -590,9 +606,12 @@ async def websocket_app_endpoint(
 
             msg_type = message.get("type")
 
-            # Log large payloads (audio, photos)
-            if len(data) > 10000:
-                logger.info(f"[LARGE] App({user_id}): {msg_type or message.get('command')}, ~{len(data)//1000}KB")
+            # Log large payloads with connection health monitoring (P1: Build 34)
+            msg_size = len(data)
+            if msg_size > LARGE_MESSAGE_THRESHOLD:
+                logger.warning(f"[LARGE-MSG] App({user_id}): {msg_type or message.get('command')}, {msg_size//1024//1024}MB - may affect connection stability")
+            elif msg_size > 10000:
+                logger.info(f"[LARGE] App({user_id}): {msg_type or message.get('command')}, ~{msg_size//1000}KB")
 
             # Handle ping/pong
             if msg_type == "ping":
@@ -917,9 +936,12 @@ async def websocket_generic_endpoint(
 
             msg_type = message.get("type")
 
-            # Log large payloads (audio, photos)
-            if len(data) > 10000:
-                logger.info(f"[LARGE] {connection_type}({identifier}): {msg_type or message.get('command')}, ~{len(data)//1000}KB")
+            # Log large payloads with connection health monitoring (P1: Build 34)
+            msg_size = len(data)
+            if msg_size > LARGE_MESSAGE_THRESHOLD:
+                logger.warning(f"[LARGE-MSG] {connection_type}({identifier}): {msg_type or message.get('command')}, {msg_size//1024//1024}MB - may affect connection stability")
+            elif msg_size > 10000:
+                logger.info(f"[LARGE] {connection_type}({identifier}): {msg_type or message.get('command')}, ~{msg_size//1000}KB")
 
             # Handle ping/pong
             if msg_type == "ping":
@@ -967,8 +989,15 @@ async def websocket_generic_endpoint(
                     elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                         logger.info(f"[EVENT] {event_name} from {identifier}: {message.get('data', {})}")
 
-                    await manager.forward_event_to_owner(identifier, message)
-                    logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): event={event_name}")
+                    # Forward event and verify delivery (P2: Build 34 - Event Forwarding Verification)
+                    delivered_count = await manager.forward_event_to_owner(identifier, message)
+                    if event_name in TRACKED_EVENTS:
+                        if delivered_count > 0:
+                            logger.info(f"[EVENT-OK] {event_name} delivered to {delivered_count} app(s) for user {owner_id}")
+                        else:
+                            logger.warning(f"[EVENT-FAIL] {event_name} NOT delivered - user {owner_id} has no connected apps")
+                    else:
+                        logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): event={event_name}")
                     continue
 
                 # Handle metric_event from robot
