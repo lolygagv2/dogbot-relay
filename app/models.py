@@ -316,7 +316,7 @@ class HealthResponse(BaseModel):
     status: str = "ok"
 
 
-# ============== Schedule Models (Build 34) ==============
+# ============== Schedule Models (Build 34 - Updated Build 35) ==============
 
 class ScheduleType(str, Enum):
     ONCE = "once"
@@ -324,39 +324,108 @@ class ScheduleType(str, Enum):
     WEEKLY = "weekly"
 
 
+# Day name to number mapping
+DAY_NAME_TO_NUM = {
+    "sunday": 0, "sun": 0,
+    "monday": 1, "mon": 1,
+    "tuesday": 2, "tue": 2,
+    "wednesday": 3, "wed": 3,
+    "thursday": 4, "thu": 4,
+    "friday": 5, "fri": 5,
+    "saturday": 6, "sat": 6,
+}
+
+
 class ScheduleCreate(BaseModel):
-    id: Optional[str] = None  # Client can provide, or server generates
-    mission_id: str
+    """Schedule creation - accepts both relay format and app format."""
+    # App format fields (primary)
+    schedule_id: Optional[str] = None
+    mission_name: Optional[str] = None
+    start_time: Optional[str] = None  # "HH:MM" format
+    end_time: Optional[str] = None    # "HH:MM" format
+    days_of_week: Optional[list[str]] = None  # ["monday", "tuesday"]
+    cooldown_hours: Optional[int] = None
+
+    # Relay format fields (fallback)
+    id: Optional[str] = None
+    mission_id: Optional[str] = None
+    hour: Optional[int] = Field(None, ge=0, le=23)
+    minute: Optional[int] = Field(None, ge=0, le=59)
+    weekdays: Optional[list[int]] = None  # [0, 1, 2] for Sun, Mon, Tue
+
+    # Common fields
     dog_id: str
     name: Optional[str] = None
     type: ScheduleType = ScheduleType.DAILY
-    hour: int = Field(9, ge=0, le=23)
-    minute: int = Field(0, ge=0, le=59)
-    weekdays: Optional[list[int]] = None  # 0=Sun, 1=Mon, etc.
     enabled: bool = True
+
+    def get_schedule_id(self) -> Optional[str]:
+        return self.schedule_id or self.id
+
+    def get_mission_id(self) -> str:
+        return self.mission_name or self.mission_id or ""
+
+    def get_hour(self) -> int:
+        if self.start_time:
+            try:
+                return int(self.start_time.split(":")[0])
+            except (ValueError, IndexError):
+                return 9
+        return self.hour or 9
+
+    def get_minute(self) -> int:
+        if self.start_time:
+            try:
+                return int(self.start_time.split(":")[1])
+            except (ValueError, IndexError):
+                return 0
+        return self.minute or 0
+
+    def get_weekdays(self) -> Optional[list[int]]:
+        if self.days_of_week:
+            return [DAY_NAME_TO_NUM.get(d.lower(), 0) for d in self.days_of_week if d.lower() in DAY_NAME_TO_NUM]
+        return self.weekdays
 
 
 class ScheduleUpdate(BaseModel):
+    """Schedule update - accepts both formats."""
+    # App format
+    mission_name: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    days_of_week: Optional[list[str]] = None
+    cooldown_hours: Optional[int] = None
+
+    # Relay format
     mission_id: Optional[str] = None
-    dog_id: Optional[str] = None
-    name: Optional[str] = None
-    type: Optional[ScheduleType] = None
     hour: Optional[int] = Field(None, ge=0, le=23)
     minute: Optional[int] = Field(None, ge=0, le=59)
     weekdays: Optional[list[int]] = None
+
+    # Common
+    dog_id: Optional[str] = None
+    name: Optional[str] = None
+    type: Optional[ScheduleType] = None
     enabled: Optional[bool] = None
 
 
 class Schedule(BaseModel):
+    """Schedule response - returns both formats for compatibility."""
     id: str
+    schedule_id: Optional[str] = None  # Alias for app compatibility
     user_id: str
     dog_id: str
     mission_id: str
+    mission_name: Optional[str] = None  # Alias for app compatibility
     name: Optional[str] = None
     type: ScheduleType
     hour: int
     minute: int
+    start_time: Optional[str] = None  # "HH:MM" for app compatibility
+    end_time: Optional[str] = None
     weekdays: Optional[list[int]] = None
+    days_of_week: Optional[list[str]] = None  # For app compatibility
+    cooldown_hours: Optional[int] = None
     enabled: bool
     next_run: Optional[str] = None
     created_at: str

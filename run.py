@@ -7,10 +7,10 @@ if __name__ == "__main__":
     # Enable reload only in debug/development mode
     reload = os.getenv("DEBUG", "false").lower() == "true"
 
-    # WebSocket connection stability settings (P1: Build 34)
-    # These help prevent disconnects during large file transfers (MP3 uploads)
+    # WebSocket connection stability settings (P1: Build 34, updated Build 35)
+    # Increased timeouts to handle app backgrounding/screen lock
     ws_ping_interval = int(os.getenv("WS_PING_INTERVAL", "30"))  # seconds
-    ws_ping_timeout = int(os.getenv("WS_PING_TIMEOUT", "20"))    # seconds
+    ws_ping_timeout = int(os.getenv("WS_PING_TIMEOUT", "60"))    # seconds (increased from 20)
 
     uvicorn.run(
         "app.main:app",

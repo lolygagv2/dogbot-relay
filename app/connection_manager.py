@@ -18,7 +18,7 @@ class ConnectionManager:
     Handles message routing between connected devices.
     """
 
-    GRACE_PERIOD_SECONDS = 300  # 5 minutes
+    GRACE_PERIOD_SECONDS = 600  # 10 minutes (increased from 5 for screen lock handling)
 
     def __init__(self):
         # device_id -> WebSocket connection for robots

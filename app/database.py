@@ -147,7 +147,7 @@ def init_db():
         )
     """)
 
-    # Mission schedules table (Build 34)
+    # Mission schedules table (Build 34, updated Build 35)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS mission_schedules (
             id TEXT PRIMARY KEY,
@@ -158,7 +158,10 @@ def init_db():
             type TEXT NOT NULL DEFAULT 'daily',
             hour INTEGER NOT NULL DEFAULT 9,
             minute INTEGER NOT NULL DEFAULT 0,
+            end_hour INTEGER,
+            end_minute INTEGER,
             weekdays TEXT,
+            cooldown_hours INTEGER,
             enabled INTEGER NOT NULL DEFAULT 1,
             next_run TEXT,
             created_at TEXT NOT NULL,
@@ -167,6 +170,15 @@ def init_db():
             FOREIGN KEY (dog_id) REFERENCES dogs(id)
         )
     """)
+
+    # Migration: add new columns if they don't exist
+    cursor.execute("PRAGMA table_info(mission_schedules)")
+    schedule_columns = [col[1] for col in cursor.fetchall()]
+    if "end_hour" not in schedule_columns:
+        cursor.execute("ALTER TABLE mission_schedules ADD COLUMN end_hour INTEGER")
+        cursor.execute("ALTER TABLE mission_schedules ADD COLUMN end_minute INTEGER")
+        cursor.execute("ALTER TABLE mission_schedules ADD COLUMN cooldown_hours INTEGER")
+        logger.info("[MIGRATION] Added end_hour, end_minute, cooldown_hours to mission_schedules")
 
     # Global scheduling enabled flag per user
     cursor.execute("""
@@ -846,7 +858,10 @@ def create_schedule(
     schedule_type: str = "daily",
     hour: int = 9,
     minute: int = 0,
+    end_hour: int = None,
+    end_minute: int = None,
     weekdays: list[int] = None,
+    cooldown_hours: int = None,
     name: str = None,
     enabled: bool = True
 ) -> dict:
@@ -859,9 +874,9 @@ def create_schedule(
 
     cursor.execute(
         """INSERT INTO mission_schedules
-           (id, user_id, dog_id, mission_id, name, type, hour, minute, weekdays, enabled, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (schedule_id, user_id, dog_id, mission_id, name, schedule_type, hour, minute, weekdays_str, 1 if enabled else 0, now, now)
+           (id, user_id, dog_id, mission_id, name, type, hour, minute, end_hour, end_minute, weekdays, cooldown_hours, enabled, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (schedule_id, user_id, dog_id, mission_id, name, schedule_type, hour, minute, end_hour, end_minute, weekdays_str, cooldown_hours, 1 if enabled else 0, now, now)
     )
 
     conn.commit()
@@ -960,22 +975,50 @@ def delete_schedule(schedule_id: str, user_id: str) -> bool:
     return deleted
 
 
+NUM_TO_DAY_NAME = {
+    0: "sunday", 1: "monday", 2: "tuesday", 3: "wednesday",
+    4: "thursday", 5: "friday", 6: "saturday"
+}
+
+
 def _row_to_schedule(row) -> dict:
-    """Convert a database row to a schedule dict."""
+    """Convert a database row to a schedule dict with both relay and app formats."""
     weekdays = None
+    days_of_week = None
     if row["weekdays"]:
         weekdays = [int(d) for d in row["weekdays"].split(",")]
+        days_of_week = [NUM_TO_DAY_NAME.get(d, "") for d in weekdays]
+
+    # Format times as "HH:MM" for app compatibility
+    start_time = f"{row['hour']:02d}:{row['minute']:02d}"
+    end_time = None
+    end_hour = row["end_hour"] if "end_hour" in row.keys() else None
+    end_minute = row["end_minute"] if "end_minute" in row.keys() else None
+    if end_hour is not None and end_minute is not None:
+        end_time = f"{end_hour:02d}:{end_minute:02d}"
+
+    cooldown_hours = row["cooldown_hours"] if "cooldown_hours" in row.keys() else None
 
     return {
+        # Both formats for ID
         "id": row["id"],
+        "schedule_id": row["id"],  # App compatibility
         "user_id": row["user_id"],
         "dog_id": row["dog_id"],
+        # Both formats for mission
         "mission_id": row["mission_id"],
+        "mission_name": row["mission_id"],  # App compatibility
         "name": row["name"],
         "type": row["type"],
+        # Both formats for time
         "hour": row["hour"],
         "minute": row["minute"],
+        "start_time": start_time,  # App compatibility
+        "end_time": end_time,  # App compatibility
+        # Both formats for weekdays
         "weekdays": weekdays,
+        "days_of_week": days_of_week,  # App compatibility
+        "cooldown_hours": cooldown_hours,  # App compatibility
         "enabled": bool(row["enabled"]),
         "next_run": row["next_run"],
         "created_at": row["created_at"],
