@@ -52,9 +52,10 @@ def parse_end_time(end_time: str) -> tuple[int, int]:
 @router.post("/missions/schedule", response_model=Schedule)
 async def create_mission_schedule(
     schedule_data: ScheduleCreate,
-    user_id: str = Depends(get_current_user)
+    user: dict = Depends(get_current_user)
 ):
     """Create a new mission schedule. Accepts both app and relay field formats."""
+    user_id = user.get("user_id")
     # Use helper methods to get values from either format
     schedule_id = schedule_data.get_schedule_id() or str(uuid.uuid4())
     mission_id = schedule_data.get_mission_id()
@@ -99,8 +100,9 @@ async def create_mission_schedule(
 
 @router.get("/schedules", response_model=ScheduleListResponse)
 @router.get("/missions/schedule", response_model=ScheduleListResponse)
-async def list_schedules(user_id: str = Depends(get_current_user)):
+async def list_schedules(user: dict = Depends(get_current_user)):
     """List all schedules for the current user."""
+    user_id = user.get("user_id")
     schedules = get_user_schedules(user_id)
     scheduling_enabled = get_scheduling_enabled(user_id)
 
@@ -114,9 +116,10 @@ async def list_schedules(user_id: str = Depends(get_current_user)):
 @router.get("/missions/schedule/{schedule_id}", response_model=Schedule)
 async def get_schedule(
     schedule_id: str,
-    user_id: str = Depends(get_current_user)
+    user: dict = Depends(get_current_user)
 ):
     """Get a specific schedule by ID."""
+    user_id = user.get("user_id")
     schedule = get_schedule_by_id(schedule_id)
 
     if not schedule:
@@ -139,9 +142,10 @@ async def get_schedule(
 async def update_mission_schedule(
     schedule_id: str,
     schedule_data: ScheduleUpdate,
-    user_id: str = Depends(get_current_user)
+    user: dict = Depends(get_current_user)
 ):
     """Update an existing schedule. Accepts both app and relay field formats."""
+    user_id = user.get("user_id")
     update_fields = {}
 
     # Handle mission_id from either format
@@ -208,9 +212,10 @@ async def update_mission_schedule(
 @router.delete("/missions/schedule/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_mission_schedule(
     schedule_id: str,
-    user_id: str = Depends(get_current_user)
+    user: dict = Depends(get_current_user)
 ):
     """Delete a schedule."""
+    user_id = user.get("user_id")
     deleted = delete_schedule(schedule_id, user_id)
 
     if not deleted:
@@ -225,8 +230,9 @@ async def delete_mission_schedule(
 
 @router.post("/schedules/enable", response_model=SuccessResponse)
 @router.post("/missions/schedule/enable", response_model=SuccessResponse)
-async def enable_scheduling(user_id: str = Depends(get_current_user)):
+async def enable_scheduling(user: dict = Depends(get_current_user)):
     """Enable global scheduling for the current user."""
+    user_id = user.get("user_id")
     set_scheduling_enabled(user_id, True)
     logger.info(f"[SCHEDULE] Enabled scheduling for user {user_id}")
     return SuccessResponse(success=True)
@@ -234,8 +240,9 @@ async def enable_scheduling(user_id: str = Depends(get_current_user)):
 
 @router.post("/schedules/disable", response_model=SuccessResponse)
 @router.post("/missions/schedule/disable", response_model=SuccessResponse)
-async def disable_scheduling(user_id: str = Depends(get_current_user)):
+async def disable_scheduling(user: dict = Depends(get_current_user)):
     """Disable global scheduling for the current user."""
+    user_id = user.get("user_id")
     set_scheduling_enabled(user_id, False)
     logger.info(f"[SCHEDULE] Disabled scheduling for user {user_id}")
     return SuccessResponse(success=True)

@@ -721,16 +721,23 @@ async def websocket_app_endpoint(
             if "command" in message:
                 cmd_type = message.get("command")
 
-                # Check for stale commands (older than 2 seconds)
-                stale, age_ms = is_stale_command(message)
-                if stale:
-                    logger.warning(f"[STALE] Dropping stale command from App({user_id}): {cmd_type} (age={age_ms}ms)")
-                    await websocket.send_json({
-                        "type": "error",
-                        "code": "STALE_COMMAND",
-                        "message": f"Command too old ({age_ms}ms), dropped"
-                    })
-                    continue
+                # Skip stale check for upload commands (large files take time to prepare)
+                is_upload_cmd = cmd_type in ("upload_song", "audio_upload", "upload_audio", "upload_file")
+                if is_upload_cmd:
+                    filename = message.get("filename", message.get("data", {}).get("filename", "unknown"))
+                    logger.info(f"[UPLOAD] Received {cmd_type} from App({user_id}): {filename}, size={msg_size//1024}KB")
+
+                # Check for stale commands (older than 2 seconds) - skip for uploads
+                if not is_upload_cmd:
+                    stale, age_ms = is_stale_command(message)
+                    if stale:
+                        logger.warning(f"[STALE] Dropping stale command from App({user_id}): {cmd_type} (age={age_ms}ms)")
+                        await websocket.send_json({
+                            "type": "error",
+                            "code": "STALE_COMMAND",
+                            "message": f"Command too old ({age_ms}ms), dropped"
+                        })
+                        continue
 
                 # Get target device - check "device_id" first, then "target_device"
                 target_device = message.get("device_id") or message.get("target_device")
@@ -1178,16 +1185,23 @@ async def websocket_generic_endpoint(
                 if "command" in message:
                     cmd_type = message.get("command")
 
-                    # Check for stale commands (older than 2 seconds)
-                    stale, age_ms = is_stale_command(message)
-                    if stale:
-                        logger.warning(f"[STALE] Dropping stale command from App({identifier}): {cmd_type} (age={age_ms}ms)")
-                        await websocket.send_json({
-                            "type": "error",
-                            "code": "STALE_COMMAND",
-                            "message": f"Command too old ({age_ms}ms), dropped"
-                        })
-                        continue
+                    # Skip stale check for upload commands (large files take time to prepare)
+                    is_upload_cmd = cmd_type in ("upload_song", "audio_upload", "upload_audio", "upload_file")
+                    if is_upload_cmd:
+                        filename = message.get("filename", message.get("data", {}).get("filename", "unknown"))
+                        logger.info(f"[UPLOAD] Received {cmd_type} from App({identifier}): {filename}, size={msg_size//1024}KB")
+
+                    # Check for stale commands (older than 2 seconds) - skip for uploads
+                    if not is_upload_cmd:
+                        stale, age_ms = is_stale_command(message)
+                        if stale:
+                            logger.warning(f"[STALE] Dropping stale command from App({identifier}): {cmd_type} (age={age_ms}ms)")
+                            await websocket.send_json({
+                                "type": "error",
+                                "code": "STALE_COMMAND",
+                                "message": f"Command too old ({age_ms}ms), dropped"
+                            })
+                            continue
 
                     # Get target device - check "device_id" first, then "target_device"
                     target_device = message.get("device_id") or message.get("target_device")
