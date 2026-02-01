@@ -1,16 +1,23 @@
 """
-Mission Schedule Router (Build 34, Updated Build 35)
+Mission Schedule Router (Build 34, Updated Build 35, DEPRECATED Build 38)
 
 REST endpoints for managing mission schedules.
 Supports both relay format and app format field names.
 
 App calls: /schedules (with schedule_id, mission_name, start_time, days_of_week)
 Relay also supports: /missions/schedule (with id, mission_id, hour, minute, weekdays)
+
+DEPRECATION NOTICE (Build 38):
+    Schedules now live on the ROBOT, not the relay.
+    These endpoints are deprecated and will be removed in a future build.
+    Apps should send schedule commands via WebSocket directly to the robot.
+    The relay will forward schedule_* commands to the robot.
 """
 import logging
 import uuid
+import warnings
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.auth import get_current_user
 from app.database import (
@@ -34,7 +41,15 @@ from app.models import (
 logger = logging.getLogger(__name__)
 
 # Main router at /schedules (what app calls)
-router = APIRouter(tags=["Schedules"])
+router = APIRouter(tags=["Schedules (Deprecated)"])
+
+
+def log_deprecation_warning(endpoint: str, user_id: str):
+    """Log a deprecation warning for schedule endpoints."""
+    logger.warning(
+        f"[DEPRECATED] Schedule endpoint '{endpoint}' called by user {user_id}. "
+        f"Schedules now live on the robot. Use WebSocket commands instead."
+    )
 
 
 def parse_end_time(end_time: str) -> tuple[int, int]:
@@ -54,8 +69,12 @@ async def create_mission_schedule(
     schedule_data: ScheduleCreate,
     user: dict = Depends(get_current_user)
 ):
-    """Create a new mission schedule. Accepts both app and relay field formats."""
+    """Create a new mission schedule. Accepts both app and relay field formats.
+
+    DEPRECATED: Schedules now live on the robot. Use WebSocket commands instead.
+    """
     user_id = user.get("user_id")
+    log_deprecation_warning("POST /schedules", user_id)
     # Use helper methods to get values from either format
     schedule_id = schedule_data.get_schedule_id() or str(uuid.uuid4())
     mission_id = schedule_data.get_mission_id()
@@ -101,8 +120,12 @@ async def create_mission_schedule(
 @router.get("/schedules", response_model=ScheduleListResponse)
 @router.get("/missions/schedule", response_model=ScheduleListResponse)
 async def list_schedules(user: dict = Depends(get_current_user)):
-    """List all schedules for the current user."""
+    """List all schedules for the current user.
+
+    DEPRECATED: Schedules now live on the robot. Use WebSocket commands instead.
+    """
     user_id = user.get("user_id")
+    log_deprecation_warning("GET /schedules", user_id)
     schedules = get_user_schedules(user_id)
     scheduling_enabled = get_scheduling_enabled(user_id)
 
@@ -118,8 +141,12 @@ async def get_schedule(
     schedule_id: str,
     user: dict = Depends(get_current_user)
 ):
-    """Get a specific schedule by ID."""
+    """Get a specific schedule by ID.
+
+    DEPRECATED: Schedules now live on the robot. Use WebSocket commands instead.
+    """
     user_id = user.get("user_id")
+    log_deprecation_warning(f"GET /schedules/{schedule_id}", user_id)
     schedule = get_schedule_by_id(schedule_id)
 
     if not schedule:
@@ -144,8 +171,12 @@ async def update_mission_schedule(
     schedule_data: ScheduleUpdate,
     user: dict = Depends(get_current_user)
 ):
-    """Update an existing schedule. Accepts both app and relay field formats."""
+    """Update an existing schedule. Accepts both app and relay field formats.
+
+    DEPRECATED: Schedules now live on the robot. Use WebSocket commands instead.
+    """
     user_id = user.get("user_id")
+    log_deprecation_warning(f"PUT /schedules/{schedule_id}", user_id)
     update_fields = {}
 
     # Handle mission_id from either format
@@ -214,8 +245,12 @@ async def delete_mission_schedule(
     schedule_id: str,
     user: dict = Depends(get_current_user)
 ):
-    """Delete a schedule."""
+    """Delete a schedule.
+
+    DEPRECATED: Schedules now live on the robot. Use WebSocket commands instead.
+    """
     user_id = user.get("user_id")
+    log_deprecation_warning(f"DELETE /schedules/{schedule_id}", user_id)
     deleted = delete_schedule(schedule_id, user_id)
 
     if not deleted:
@@ -231,8 +266,12 @@ async def delete_mission_schedule(
 @router.post("/schedules/enable", response_model=SuccessResponse)
 @router.post("/missions/schedule/enable", response_model=SuccessResponse)
 async def enable_scheduling(user: dict = Depends(get_current_user)):
-    """Enable global scheduling for the current user."""
+    """Enable global scheduling for the current user.
+
+    DEPRECATED: Schedules now live on the robot. Use WebSocket commands instead.
+    """
     user_id = user.get("user_id")
+    log_deprecation_warning("POST /schedules/enable", user_id)
     set_scheduling_enabled(user_id, True)
     logger.info(f"[SCHEDULE] Enabled scheduling for user {user_id}")
     return SuccessResponse(success=True)
@@ -241,8 +280,12 @@ async def enable_scheduling(user: dict = Depends(get_current_user)):
 @router.post("/schedules/disable", response_model=SuccessResponse)
 @router.post("/missions/schedule/disable", response_model=SuccessResponse)
 async def disable_scheduling(user: dict = Depends(get_current_user)):
-    """Disable global scheduling for the current user."""
+    """Disable global scheduling for the current user.
+
+    DEPRECATED: Schedules now live on the robot. Use WebSocket commands instead.
+    """
     user_id = user.get("user_id")
+    log_deprecation_warning("POST /schedules/disable", user_id)
     set_scheduling_enabled(user_id, False)
     logger.info(f"[SCHEDULE] Disabled scheduling for user {user_id}")
     return SuccessResponse(success=True)

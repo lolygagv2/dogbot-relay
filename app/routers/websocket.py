@@ -29,7 +29,11 @@ webrtc_sessions: dict[str, dict] = {}
 # Stale command threshold in milliseconds
 STALE_COMMAND_THRESHOLD_MS = 2000
 
-# Large message threshold for special handling (5MB)
+# Large message rejection threshold (1MB) - Build 38
+# Messages over this size should use HTTP upload instead
+MAX_WEBSOCKET_MESSAGE_SIZE = 1 * 1024 * 1024
+
+# Large message threshold for logging warnings (5MB)
 LARGE_MESSAGE_THRESHOLD = 5 * 1024 * 1024
 
 # Event types that should be logged for verification (P2: Build 34)
@@ -49,6 +53,11 @@ TRACKED_EVENTS = {
     "upload_result",
     # Audio state
     "audio_state",
+    # Schedule events (Robot -> App) - Build 38
+    "schedule_created",
+    "schedule_updated",
+    "schedule_deleted",
+    "schedule_triggered",
 }
 
 
@@ -668,6 +677,17 @@ async def websocket_app_endpoint(
 
             # Log large payloads with connection health monitoring (P1: Build 34)
             msg_size = len(data)
+
+            # Reject messages over 1MB - use HTTP upload instead (Build 38)
+            if msg_size > MAX_WEBSOCKET_MESSAGE_SIZE:
+                logger.warning(f"[REJECTED] Message too large from App({user_id}): {msg_size//1024}KB, type={msg_type or message.get('command')}")
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "MESSAGE_TOO_LARGE",
+                    "message": f"Message too large ({msg_size//1024}KB). Use HTTP upload for files over 1MB. See POST /api/music/upload"
+                })
+                continue
+
             if msg_size > LARGE_MESSAGE_THRESHOLD:
                 logger.warning(f"[LARGE-MSG] App({user_id}): {msg_type or message.get('command')}, {msg_size//1024//1024}MB - may affect connection stability")
             elif msg_size > 10000:
@@ -1005,6 +1025,17 @@ async def websocket_generic_endpoint(
 
             # Log large payloads with connection health monitoring (P1: Build 34)
             msg_size = len(data)
+
+            # Reject messages over 1MB from apps - use HTTP upload instead (Build 38)
+            if connection_type == "app" and msg_size > MAX_WEBSOCKET_MESSAGE_SIZE:
+                logger.warning(f"[REJECTED] Message too large from App({identifier}): {msg_size//1024}KB, type={msg_type or message.get('command')}")
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "MESSAGE_TOO_LARGE",
+                    "message": f"Message too large ({msg_size//1024}KB). Use HTTP upload for files over 1MB. See POST /api/music/upload"
+                })
+                continue
+
             if msg_size > LARGE_MESSAGE_THRESHOLD:
                 logger.warning(f"[LARGE-MSG] {connection_type}({identifier}): {msg_type or message.get('command')}, {msg_size//1024//1024}MB - may affect connection stability")
             elif msg_size > 10000:
