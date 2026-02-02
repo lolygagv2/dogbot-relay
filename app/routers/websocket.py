@@ -499,6 +499,13 @@ async def websocket_device_endpoint(
                     logger.info(f"[MISSION] Progress event from {device_id}: status={data.get('status')} "
                                 f"stage={data.get('stage')}/{data.get('total_stages')} "
                                 f"mission_type={data.get('mission_type')}")
+                    # Build 40: Warn if mission data is empty (diagnostic for debugging)
+                    if not data.get("status") and not data.get("action"):
+                        logger.warning(
+                            f"[MISSION] Empty progress data from {device_id} — "
+                            f"fields: status={data.get('status')}, action={data.get('action')}, "
+                            f"stage={data.get('stage_number')}/{data.get('total_stages')}"
+                        )
                 elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                     logger.info(f"[EVENT] {event_name} from {device_id}: {message.get('data', {})}")
 
@@ -1126,6 +1133,13 @@ async def websocket_generic_endpoint(
                         logger.info(f"[MISSION] Progress event from {identifier}: status={data.get('status')} "
                                     f"stage={data.get('stage')}/{data.get('total_stages')} "
                                     f"mission_type={data.get('mission_type')}")
+                        # Build 40: Warn if mission data is empty (diagnostic for debugging)
+                        if not data.get("status") and not data.get("action"):
+                            logger.warning(
+                                f"[MISSION] Empty progress data from {identifier} — "
+                                f"fields: status={data.get('status')}, action={data.get('action')}, "
+                                f"stage={data.get('stage_number')}/{data.get('total_stages')}"
+                            )
                     elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                         logger.info(f"[EVENT] {event_name} from {identifier}: {message.get('data', {})}")
 
