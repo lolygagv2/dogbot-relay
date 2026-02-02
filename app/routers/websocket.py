@@ -480,6 +480,28 @@ async def websocket_device_endpoint(
                         logger.warning(f"[EVENT-FAIL] audio_state NOT delivered - no apps connected")
                 continue
 
+            # Handle schedule events from robot (Build 41 - Schedule Event Verification)
+            if msg_type in ("schedule_created", "schedule_updated", "schedule_deleted"):
+                if "device_id" not in message:
+                    message["device_id"] = device_id
+                if "timestamp" not in message:
+                    message["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+                owner_id = manager.get_device_owner(device_id)
+                schedule_id = message.get("schedule_id", message.get("data", {}).get("schedule_id", "unknown"))
+
+                logger.info(f"[SCHEDULE] {msg_type} from {device_id}: schedule_id={schedule_id}")
+
+                if owner_id:
+                    delivered = await manager.send_to_user_apps(owner_id, message)
+                    if delivered > 0:
+                        logger.info(f"[SCHEDULE-OK] {msg_type} delivered to {delivered} app(s)")
+                    else:
+                        logger.warning(f"[SCHEDULE-FAIL] {msg_type} NOT delivered - no apps connected")
+                else:
+                    logger.warning(f"[SCHEDULE] {msg_type} from {device_id} - no owner found")
+                continue
+
             # Forward events to owner's apps (legacy "event" field format)
             if "event" in message:
                 # Add timestamp if not present
@@ -793,6 +815,10 @@ async def websocket_app_endpoint(
 
                 if success:
                     logger.info(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type}")
+                    # Build 41: Enhanced logging for mission commands
+                    if cmd_type == "start_mission":
+                        mission_type = message.get("mission_type", message.get("data", {}).get("mission_type", "unknown"))
+                        logger.info(f"[MISSION-CMD] start_mission sent to {target_device}: mission_type={mission_type}")
                 else:
                     # Check why it failed
                     if not manager.is_robot_online(target_device):
@@ -1117,6 +1143,28 @@ async def websocket_generic_endpoint(
                             logger.warning(f"[EVENT-FAIL] audio_state NOT delivered")
                     continue
 
+                # Handle schedule events from robot (Build 41 - Schedule Event Verification)
+                if msg_type in ("schedule_created", "schedule_updated", "schedule_deleted"):
+                    if "device_id" not in message:
+                        message["device_id"] = identifier
+                    if "timestamp" not in message:
+                        message["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+                    owner_id = manager.get_device_owner(identifier)
+                    schedule_id = message.get("schedule_id", message.get("data", {}).get("schedule_id", "unknown"))
+
+                    logger.info(f"[SCHEDULE] {msg_type} from {identifier}: schedule_id={schedule_id}")
+
+                    if owner_id:
+                        delivered = await manager.send_to_user_apps(owner_id, message)
+                        if delivered > 0:
+                            logger.info(f"[SCHEDULE-OK] {msg_type} delivered to {delivered} app(s)")
+                        else:
+                            logger.warning(f"[SCHEDULE-FAIL] {msg_type} NOT delivered - no apps connected")
+                    else:
+                        logger.warning(f"[SCHEDULE] {msg_type} from {identifier} - no owner found")
+                    continue
+
                 # Forward events to owner's apps (legacy "event" field format)
                 if "event" in message:
                     if "timestamp" not in message:
@@ -1263,6 +1311,10 @@ async def websocket_generic_endpoint(
                         success = await manager.forward_command_to_robot(identifier, target_device, message)
                         if success:
                             logger.info(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type}")
+                            # Build 41: Enhanced logging for mission commands
+                            if cmd_type == "start_mission":
+                                mission_type = message.get("mission_type", message.get("data", {}).get("mission_type", "unknown"))
+                                logger.info(f"[MISSION-CMD] start_mission sent to {target_device}: mission_type={mission_type}")
                         else:
                             logger.warning(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type} FAILED")
                     else:
