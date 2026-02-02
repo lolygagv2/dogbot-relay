@@ -28,8 +28,8 @@ router = APIRouter(prefix="/api/music", tags=["Music"])
 UPLOAD_DIR = Path("/tmp/wimz-uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# Max file size: 10MB
-MAX_FILE_SIZE = 10 * 1024 * 1024
+# Max file size: 20MB (Build 38 fix - increased from 10MB to match app limit)
+MAX_FILE_SIZE = 20 * 1024 * 1024
 
 # File expiry: 1 hour
 FILE_EXPIRY_SECONDS = 3600
@@ -70,7 +70,7 @@ async def upload_music(
     The file is staged on the relay server and the robot is notified
     to download it via HTTP GET.
 
-    - file: Audio file (MP3, WAV, M4A, AAC, OGG) max 10MB
+    - file: Audio file (MP3, WAV, M4A, AAC, OGG) max 20MB
     - dog_id: Which dog this audio is for
     - device_id: Which robot should receive the file
     """
