@@ -20,4 +20,6 @@ if __name__ == "__main__":
         log_level="info",
         ws_ping_interval=ws_ping_interval,
         ws_ping_timeout=ws_ping_timeout,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
     )

@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # TURN credential TTL (24 hours default for stability)
     turn_credential_ttl: int = 86400  # 24 hours in seconds
 
+    # Rate limiting (app-to-robot commands)
+    rate_limit_window_seconds: int = 60
+    rate_limit_max_commands: int = 30
+    rate_limit_diversity_window: int = 10  # seconds
+    rate_limit_diversity_threshold: int = 6  # distinct command types
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

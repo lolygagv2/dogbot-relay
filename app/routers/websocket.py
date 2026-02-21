@@ -61,6 +61,17 @@ TRACKED_EVENTS = {
 }
 
 
+def get_client_ip(websocket: WebSocket) -> str:
+    """Extract client IP from WebSocket, checking X-Forwarded-For for proxied connections."""
+    forwarded_for = websocket.headers.get("x-forwarded-for")
+    if forwarded_for:
+        # X-Forwarded-For can be comma-separated; first entry is the real client
+        return forwarded_for.split(",")[0].strip()
+    if websocket.client:
+        return websocket.client.host
+    return "unknown"
+
+
 def is_stale_command(message: dict) -> tuple[bool, int]:
     """
     Check if a command is stale based on its timestamp.
@@ -364,8 +375,11 @@ async def websocket_device_endpoint(
     else:
         logger.warning(f"Device {device_id} has no owner in database")
 
+    # Extract client IP
+    client_ip = get_client_ip(websocket)
+
     # Connect the robot
-    await manager.connect_robot(websocket, device_id, owner_id)
+    await manager.connect_robot(websocket, device_id, owner_id, ip=client_ip)
     update_device_online_status(device_id, True)
 
     # Broadcast robot_connected event to owner's apps
@@ -632,8 +646,11 @@ async def websocket_app_endpoint(
         await websocket.close(code=4001, reason="Invalid token payload")
         return
 
+    # Extract client IP
+    client_ip = get_client_ip(websocket)
+
     # Connect the app
-    await manager.connect_app(websocket, user_id)
+    await manager.connect_app(websocket, user_id, ip=client_ip)
 
     # Check for grace period reconnection
     restored_sessions = manager.cancel_grace_period(user_id)
@@ -671,7 +688,7 @@ async def websocket_app_endpoint(
                 "type": "user_connected",
                 "user_id": user_id
             })
-            logger.info(f"Sent user_connected to robot {device_id} for user {user_id}")
+            logger.info(f"[CONNECT] Sent user_connected to robot {device_id} for user {user_id} from {client_ip}")
 
     # Send today's metrics for each of the user's dogs
     try:
@@ -770,6 +787,16 @@ async def websocket_app_endpoint(
             if "command" in message:
                 cmd_type = message.get("command")
 
+                # Rate limit check (app-to-robot commands only)
+                rate_limit_reason = manager.check_rate_limit(user_id, cmd_type, ip=client_ip)
+                if rate_limit_reason:
+                    await websocket.send_json({
+                        "type": "error",
+                        "code": "RATE_LIMITED",
+                        "message": rate_limit_reason
+                    })
+                    continue
+
                 # Skip stale check for upload commands (large files take time to prepare)
                 is_upload_cmd = cmd_type in ("upload_song", "audio_upload", "upload_audio", "upload_file")
                 if is_upload_cmd:
@@ -811,7 +838,7 @@ async def websocket_app_endpoint(
                     continue
 
                 # Forward command to robot
-                success = await manager.forward_command_to_robot(user_id, target_device, message)
+                success = await manager.forward_command_to_robot(user_id, target_device, message, ip=client_ip)
 
                 if success:
                     logger.info(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type}")
@@ -887,6 +914,7 @@ async def websocket_generic_endpoint(
     authenticated = False
     connection_type = None
     identifier = None  # device_id for robot, user_id for app
+    client_ip = get_client_ip(websocket)
 
     try:
         # Wait for auth message
@@ -946,11 +974,13 @@ async def websocket_generic_endpoint(
             manager.connection_metadata[websocket] = {
                 "type": "robot",
                 "device_id": device_id,
-                "connected_at": datetime.now(timezone.utc)
+                "connected_at": datetime.now(timezone.utc),
+                "ip": client_ip,
             }
             if owner_id:
                 manager.device_owners[device_id] = owner_id
 
+            logger.info(f"Robot {device_id} connected from {client_ip} (generic endpoint)")
             update_device_online_status(device_id, True)
 
         else:
@@ -985,8 +1015,10 @@ async def websocket_generic_endpoint(
             manager.connection_metadata[websocket] = {
                 "type": "app",
                 "user_id": user_id,
-                "connected_at": datetime.now(timezone.utc)
+                "connected_at": datetime.now(timezone.utc),
+                "ip": client_ip,
             }
+            logger.info(f"App session connected for user {user_id} from {client_ip} (generic endpoint)")
 
         authenticated = True
         await websocket.send_json({
@@ -1024,7 +1056,7 @@ async def websocket_generic_endpoint(
                         "type": "user_connected",
                         "user_id": identifier
                     })
-                    logger.info(f"Sent user_connected to robot {device_id} for user {identifier}")
+                    logger.info(f"[CONNECT] Sent user_connected to robot {device_id} for user {identifier} from {client_ip}")
 
             # Send today's metrics for each of the user's dogs
             try:
@@ -1278,6 +1310,16 @@ async def websocket_generic_endpoint(
                 if "command" in message:
                     cmd_type = message.get("command")
 
+                    # Rate limit check (app-to-robot commands only)
+                    rate_limit_reason = manager.check_rate_limit(identifier, cmd_type, ip=client_ip)
+                    if rate_limit_reason:
+                        await websocket.send_json({
+                            "type": "error",
+                            "code": "RATE_LIMITED",
+                            "message": rate_limit_reason
+                        })
+                        continue
+
                     # Skip stale check for upload commands (large files take time to prepare)
                     is_upload_cmd = cmd_type in ("upload_song", "audio_upload", "upload_audio", "upload_file")
                     if is_upload_cmd:
@@ -1308,7 +1350,7 @@ async def websocket_generic_endpoint(
                             logger.info(f"[ROUTE] No device specified, defaulting to: {target_device}")
 
                     if target_device:
-                        success = await manager.forward_command_to_robot(identifier, target_device, message)
+                        success = await manager.forward_command_to_robot(identifier, target_device, message, ip=client_ip)
                         if success:
                             logger.info(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type}")
                             # Build 41: Enhanced logging for mission commands

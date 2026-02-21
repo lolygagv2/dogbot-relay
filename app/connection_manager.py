@@ -2,11 +2,13 @@ import asyncio
 import json
 import logging
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import WebSocket
 
+from app.config import get_settings
 from app.database import get_all_device_pairings
 
 logger = logging.getLogger(__name__)
@@ -45,11 +47,14 @@ class ConnectionManager:
         # user_id -> datetime of last activity
         self.last_activity: dict[str, datetime] = {}
 
+        # Rate limiting: user_id -> deque of (timestamp, cmd_type)
+        self.command_history: dict[str, deque] = {}
+
         logger.info(f"ConnectionManager initialized with {len(self.device_owners)} device pairings from DB")
         for device_id, user_id in self.device_owners.items():
             logger.info(f"  {device_id} -> {user_id}")
 
-    async def connect_robot(self, websocket: WebSocket, device_id: str, owner_id: Optional[str] = None):
+    async def connect_robot(self, websocket: WebSocket, device_id: str, owner_id: Optional[str] = None, ip: str = "unknown"):
         """Register a robot WebSocket connection."""
         await websocket.accept()
 
@@ -62,15 +67,16 @@ class ConnectionManager:
         self.connection_metadata[websocket] = {
             "type": "robot",
             "device_id": device_id,
-            "connected_at": datetime.now(timezone.utc)
+            "connected_at": datetime.now(timezone.utc),
+            "ip": ip,
         }
 
         if owner_id:
             self.device_owners[device_id] = owner_id
 
-        logger.info(f"Robot {device_id} connected")
+        logger.info(f"Robot {device_id} connected from {ip}")
 
-    async def connect_app(self, websocket: WebSocket, user_id: str):
+    async def connect_app(self, websocket: WebSocket, user_id: str, ip: str = "unknown"):
         """Register a mobile app WebSocket connection."""
         await websocket.accept()
 
@@ -81,12 +87,13 @@ class ConnectionManager:
         self.connection_metadata[websocket] = {
             "type": "app",
             "user_id": user_id,
-            "connected_at": datetime.now(timezone.utc)
+            "connected_at": datetime.now(timezone.utc),
+            "ip": ip,
         }
 
         # Debug: log device ownership state
         user_devices = self.get_user_devices(user_id)
-        logger.info(f"App session connected for user {user_id}")
+        logger.info(f"App session connected for user {user_id} from {ip}")
         logger.info(f"  -> device_owners: {self.device_owners}")
         logger.info(f"  -> user's devices: {user_devices}")
 
@@ -95,9 +102,10 @@ class ConnectionManager:
         metadata = self.connection_metadata.get(websocket)
         if metadata and metadata["type"] == "robot":
             device_id = metadata["device_id"]
+            ip = metadata.get("ip", "unknown")
             if device_id in self.robot_connections:
                 del self.robot_connections[device_id]
-            logger.info(f"Robot {device_id} disconnected")
+            logger.info(f"Robot {device_id} disconnected (was {ip})")
 
         if websocket in self.connection_metadata:
             del self.connection_metadata[websocket]
@@ -112,13 +120,14 @@ class ConnectionManager:
         metadata = self.connection_metadata.get(websocket)
         if metadata and metadata["type"] == "app":
             user_id = metadata["user_id"]
+            ip = metadata.get("ip", "unknown")
             if user_id in self.app_connections:
                 self.app_connections[user_id] = [
                     ws for ws in self.app_connections[user_id] if ws != websocket
                 ]
                 if not self.app_connections[user_id]:
                     del self.app_connections[user_id]
-            logger.info(f"App session disconnected for user {user_id}")
+            logger.info(f"App session disconnected for user {user_id} (was {ip})")
 
         if websocket in self.connection_metadata:
             del self.connection_metadata[websocket]
@@ -131,6 +140,57 @@ class ConnectionManager:
     def update_activity(self, user_id: str):
         """Update last activity timestamp for a user."""
         self.last_activity[user_id] = datetime.now(timezone.utc)
+
+    def check_rate_limit(self, user_id: str, cmd_type: str, ip: str = "unknown") -> Optional[str]:
+        """
+        Check if a command should be rate-limited.
+        Returns an error reason string if blocked, or None if allowed.
+        Also logs a warning for suspicious command diversity (forensic only, does not block).
+        """
+        import time
+        settings = get_settings()
+        now = time.monotonic()
+
+        if user_id not in self.command_history:
+            self.command_history[user_id] = deque()
+
+        history = self.command_history[user_id]
+
+        # Prune entries older than the rate limit window
+        window_cutoff = now - settings.rate_limit_window_seconds
+        while history and history[0][0] < window_cutoff:
+            history.popleft()
+
+        # Check count-based rate limit
+        if len(history) >= settings.rate_limit_max_commands:
+            logger.warning(
+                f"[RATE-LIMIT] BLOCKED user={user_id} ip={ip} cmd={cmd_type} "
+                f"count={len(history)}/{settings.rate_limit_max_commands} "
+                f"window={settings.rate_limit_window_seconds}s"
+            )
+            return (
+                f"Rate limited: {len(history)} commands in {settings.rate_limit_window_seconds}s "
+                f"(max {settings.rate_limit_max_commands})"
+            )
+
+        # Record this command
+        history.append((now, cmd_type))
+
+        # Check command diversity (forensic warning only, does not block)
+        diversity_cutoff = now - settings.rate_limit_diversity_window
+        recent_types = set()
+        for ts, ct in history:
+            if ts >= diversity_cutoff:
+                recent_types.add(ct)
+
+        if len(recent_types) >= settings.rate_limit_diversity_threshold:
+            logger.warning(
+                f"[RATE-LIMIT] SUSPICIOUS DIVERSITY user={user_id} ip={ip} "
+                f"types={sorted(recent_types)} in {settings.rate_limit_diversity_window}s "
+                f"({len(recent_types)} distinct)"
+            )
+
+        return None
 
     def start_grace_period(self, user_id: str, webrtc_session_data: list[tuple[str, str]]):
         """
@@ -202,9 +262,10 @@ class ConnectionManager:
             })
             logger.info(f"[GRACE] Sent user_disconnected to robot {device_id}")
 
-        # Remove timer reference
+        # Remove timer reference and rate limit history
         self.grace_timers.pop(user_id, None)
         self.last_activity.pop(user_id, None)
+        self.command_history.pop(user_id, None)
 
         logger.info(f"[GRACE] Cleanup complete for user {user_id}")
 
@@ -254,14 +315,15 @@ class ConnectionManager:
         self,
         user_id: str,
         device_id: str,
-        command: dict
+        command: dict,
+        ip: str = "unknown",
     ) -> bool:
         """
         Forward a command from app to robot.
         Validates that the user owns the device.
         """
         cmd_type = command.get("command") or command.get("type") or "unknown"
-        logger.info(f"[ROUTE] App({user_id}) -> Robot({device_id}): {cmd_type}")
+        logger.info(f"[ROUTE] App({user_id})@{ip} -> Robot({device_id}): {cmd_type}")
 
         # Check if user owns this device
         owner = self.device_owners.get(device_id)
