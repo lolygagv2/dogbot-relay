@@ -846,6 +846,15 @@ async def websocket_app_endpoint(
                     if cmd_type == "start_mission":
                         mission_type = message.get("mission_type", message.get("data", {}).get("mission_type", "unknown"))
                         logger.info(f"[MISSION-CMD] start_mission sent to {target_device}: mission_type={mission_type}")
+                    # Build 43: Enhanced logging for set_mode commands (mode-switching diagnostics)
+                    if cmd_type == "set_mode":
+                        mode_data = message.get("data", {})
+                        logger.info(
+                            f"[SET_MODE] user={user_id} device={target_device} "
+                            f"mode={mode_data.get('mode')} source={mode_data.get('source')} "
+                            f"app_ts={mode_data.get('timestamp')} "
+                            f"relay_ts={datetime.now(timezone.utc).isoformat()} ip={client_ip}"
+                        )
                 else:
                     # Check why it failed
                     if not manager.is_robot_online(target_device):
@@ -1357,6 +1366,15 @@ async def websocket_generic_endpoint(
                             if cmd_type == "start_mission":
                                 mission_type = message.get("mission_type", message.get("data", {}).get("mission_type", "unknown"))
                                 logger.info(f"[MISSION-CMD] start_mission sent to {target_device}: mission_type={mission_type}")
+                            # Build 43: Enhanced logging for set_mode commands (mode-switching diagnostics)
+                            if cmd_type == "set_mode":
+                                mode_data = message.get("data", {})
+                                logger.info(
+                                    f"[SET_MODE] user={identifier} device={target_device} "
+                                    f"mode={mode_data.get('mode')} source={mode_data.get('source')} "
+                                    f"app_ts={mode_data.get('timestamp')} "
+                                    f"relay_ts={datetime.now(timezone.utc).isoformat()} ip={client_ip}"
+                                )
                         else:
                             logger.warning(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type} FAILED")
                     else:
