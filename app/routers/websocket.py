@@ -29,6 +29,9 @@ webrtc_sessions: dict[str, dict] = {}
 # Stale command threshold in milliseconds
 STALE_COMMAND_THRESHOLD_MS = 2000
 
+# High-frequency drive commands — minimal logging, skip rate limiting
+DRIVE_COMMANDS = {"motor", "servo", "pan_tilt"}
+
 # Large message rejection threshold (1MB) - Build 38
 # Messages over this size should use HTTP upload instead
 MAX_WEBSOCKET_MESSAGE_SIZE = 1 * 1024 * 1024
@@ -786,16 +789,18 @@ async def websocket_app_endpoint(
             # Handle commands to robots
             if "command" in message:
                 cmd_type = message.get("command")
+                is_drive_cmd = cmd_type in DRIVE_COMMANDS
 
-                # Rate limit check (app-to-robot commands only)
-                rate_limit_reason = manager.check_rate_limit(user_id, cmd_type, ip=client_ip)
-                if rate_limit_reason:
-                    await websocket.send_json({
-                        "type": "error",
-                        "code": "RATE_LIMITED",
-                        "message": rate_limit_reason
-                    })
-                    continue
+                # Rate limit check — skip for drive commands (stale check handles flooding)
+                if not is_drive_cmd:
+                    rate_limit_reason = manager.check_rate_limit(user_id, cmd_type, ip=client_ip)
+                    if rate_limit_reason:
+                        await websocket.send_json({
+                            "type": "error",
+                            "code": "RATE_LIMITED",
+                            "message": rate_limit_reason
+                        })
+                        continue
 
                 # Skip stale check for upload commands (large files take time to prepare)
                 is_upload_cmd = cmd_type in ("upload_song", "audio_upload", "upload_audio", "upload_file")
@@ -807,7 +812,8 @@ async def websocket_app_endpoint(
                 if not is_upload_cmd:
                     stale, age_ms = is_stale_command(message)
                     if stale:
-                        logger.warning(f"[STALE] Dropping stale command from App({user_id}): {cmd_type} (age={age_ms}ms)")
+                        if not is_drive_cmd:
+                            logger.warning(f"[STALE] Dropping stale command from App({user_id}): {cmd_type} (age={age_ms}ms)")
                         await websocket.send_json({
                             "type": "error",
                             "code": "STALE_COMMAND",
@@ -826,7 +832,8 @@ async def websocket_app_endpoint(
                     user_devices = manager.get_user_devices(user_id)
                     if user_devices:
                         target_device = user_devices[0]
-                        logger.info(f"[ROUTE] No device specified, defaulting to: {target_device}")
+                        if not is_drive_cmd:
+                            logger.info(f"[ROUTE] No device specified, defaulting to: {target_device}")
 
                 if not target_device:
                     await websocket.send_json({
@@ -841,7 +848,10 @@ async def websocket_app_endpoint(
                 success = await manager.forward_command_to_robot(user_id, target_device, message, ip=client_ip)
 
                 if success:
-                    logger.info(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type}")
+                    if is_drive_cmd:
+                        logger.debug(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type}")
+                    else:
+                        logger.info(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type}")
                     # Build 41: Enhanced logging for mission commands
                     if cmd_type == "start_mission":
                         mission_type = message.get("mission_type", message.get("data", {}).get("mission_type", "unknown"))
@@ -1318,16 +1328,18 @@ async def websocket_generic_endpoint(
                 # Forward commands to robot
                 if "command" in message:
                     cmd_type = message.get("command")
+                    is_drive_cmd = cmd_type in DRIVE_COMMANDS
 
-                    # Rate limit check (app-to-robot commands only)
-                    rate_limit_reason = manager.check_rate_limit(identifier, cmd_type, ip=client_ip)
-                    if rate_limit_reason:
-                        await websocket.send_json({
-                            "type": "error",
-                            "code": "RATE_LIMITED",
-                            "message": rate_limit_reason
-                        })
-                        continue
+                    # Rate limit check — skip for drive commands (stale check handles flooding)
+                    if not is_drive_cmd:
+                        rate_limit_reason = manager.check_rate_limit(identifier, cmd_type, ip=client_ip)
+                        if rate_limit_reason:
+                            await websocket.send_json({
+                                "type": "error",
+                                "code": "RATE_LIMITED",
+                                "message": rate_limit_reason
+                            })
+                            continue
 
                     # Skip stale check for upload commands (large files take time to prepare)
                     is_upload_cmd = cmd_type in ("upload_song", "audio_upload", "upload_audio", "upload_file")
@@ -1339,7 +1351,8 @@ async def websocket_generic_endpoint(
                     if not is_upload_cmd:
                         stale, age_ms = is_stale_command(message)
                         if stale:
-                            logger.warning(f"[STALE] Dropping stale command from App({identifier}): {cmd_type} (age={age_ms}ms)")
+                            if not is_drive_cmd:
+                                logger.warning(f"[STALE] Dropping stale command from App({identifier}): {cmd_type} (age={age_ms}ms)")
                             await websocket.send_json({
                                 "type": "error",
                                 "code": "STALE_COMMAND",
@@ -1356,12 +1369,16 @@ async def websocket_generic_endpoint(
                         user_devices = manager.get_user_devices(identifier)
                         if user_devices:
                             target_device = user_devices[0]
-                            logger.info(f"[ROUTE] No device specified, defaulting to: {target_device}")
+                            if not is_drive_cmd:
+                                logger.info(f"[ROUTE] No device specified, defaulting to: {target_device}")
 
                     if target_device:
                         success = await manager.forward_command_to_robot(identifier, target_device, message, ip=client_ip)
                         if success:
-                            logger.info(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type}")
+                            if is_drive_cmd:
+                                logger.debug(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type}")
+                            else:
+                                logger.info(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type}")
                             # Build 41: Enhanced logging for mission commands
                             if cmd_type == "start_mission":
                                 mission_type = message.get("mission_type", message.get("data", {}).get("mission_type", "unknown"))

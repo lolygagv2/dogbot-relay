@@ -1,6 +1,7 @@
 import logging
+import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
@@ -68,6 +69,28 @@ async def debug_pairing():
         "robot_connections": list(manager.robot_connections.keys()),
         "app_connections": {user_id: len(sessions) for user_id, sessions in manager.app_connections.items()}
     }
+
+
+@app.get("/debug/latency", tags=["Debug"])
+async def debug_latency(client_ts: int = Query(None, description="Client timestamp in ms (epoch)")):
+    """
+    Latency measurement endpoint. Returns server timestamp for RTT calculation.
+
+    Usage from robot or app:
+      1. Record local timestamp (ms)
+      2. GET /debug/latency?client_ts=<your_ms_timestamp>
+      3. RTT = local_now - client_ts
+      4. One-way estimate = (local_now - client_ts) / 2
+      5. Clock skew = server_ts - client_ts - (RTT / 2)
+    """
+    server_ts = int(time.time() * 1000)
+    response = {"server_ts": server_ts}
+
+    if client_ts is not None:
+        response["client_ts"] = client_ts
+        response["clock_delta_ms"] = server_ts - client_ts
+
+    return response
 
 
 @app.on_event("startup")

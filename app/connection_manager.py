@@ -269,6 +269,9 @@ class ConnectionManager:
 
         logger.info(f"[GRACE] Cleanup complete for user {user_id}")
 
+    # High-frequency drive commands — use DEBUG logging to reduce I/O
+    DRIVE_COMMANDS = {"motor", "servo", "pan_tilt"}
+
     async def send_to_robot(self, device_id: str, message: dict) -> bool:
         """Send a message to a specific robot."""
         websocket = self.robot_connections.get(device_id)
@@ -276,7 +279,10 @@ class ConnectionManager:
             try:
                 await websocket.send_json(message)
                 msg_type = message.get("type") or message.get("command") or "unknown"
-                logger.info(f"[SEND->ROBOT] {device_id}: {msg_type}")
+                if msg_type in self.DRIVE_COMMANDS:
+                    logger.debug(f"[SEND->ROBOT] {device_id}: {msg_type}")
+                else:
+                    logger.info(f"[SEND->ROBOT] {device_id}: {msg_type}")
                 return True
             except Exception as e:
                 logger.error(f"Failed to send to robot {device_id}: {e}")
@@ -323,7 +329,10 @@ class ConnectionManager:
         Validates that the user owns the device.
         """
         cmd_type = command.get("command") or command.get("type") or "unknown"
-        logger.info(f"[ROUTE] App({user_id})@{ip} -> Robot({device_id}): {cmd_type}")
+        if cmd_type in self.DRIVE_COMMANDS:
+            logger.debug(f"[ROUTE] App({user_id})@{ip} -> Robot({device_id}): {cmd_type}")
+        else:
+            logger.info(f"[ROUTE] App({user_id})@{ip} -> Robot({device_id}): {cmd_type}")
 
         # Check if user owns this device
         owner = self.device_owners.get(device_id)
