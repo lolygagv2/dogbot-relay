@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.auth import get_current_user
+from app.connection_manager import get_connection_manager
 from app.database import (
     add_user_dog,
     check_duplicate_dog_name,
@@ -26,6 +27,20 @@ from app.models import Dog, DogCreate, DogPhoto, DogPhotoCreate, DogRole, DogUpd
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/dogs", tags=["Dogs"])
+
+
+async def _notify_robots_reload_dogs(user_id: str):
+    """Send reload_dogs command to all robots owned by this user."""
+    manager = get_connection_manager()
+    devices = manager.get_user_devices(user_id)
+    for device_id in devices:
+        sent = await manager.send_to_robot(device_id, {
+            "command": "reload_dogs",
+        })
+        if sent:
+            logger.info(f"[DOG-SYNC] Sent reload_dogs to device {device_id} for user {user_id}")
+        else:
+            logger.warning(f"[DOG-SYNC] reload_dogs not delivered to {device_id} (offline)")
 
 
 def _parse_datetime(dt_str: str) -> datetime:
@@ -91,6 +106,9 @@ async def create_dog_profile(
     add_user_dog(user_id, dog_id, "owner")
 
     logger.info(f"User {user_id} created dog {dog_id}: {dog_data.name}")
+
+    # Notify robots to reload dog profiles (ArUco whitelist update)
+    await _notify_robots_reload_dogs(user_id)
 
     return Dog(
         id=dog["id"],
@@ -184,6 +202,9 @@ async def update_dog_profile(
 
     logger.info(f"User {user_id} updated dog {dog_id}")
 
+    # Notify robots to reload dog profiles (ArUco whitelist update)
+    await _notify_robots_reload_dogs(user_id)
+
     return Dog(
         id=dog["id"],
         name=dog["name"],
@@ -230,6 +251,9 @@ async def delete_dog_profile(
         )
 
     logger.info(f"Deleted dog {dog_id} for user {user_id}")
+
+    # Notify robots to reload dog profiles (ArUco whitelist update)
+    await _notify_robots_reload_dogs(user_id)
 
 
 @router.get("/{dog_id}/photos", response_model=list[DogPhoto])

@@ -907,6 +907,9 @@ async def websocket_app_endpoint(
                             f"app_ts={mode_data.get('timestamp')} "
                             f"relay_ts={datetime.now(timezone.utc).isoformat()} ip={client_ip}"
                         )
+                    # Build 48: treat_counter_set routing verification
+                    if cmd_type == "treat_counter_set":
+                        logger.info(f"RELAY: Routing treat_counter_set to device {target_device}")
                 else:
                     # Check why it failed
                     if not manager.is_robot_online(target_device):
@@ -1464,6 +1467,9 @@ async def websocket_generic_endpoint(
                                     f"app_ts={mode_data.get('timestamp')} "
                                     f"relay_ts={datetime.now(timezone.utc).isoformat()} ip={client_ip}"
                                 )
+                            # Build 48: treat_counter_set routing verification
+                            if cmd_type == "treat_counter_set":
+                                logger.info(f"RELAY: Routing treat_counter_set to device {target_device}")
                         else:
                             logger.warning(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type} FAILED")
                     else:
