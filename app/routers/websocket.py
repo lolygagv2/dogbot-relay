@@ -446,6 +446,10 @@ async def websocket_device_endpoint(
                     message["device_id"] = device_id
 
                 owner_id = manager.get_device_owner(device_id)
+                # Log mode field for passthrough verification
+                status_mode = message.get("mode") or message.get("data", {}).get("mode")
+                if status_mode:
+                    logger.info(f"[STATUS] Robot({device_id}): mode={status_mode} battery={message.get('battery', message.get('data', {}).get('battery', '?'))}")
                 if owner_id:
                     await manager.send_to_user_apps(owner_id, message)
                     logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): status_update")
@@ -1147,6 +1151,10 @@ async def websocket_generic_endpoint(
                     if "device_id" not in message:
                         message["device_id"] = identifier
                     owner_id = manager.get_device_owner(identifier)
+                    # Log mode field for passthrough verification
+                    status_mode = message.get("mode") or message.get("data", {}).get("mode")
+                    if status_mode:
+                        logger.info(f"[STATUS] Robot({identifier}): mode={status_mode} battery={message.get('battery', message.get('data', {}).get('battery', '?'))}")
                     if owner_id:
                         await manager.send_to_user_apps(owner_id, message)
                         logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): status_update")
