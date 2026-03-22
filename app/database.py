@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 from datetime import datetime, date, timedelta, timezone
@@ -188,6 +189,27 @@ def init_db():
             updated_at TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
+    """)
+
+    # Device event storage (for offline app retrieval)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS device_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            owner_user_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_device_events_device_ts
+        ON device_events(device_id, timestamp DESC)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_device_events_type
+        ON device_events(device_id, event_type, timestamp DESC)
     """)
 
     conn.commit()
@@ -1062,6 +1084,203 @@ def set_scheduling_enabled(user_id: str, enabled: bool) -> bool:
 
     logger.info(f"[SCHEDULE] User {user_id} scheduling {'enabled' if enabled else 'disabled'}")
     return True
+
+
+# ============== Device Event Storage ==============
+
+STORABLE_EVENT_TYPES = {
+    "mission_progress", "mission_complete", "mission_stopped",
+    "mode_changed", "dog_detected", "treat_dispensed", "bark_detected",
+    "upload_complete", "upload_error", "upload_result",
+    "audio_state",
+    "schedule_created", "schedule_updated", "schedule_deleted", "schedule_triggered",
+    "error",
+}
+
+
+def store_event(device_id: str, owner_user_id: str, event_type: str, message: dict) -> Optional[int]:
+    """Store a robot event for offline retrieval. Returns row id or None if not storable."""
+    if event_type not in STORABLE_EVENT_TYPES:
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now(timezone.utc).isoformat()
+    timestamp = message.get("timestamp", now)
+    message_json = json.dumps(message)
+
+    cursor.execute(
+        """INSERT INTO device_events (device_id, owner_user_id, event_type, message, timestamp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (device_id, owner_user_id, event_type, message_json, timestamp, now)
+    )
+
+    row_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    logger.debug(f"[EVENT-STORE] Stored {event_type} for device {device_id} (id={row_id})")
+    return row_id
+
+
+def get_device_events(
+    device_id: str,
+    owner_user_id: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    event_type: Optional[str] = None,
+    dog_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Retrieve stored events with pagination and optional filters."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    conditions = ["device_id = ?", "owner_user_id = ?"]
+    params: list = [device_id, owner_user_id]
+
+    if start:
+        conditions.append("timestamp >= ?")
+        params.append(start)
+    if end:
+        conditions.append("timestamp <= ?")
+        params.append(end)
+    if event_type:
+        conditions.append("event_type = ?")
+        params.append(event_type)
+    if dog_id:
+        # dog_id may be at top level or inside data object
+        conditions.append(
+            "(json_extract(message, '$.dog_id') = ? OR json_extract(message, '$.data.dog_id') = ?)"
+        )
+        params.extend([dog_id, dog_id])
+
+    where_clause = " AND ".join(conditions)
+
+    cursor.execute(f"SELECT COUNT(*) FROM device_events WHERE {where_clause}", params)
+    total = cursor.fetchone()[0]
+
+    cursor.execute(
+        f"""SELECT id, device_id, event_type, message, timestamp
+            FROM device_events
+            WHERE {where_clause}
+            ORDER BY timestamp DESC
+            LIMIT ? OFFSET ?""",
+        params + [limit, offset]
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    events = []
+    for row in rows:
+        try:
+            msg = json.loads(row["message"])
+        except (json.JSONDecodeError, TypeError):
+            msg = {}
+        events.append({
+            "id": row["id"],
+            "device_id": row["device_id"],
+            "event_type": row["event_type"],
+            "message": msg,
+            "timestamp": row["timestamp"],
+        })
+
+    return {
+        "events": events,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def get_device_event_summary(device_id: str, owner_user_id: str, days: int = 7) -> dict:
+    """Aggregate event counts over a period for the dashboard summary."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    # Daily breakdown by event type
+    cursor.execute(
+        """SELECT date(timestamp) as day, event_type, COUNT(*) as cnt
+           FROM device_events
+           WHERE device_id = ? AND owner_user_id = ? AND timestamp >= ?
+           GROUP BY day, event_type
+           ORDER BY day""",
+        (device_id, owner_user_id, cutoff)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    # Accumulate per-day and totals
+    daily: dict[str, dict] = {}
+    total_treats = 0
+    total_tricks = 0
+    total_barks = 0
+    total_events = 0
+
+    for row in rows:
+        day = row["day"]
+        etype = row["event_type"]
+        cnt = row["cnt"]
+        total_events += cnt
+
+        if day not in daily:
+            daily[day] = {"treats": 0, "tricks": 0, "barks": 0, "detections": 0, "events": 0}
+
+        daily[day]["events"] += cnt
+
+        if etype == "treat_dispensed":
+            daily[day]["treats"] += cnt
+            total_treats += cnt
+        elif etype in ("mission_complete", "mission_stopped"):
+            daily[day]["tricks"] += cnt
+            total_tricks += cnt
+        elif etype == "bark_detected":
+            daily[day]["barks"] += cnt
+            total_barks += cnt
+        elif etype == "dog_detected":
+            daily[day]["detections"] += cnt
+
+    # Compute daily scores: weighted composite (treats=3, tricks=5, detections=1, cap 100)
+    daily_scores = []
+    for day in sorted(daily.keys()):
+        d = daily[day]
+        raw = d["treats"] * 3 + d["tricks"] * 5 + d["detections"] * 1
+        score = min(raw, 100)
+        daily_scores.append({"date": day, "score": score})
+
+    # Estimate active minutes from event density (each event ~1 min of activity)
+    active_minutes = total_events
+
+    return {
+        "daily_scores": daily_scores,
+        "total_treats": total_treats,
+        "total_tricks": total_tricks,
+        "total_barks": total_barks,
+        "active_minutes": active_minutes,
+        "period_days": days,
+    }
+
+
+def delete_old_events(days: int = 30) -> int:
+    """Delete events older than N days. Returns count deleted."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cursor.execute("DELETE FROM device_events WHERE timestamp < ?", (cutoff,))
+    deleted = cursor.rowcount
+
+    conn.commit()
+    conn.close()
+
+    if deleted > 0:
+        logger.info(f"[EVENT-CLEANUP] Deleted {deleted} events older than {days} days")
+    return deleted
 
 
 # Initialize database on module import

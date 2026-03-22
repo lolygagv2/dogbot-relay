@@ -316,6 +316,37 @@ class HealthResponse(BaseModel):
     status: str = "ok"
 
 
+# ============== Event Storage Models (Build 46) ==============
+
+class DeviceEvent(BaseModel):
+    id: int
+    device_id: str
+    event_type: str
+    message: dict
+    timestamp: str
+
+
+class DeviceEventListResponse(BaseModel):
+    events: list[DeviceEvent]
+    total: int
+    limit: int
+    offset: int
+
+
+class DailyScore(BaseModel):
+    date: str
+    score: int
+
+
+class DeviceEventSummaryResponse(BaseModel):
+    daily_scores: list[DailyScore]
+    total_treats: int
+    total_tricks: int
+    total_barks: int
+    active_minutes: int
+    period_days: int
+
+
 # ============== Schedule Models (Build 34 - Updated Build 35) ==============
 
 class ScheduleType(str, Enum):

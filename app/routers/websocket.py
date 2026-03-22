@@ -14,6 +14,7 @@ from app.database import (
     get_user_dogs,
     log_metric as db_log_metric,
     log_mission as db_log_mission,
+    store_event as db_store_event,
 )
 from app.routers.device import get_device_data, update_device_online_status
 from app.services.turn_service import turn_service
@@ -89,6 +90,17 @@ def is_stale_command(message: dict) -> tuple[bool, int]:
     age_ms = now_ms - ts
 
     return age_ms > STALE_COMMAND_THRESHOLD_MS, age_ms
+
+
+def maybe_store_event(device_id: str, owner_id: str, message: dict):
+    """Store a robot event if it's a storable type. Fire-and-forget."""
+    event_type = message.get("event") or message.get("type")
+    if not event_type or not owner_id:
+        return
+    try:
+        db_store_event(device_id, owner_id, event_type, message)
+    except Exception as e:
+        logger.error(f"[EVENT-STORE] Failed to store {event_type} for {device_id}: {e}")
 
 
 # ============== WebRTC Signaling Handlers ==============
@@ -474,6 +486,7 @@ async def websocket_device_endpoint(
                 else:
                     logger.warning(f"[UPLOAD] Failed from {device_id}: {filename} - {error}")
 
+                maybe_store_event(device_id, owner_id, message)
                 if owner_id:
                     delivered = await manager.send_to_user_apps(owner_id, message)
                     if delivered > 0:
@@ -493,6 +506,7 @@ async def websocket_device_endpoint(
                 state = message.get("state", "unknown")
                 logger.info(f"[AUDIO] State from {device_id}: {state}")
 
+                maybe_store_event(device_id, owner_id, message)
                 if owner_id:
                     delivered = await manager.send_to_user_apps(owner_id, message)
                     if delivered > 0:
@@ -513,6 +527,7 @@ async def websocket_device_endpoint(
 
                 logger.info(f"[SCHEDULE] {msg_type} from {device_id}: schedule_id={schedule_id}")
 
+                maybe_store_event(device_id, owner_id, message)
                 if owner_id:
                     delivered = await manager.send_to_user_apps(owner_id, message)
                     if delivered > 0:
@@ -551,6 +566,9 @@ async def websocket_device_endpoint(
                         )
                 elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                     logger.info(f"[EVENT] {event_name} from {device_id}: {message.get('data', {})}")
+
+                # Store event for offline retrieval
+                maybe_store_event(device_id, owner_id, message)
 
                 # Forward event and verify delivery (P2: Build 34 - Event Forwarding Verification)
                 delivered_count = await manager.forward_event_to_owner(device_id, message)
@@ -595,6 +613,7 @@ async def websocket_device_endpoint(
                     message["device_id"] = device_id
 
                 owner_id = manager.get_device_owner(device_id)
+                maybe_store_event(device_id, owner_id, message)
                 if owner_id:
                     await manager.send_to_user_apps(owner_id, message)
                     logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): {msg_type}")
@@ -1177,6 +1196,7 @@ async def websocket_generic_endpoint(
                     else:
                         logger.warning(f"[UPLOAD] Failed from {identifier}: {filename} - {error}")
 
+                    maybe_store_event(identifier, owner_id, message)
                     if owner_id:
                         delivered = await manager.send_to_user_apps(owner_id, message)
                         if delivered > 0:
@@ -1194,6 +1214,7 @@ async def websocket_generic_endpoint(
                     state = message.get("state", "unknown")
                     logger.info(f"[AUDIO] State from {identifier}: {state}")
 
+                    maybe_store_event(identifier, owner_id, message)
                     if owner_id:
                         delivered = await manager.send_to_user_apps(owner_id, message)
                         if delivered > 0:
@@ -1214,6 +1235,7 @@ async def websocket_generic_endpoint(
 
                     logger.info(f"[SCHEDULE] {msg_type} from {identifier}: schedule_id={schedule_id}")
 
+                    maybe_store_event(identifier, owner_id, message)
                     if owner_id:
                         delivered = await manager.send_to_user_apps(owner_id, message)
                         if delivered > 0:
@@ -1249,6 +1271,9 @@ async def websocket_generic_endpoint(
                             )
                     elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                         logger.info(f"[EVENT] {event_name} from {identifier}: {message.get('data', {})}")
+
+                    # Store event for offline retrieval
+                    maybe_store_event(identifier, owner_id, message)
 
                     # Forward event and verify delivery (P2: Build 34 - Event Forwarding Verification)
                     delivered_count = await manager.forward_event_to_owner(identifier, message)
@@ -1291,6 +1316,7 @@ async def websocket_generic_endpoint(
                     if "device_id" not in message:
                         message["device_id"] = identifier
                     owner_id = manager.get_device_owner(identifier)
+                    maybe_store_event(identifier, owner_id, message)
                     if owner_id:
                         await manager.send_to_user_apps(owner_id, message)
                         logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): {msg_type}")

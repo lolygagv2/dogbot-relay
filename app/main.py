@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.connection_manager import get_connection_manager
 from app.models import HealthResponse
-from app.routers import auth, device, dogs, metrics, music, schedule, turn, user, websocket
+from app.routers import auth, device, dogs, events, metrics, music, schedule, turn, user, websocket
 
 # Configure logging
 logging.basicConfig(
@@ -39,6 +39,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(device.router)
 app.include_router(dogs.router)
+app.include_router(events.router)
 app.include_router(metrics.router)
 app.include_router(music.router)
 app.include_router(schedule.router)
@@ -98,6 +99,12 @@ async def startup_event():
     """Initialize resources on startup."""
     logger.info(f"Starting {settings.app_name}")
     logger.info(f"Debug mode: {settings.debug}")
+
+    # Prune old stored events (30-day retention)
+    from app.database import delete_old_events
+    deleted = delete_old_events(days=30)
+    if deleted:
+        logger.info(f"Startup cleanup: removed {deleted} old events")
 
 
 @app.on_event("shutdown")
