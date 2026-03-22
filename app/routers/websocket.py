@@ -469,6 +469,25 @@ async def websocket_device_endpoint(
                     logger.warning(f"[ROUTE] Robot({device_id}) -> ???: status_update (no owner)")
                 continue
 
+            # Handle video_ready from robot (may contain large base64 payload)
+            if msg_type == "video_ready":
+                if "device_id" not in message:
+                    message["device_id"] = device_id
+
+                owner_id = manager.get_device_owner(device_id)
+                logger.info(f"RELAY: Forwarding video_ready ({msg_size} bytes) to app for device {device_id}")
+
+                maybe_store_event(device_id, owner_id, message)
+                if owner_id:
+                    delivered = await manager.send_to_user_apps(owner_id, message)
+                    if delivered > 0:
+                        logger.info(f"[EVENT-OK] video_ready delivered to {delivered} app(s)")
+                    else:
+                        logger.warning(f"[EVENT-FAIL] video_ready NOT delivered - no apps connected")
+                else:
+                    logger.warning(f"[ROUTE] Robot({device_id}) -> ???: video_ready (no owner)")
+                continue
+
             # Handle upload result events from robot (Build 34 Task 2)
             if msg_type in ("upload_complete", "upload_error", "upload_result"):
                 if "device_id" not in message:
@@ -1177,6 +1196,25 @@ async def websocket_generic_endpoint(
                     if owner_id:
                         await manager.send_to_user_apps(owner_id, message)
                         logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): status_update")
+                    continue
+
+                # Handle video_ready from robot (may contain large base64 payload)
+                if msg_type == "video_ready":
+                    if "device_id" not in message:
+                        message["device_id"] = identifier
+
+                    owner_id = manager.get_device_owner(identifier)
+                    logger.info(f"RELAY: Forwarding video_ready ({msg_size} bytes) to app for device {identifier}")
+
+                    maybe_store_event(identifier, owner_id, message)
+                    if owner_id:
+                        delivered = await manager.send_to_user_apps(owner_id, message)
+                        if delivered > 0:
+                            logger.info(f"[EVENT-OK] video_ready delivered to {delivered} app(s)")
+                        else:
+                            logger.warning(f"[EVENT-FAIL] video_ready NOT delivered - no apps connected")
+                    else:
+                        logger.warning(f"[ROUTE] Robot({identifier}) -> ???: video_ready (no owner)")
                     continue
 
                 # Handle upload result events from robot (Build 34 Task 2)
