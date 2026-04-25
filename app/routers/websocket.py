@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 
@@ -29,6 +31,19 @@ webrtc_sessions: dict[str, dict] = {}
 
 # Stale command threshold in milliseconds
 STALE_COMMAND_THRESHOLD_MS = 2000
+
+# B2 — Session handshake / heartbeat parameters
+SESSION_HELLO_TIMEOUT_SECONDS = 5
+SESSION_HEARTBEAT_TIMEOUT_SECONDS = 25
+SESSION_HEARTBEAT_CHECK_INTERVAL = 5
+
+# WS close codes (B2)
+WS_CLOSE_HELLO_FAILED = 4000          # missing/invalid session_hello or user_id mismatch
+WS_CLOSE_SESSION_SUPERSEDED = 4001    # replaced by a newer session for same (user_id, device_id)
+WS_CLOSE_HEARTBEAT_TIMEOUT = 4002     # no ping for SESSION_HEARTBEAT_TIMEOUT_SECONDS
+
+# Signaling frame types subject to session_id validation (B2.4)
+SIGNALING_TYPES = {"webrtc_request", "webrtc_offer", "webrtc_answer", "webrtc_ice", "webrtc_close"}
 
 # High-frequency drive commands — minimal logging, skip rate limiting
 DRIVE_COMMANDS = {"motor", "servo", "pan_tilt"}
@@ -103,6 +118,192 @@ def maybe_store_event(device_id: str, owner_id: str, message: dict):
         logger.error(f"[EVENT-STORE] Failed to store {event_type} for {device_id}: {e}")
 
 
+# ============== B2 Session helpers ==============
+
+async def _safe_send_json(ws: WebSocket, payload: dict) -> bool:
+    """Best-effort send_json — swallow errors (the socket may already be closing)."""
+    try:
+        await ws.send_json(payload)
+        return True
+    except Exception:
+        return False
+
+
+async def _safe_close(ws: WebSocket, code: int, reason: str = "") -> None:
+    """Best-effort close — swallow errors."""
+    try:
+        await ws.close(code=code, reason=reason)
+    except Exception:
+        pass
+
+
+async def _notify_robot_session_ended(
+    manager: ConnectionManager,
+    device_id: str,
+    session_id: str,
+    reason: str,
+) -> None:
+    """Send session_ended frame to the robot for the given device (B2.2/B2.3/B2.5)."""
+    if not device_id:
+        return
+    await manager.send_to_robot(device_id, {
+        "type": "session_ended",
+        "session_id": session_id,
+        "reason": reason,
+    })
+
+
+async def _supersede_session(
+    manager: ConnectionManager,
+    user_id: str,
+    device_id: str,
+    new_session_id: str,
+) -> None:
+    """If a prior session exists for (user_id, device_id), supersede it (B2.2)."""
+    existing = manager.get_session(user_id, device_id)
+    if not existing:
+        return
+
+    old_session_id = existing["session_id"]
+    old_ws = existing["ws"]
+
+    logger.info(
+        f"[SESSION] Superseding old session {old_session_id} for user={user_id} "
+        f"device={device_id} with new session {new_session_id}"
+    )
+
+    await _safe_send_json(old_ws, {
+        "type": "session_superseded",
+        "by": new_session_id,
+    })
+    await _safe_close(old_ws, WS_CLOSE_SESSION_SUPERSEDED, "session_superseded")
+    await _notify_robot_session_ended(manager, device_id, old_session_id, "superseded")
+
+    manager.remove_session(user_id, device_id, old_session_id)
+
+
+async def _heartbeat_watchdog(
+    manager: ConnectionManager,
+    user_id: str,
+    device_id: str,
+    session_id: str,
+) -> None:
+    """Watchdog task: closes the WS with 4002 if no ping within SESSION_HEARTBEAT_TIMEOUT_SECONDS (B2.3)."""
+    try:
+        while True:
+            await asyncio.sleep(SESSION_HEARTBEAT_CHECK_INTERVAL)
+            session = manager.get_session(user_id, device_id)
+            if not session or session["session_id"] != session_id:
+                # Session has been replaced or removed
+                return
+            elapsed = (datetime.now(timezone.utc) - session["last_ping_at"]).total_seconds()
+            if elapsed > SESSION_HEARTBEAT_TIMEOUT_SECONDS:
+                logger.warning(
+                    f"[SESSION] Heartbeat timeout for user={user_id} device={device_id} "
+                    f"session={session_id} (elapsed={elapsed:.1f}s)"
+                )
+                await _safe_close(session["ws"], WS_CLOSE_HEARTBEAT_TIMEOUT, "heartbeat_timeout")
+                await _notify_robot_session_ended(manager, device_id, session_id, "heartbeat_timeout")
+                manager.remove_session(user_id, device_id, session_id)
+                return
+    except asyncio.CancelledError:
+        return
+
+
+def _is_signaling_session_current(
+    manager: ConnectionManager,
+    device_id: str,
+    frame_session_id: Optional[str],
+) -> bool:
+    """B2.4 — for a robot→app signaling frame, verify the frame's session_id
+    matches the current WS session for the device's owner. Frames missing a
+    session_id are passed through to preserve compatibility with older robot
+    firmware; once robots ship session_id propagation, this can tighten.
+    """
+    if not frame_session_id:
+        return True
+    owner_id = manager.get_device_owner(device_id)
+    if not owner_id:
+        return True
+    current = manager.get_session(owner_id, device_id)
+    if current is None:
+        return False
+    return current["session_id"] == frame_session_id
+
+
+async def _await_session_hello(
+    websocket: WebSocket,
+    expected_user_id: str,
+) -> Optional[dict]:
+    """Wait up to SESSION_HELLO_TIMEOUT_SECONDS for the session_hello frame.
+
+    Validates frame shape and that user_id matches the bearer token. On any failure,
+    sends an error explanation, closes with 4000, and returns None.
+    """
+    try:
+        raw = await asyncio.wait_for(
+            websocket.receive_text(),
+            timeout=SESSION_HELLO_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"[SESSION] session_hello timeout for user {expected_user_id}")
+        await _safe_send_json(websocket, {
+            "type": "error",
+            "code": "SESSION_HELLO_TIMEOUT",
+            "message": f"session_hello not received within {SESSION_HELLO_TIMEOUT_SECONDS}s",
+        })
+        await _safe_close(websocket, WS_CLOSE_HELLO_FAILED, "session_hello_timeout")
+        return None
+    except WebSocketDisconnect:
+        return None
+
+    try:
+        message = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning(f"[SESSION] session_hello: invalid JSON from user {expected_user_id}")
+        await _safe_close(websocket, WS_CLOSE_HELLO_FAILED, "session_hello_invalid")
+        return None
+
+    if message.get("type") != "session_hello":
+        logger.warning(
+            f"[SESSION] First frame from user {expected_user_id} was not session_hello: "
+            f"type={message.get('type')!r}"
+        )
+        await _safe_send_json(websocket, {
+            "type": "error",
+            "code": "SESSION_HELLO_REQUIRED",
+            "message": "first frame must be session_hello",
+        })
+        await _safe_close(websocket, WS_CLOSE_HELLO_FAILED, "session_hello_required")
+        return None
+
+    session_id = message.get("session_id")
+    device_id = message.get("device_id")
+    claimed_user_id = message.get("user_id")
+
+    if not session_id or not device_id or not claimed_user_id:
+        logger.warning(
+            f"[SESSION] session_hello missing required fields: "
+            f"session_id={bool(session_id)} device_id={bool(device_id)} user_id={bool(claimed_user_id)}"
+        )
+        await _safe_close(websocket, WS_CLOSE_HELLO_FAILED, "session_hello_missing_fields")
+        return None
+
+    if claimed_user_id != expected_user_id:
+        logger.warning(
+            f"[SESSION] session_hello user_id mismatch: token={expected_user_id} "
+            f"hello={claimed_user_id}"
+        )
+        await _safe_close(websocket, WS_CLOSE_HELLO_FAILED, "session_hello_user_mismatch")
+        return None
+
+    return {
+        "session_id": session_id,
+        "device_id": device_id,
+        "user_id": claimed_user_id,
+    }
+
+
 # ============== WebRTC Signaling Handlers ==============
 
 async def handle_webrtc_request(
@@ -111,7 +312,11 @@ async def handle_webrtc_request(
     user_id: str,
     manager: ConnectionManager
 ):
-    """App requests video stream from robot."""
+    """App requests video stream from robot.
+
+    The session_id field is the WebSocket session_id (B2.4) — the relay reuses it
+    as the WebRTC session_id so all signaling frames carry one consistent identifier.
+    """
     device_id = message.get("device_id")
 
     if not device_id:
@@ -147,14 +352,24 @@ async def handle_webrtc_request(
         })
         return
 
-    # Close any existing session for this device before creating a new one
-    # This returns a new session_id and notifies the robot to close the old one
-    session_id = await manager.create_webrtc_session(device_id, user_id)
+    # The WS session_id has already been validated and stamped onto the frame
+    # by the outer receive loop (B2.4). Reuse it as the WebRTC session_id.
+    session_id = message.get("session_id")
+    if not session_id:
+        # Legacy fallback: generate one and rely on the existing single-session-per-device mechanism.
+        session_id = await manager.create_webrtc_session(device_id, user_id)
+    else:
+        # Close any prior WebRTC session bound to this device under a different ID,
+        # then mark the current session as the active one for the device.
+        existing = manager.webrtc_sessions.get(device_id)
+        if existing and existing != session_id:
+            await manager.close_webrtc_session(existing, device_id)
+        manager.webrtc_sessions[device_id] = session_id
 
-    # Clean old sessions for this device from routing table
+    # Clean any stale routing entries for this device (different session_id).
     old_session_ids = [
         sid for sid, s in webrtc_sessions.items()
-        if s.get("device_id") == device_id
+        if s.get("device_id") == device_id and sid != session_id
     ]
     for old_sid in old_session_ids:
         webrtc_sessions.pop(old_sid, None)
@@ -438,7 +653,15 @@ async def websocket_device_endpoint(
                 await websocket.send_json({"type": "pong"})
                 continue
 
-            # Handle WebRTC signaling from robot
+            # Handle WebRTC signaling from robot (with B2.4 session_id validation)
+            if msg_type in ("webrtc_offer", "webrtc_ice", "webrtc_close"):
+                if not _is_signaling_session_current(manager, device_id, message.get("session_id")):
+                    logger.warning(
+                        f"[SESSION] Dropping {msg_type} from device={device_id} "
+                        f"with stale/missing-app-session session_id={message.get('session_id')}"
+                    )
+                    continue
+
             if msg_type == "webrtc_offer":
                 await handle_webrtc_offer(message, device_id, manager)
                 continue
@@ -678,7 +901,7 @@ async def websocket_app_endpoint(
 ):
     """
     WebSocket endpoint for mobile app clients.
-    Apps connect with their JWT token.
+    Apps connect with their JWT token, then send session_hello (B2.2) within 5 seconds.
     """
     # Decode and verify JWT token
     payload = decode_token(token, settings)
@@ -694,26 +917,53 @@ async def websocket_app_endpoint(
     # Extract client IP
     client_ip = get_client_ip(websocket)
 
-    # Connect the app
+    # Connect the app (accepts the WebSocket)
     await manager.connect_app(websocket, user_id, ip=client_ip)
+
+    # B2.2 — wait for the session_hello frame within 5 seconds.
+    hello = await _await_session_hello(websocket, expected_user_id=user_id)
+    if hello is None:
+        await manager.disconnect_app(websocket)
+        return
+
+    session_id = hello["session_id"]
+    device_id = hello["device_id"]
+
+    # Supersede any prior session for the same (user_id, device_id) (B2.2)
+    await _supersede_session(manager, user_id, device_id, session_id)
+
+    # Register this session in the table (B2.1)
+    manager.register_session(user_id, device_id, session_id, websocket)
+
+    # Acknowledge handshake
+    await _safe_send_json(websocket, {
+        "type": "session_ack",
+        "session_id": session_id,
+        "device_id": device_id,
+    })
+
+    # Start heartbeat watchdog (B2.3)
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_watchdog(manager, user_id, device_id, session_id)
+    )
 
     # Check for grace period reconnection
     restored_sessions = manager.cancel_grace_period(user_id)
     if restored_sessions:
         # Restore WebRTC sessions: update app_ws reference to new websocket
-        for session_id, device_id in restored_sessions:
-            if session_id in webrtc_sessions:
-                webrtc_sessions[session_id]["app_ws"] = websocket
-                logger.info(f"[GRACE] Restored WebRTC session {session_id} for device {device_id}")
-                await websocket.send_json({
+        for old_sid, old_device_id in restored_sessions:
+            if old_sid in webrtc_sessions:
+                webrtc_sessions[old_sid]["app_ws"] = websocket
+                logger.info(f"[GRACE] Restored WebRTC session {old_sid} for device {old_device_id}")
+                await _safe_send_json(websocket, {
                     "type": "session_restored",
-                    "session_id": session_id,
-                    "device_id": device_id,
+                    "session_id": old_sid,
+                    "device_id": old_device_id,
                 })
         logger.info(f"[GRACE] User {user_id} reconnected, restored {len(restored_sessions)} session(s)")
 
     # Send connection acknowledgment
-    await websocket.send_json({
+    await _safe_send_json(websocket, {
         "type": "auth_result",
         "success": True,
         "user_id": user_id
@@ -721,19 +971,19 @@ async def websocket_app_endpoint(
 
     # Send current status of user's paired devices and notify robots that user is online
     user_devices = manager.get_user_devices(user_id)
-    for device_id in user_devices:
-        await websocket.send_json({
+    for paired_device_id in user_devices:
+        await _safe_send_json(websocket, {
             "type": "robot_status",
-            "device_id": device_id,
-            "online": manager.is_robot_online(device_id)
+            "device_id": paired_device_id,
+            "online": manager.is_robot_online(paired_device_id)
         })
         # Notify robot that user has connected (if robot is online)
-        if manager.is_robot_online(device_id):
-            await manager.send_to_robot(device_id, {
+        if manager.is_robot_online(paired_device_id):
+            await manager.send_to_robot(paired_device_id, {
                 "type": "user_connected",
                 "user_id": user_id
             })
-            logger.info(f"[CONNECT] Sent user_connected to robot {device_id} for user {user_id} from {client_ip}")
+            logger.info(f"[CONNECT] Sent user_connected to robot {paired_device_id} for user {user_id} from {client_ip}")
 
     # Send today's metrics for each of the user's dogs
     try:
@@ -742,7 +992,7 @@ async def websocket_app_endpoint(
         for dog in user_dogs:
             dog_metrics = db_get_metrics(dog["id"], user_id, today)
             dog_metrics.pop("dog_id", None)
-            await websocket.send_json({
+            await _safe_send_json(websocket, {
                 "type": "metrics_sync",
                 "dog_id": dog["id"],
                 "metrics": dog_metrics,
@@ -784,10 +1034,31 @@ async def websocket_app_endpoint(
             elif msg_size > 10000:
                 logger.info(f"[LARGE] App({user_id}): {msg_type or message.get('command')}, ~{msg_size//1000}KB")
 
-            # Handle ping/pong
+            # Handle ping/pong (B2.3 — refresh heartbeat)
             if msg_type == "ping":
+                manager.update_ping(user_id, device_id, session_id)
                 await websocket.send_json({"type": "pong"})
                 continue
+
+            # B2.5 — graceful client_closing
+            if msg_type == "client_closing":
+                logger.info(f"[SESSION] client_closing from user={user_id} device={device_id} session={session_id}")
+                await _notify_robot_session_ended(manager, device_id, session_id, "client_closing")
+                manager.remove_session(user_id, device_id, session_id)
+                await _safe_close(websocket, 1000, "client_closing")
+                return
+
+            # B2.4 — every signaling frame must carry a current session_id; drop stale frames.
+            if msg_type in SIGNALING_TYPES:
+                frame_session_id = message.get("session_id")
+                if frame_session_id and frame_session_id != session_id:
+                    logger.warning(
+                        f"[SESSION] Dropping {msg_type} from user={user_id} device={device_id} "
+                        f"with stale session_id={frame_session_id} (current={session_id})"
+                    )
+                    continue
+                # Stamp our session_id so the robot can validate it as well
+                message["session_id"] = session_id
 
             # Handle debug_log from app - log to server, don't forward
             if msg_type == "debug_log":
@@ -932,11 +1203,15 @@ async def websocket_app_endpoint(
     except Exception as e:
         logger.error(f"Error in app websocket for user {user_id}: {e}")
     finally:
+        # Cancel heartbeat watchdog and clear our entry from the session table.
+        heartbeat_task.cancel()
+        manager.remove_session(user_id, device_id, session_id)
+
         # Collect WebRTC session data for this websocket BEFORE removing
         saved_sessions = []
-        for session_id, session in webrtc_sessions.items():
+        for sid, session in webrtc_sessions.items():
             if session.get("app_ws") == websocket:
-                saved_sessions.append((session_id, session.get("device_id")))
+                saved_sessions.append((sid, session.get("device_id")))
 
         # Disconnect this websocket from the manager
         await manager.disconnect_app(websocket)
@@ -949,11 +1224,11 @@ async def websocket_app_endpoint(
 
         if has_other_connections:
             # User still connected on another session — clean up this WS's sessions normally
-            for session_id, device_id in saved_sessions:
-                webrtc_sessions.pop(session_id, None)
-                if device_id and manager.webrtc_sessions.get(device_id) == session_id:
-                    del manager.webrtc_sessions[device_id]
-                    logger.info(f"[WEBRTC] Removed session {session_id} for device {device_id} (app has other connections)")
+            for sid, dev_id in saved_sessions:
+                webrtc_sessions.pop(sid, None)
+                if dev_id and manager.webrtc_sessions.get(dev_id) == sid:
+                    del manager.webrtc_sessions[dev_id]
+                    logger.info(f"[WEBRTC] Removed session {sid} for device {dev_id} (app has other connections)")
         elif user_id in manager.grace_timers:
             # Already in grace period (e.g., another WS just disconnected) — append sessions
             manager.grace_webrtc_sessions.setdefault(user_id, []).extend(saved_sessions)

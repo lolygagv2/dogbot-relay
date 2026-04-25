@@ -52,6 +52,12 @@ def init_db():
             aruco_marker_id INTEGER,
             visual_features TEXT,
             user_id TEXT,
+            weight REAL,
+            notes TEXT,
+            goals TEXT,
+            last_mission_id TEXT,
+            photo_version INTEGER DEFAULT 1,
+            updated_at TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
@@ -73,8 +79,26 @@ def init_db():
         """)
         logger.info("[MIGRATION] Added user_id column to dogs table and backfilled from user_dogs")
 
+    # Migration: add new dog profile fields (Build 50 / Phase 1 A1)
+    if "weight" not in dog_columns:
+        cursor.execute("ALTER TABLE dogs ADD COLUMN weight REAL")
+    if "notes" not in dog_columns:
+        cursor.execute("ALTER TABLE dogs ADD COLUMN notes TEXT")
+    if "goals" not in dog_columns:
+        cursor.execute("ALTER TABLE dogs ADD COLUMN goals TEXT")
+    if "last_mission_id" not in dog_columns:
+        cursor.execute("ALTER TABLE dogs ADD COLUMN last_mission_id TEXT")
+    if "photo_version" not in dog_columns:
+        cursor.execute("ALTER TABLE dogs ADD COLUMN photo_version INTEGER DEFAULT 1")
+    if "updated_at" not in dog_columns:
+        cursor.execute("ALTER TABLE dogs ADD COLUMN updated_at TEXT")
+        # Backfill updated_at from created_at
+        cursor.execute("UPDATE dogs SET updated_at = created_at WHERE updated_at IS NULL")
+        logger.info("[MIGRATION] Added weight/notes/goals/last_mission_id/photo_version/updated_at to dogs")
+
     # Index on dogs.user_id for fast lookup
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_dogs_user_id ON dogs(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_dogs_user_created ON dogs(user_id, created_at)")
 
     # User-dog relationship (many-to-many)
     cursor.execute("""
@@ -323,18 +347,27 @@ def create_dog(
     breed: Optional[str] = None,
     color: Optional[str] = None,
     profile_photo_url: Optional[str] = None,
-    aruco_marker_id: Optional[int] = None
+    aruco_marker_id: Optional[int] = None,
+    weight: Optional[float] = None,
+    notes: Optional[str] = None,
+    goals: Optional[list] = None,
+    last_mission_id: Optional[str] = None,
+    photo_version: int = 1,
 ) -> dict:
     """Create a new dog in the database."""
     conn = get_connection()
     cursor = conn.cursor()
 
     created_at = datetime.now(timezone.utc).isoformat()
+    updated_at = created_at
+    goals_json = json.dumps(goals) if goals else None
 
     cursor.execute(
-        """INSERT INTO dogs (id, name, user_id, breed, color, profile_photo_url, aruco_marker_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (dog_id, name, user_id, breed, color, profile_photo_url, aruco_marker_id, created_at)
+        """INSERT INTO dogs (id, name, user_id, breed, color, profile_photo_url, aruco_marker_id,
+                              weight, notes, goals, last_mission_id, photo_version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (dog_id, name, user_id, breed, color, profile_photo_url, aruco_marker_id,
+         weight, notes, goals_json, last_mission_id, photo_version, created_at, updated_at)
     )
 
     conn.commit()
@@ -348,7 +381,13 @@ def create_dog(
         "color": color,
         "profile_photo_url": profile_photo_url,
         "aruco_marker_id": aruco_marker_id,
-        "created_at": created_at
+        "weight": weight,
+        "notes": notes,
+        "goals": goals or [],
+        "last_mission_id": last_mission_id,
+        "photo_version": photo_version,
+        "created_at": created_at,
+        "updated_at": updated_at,
     }
 
 
@@ -367,6 +406,33 @@ def check_duplicate_dog_name(user_id: str, name: str) -> bool:
     return count > 0
 
 
+def _row_to_dog(row) -> dict:
+    """Convert a dogs row to a dict, parsing goals JSON."""
+    keys = row.keys()
+    goals_raw = row["goals"] if "goals" in keys else None
+    try:
+        goals = json.loads(goals_raw) if goals_raw else []
+    except (json.JSONDecodeError, TypeError):
+        goals = []
+
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "breed": row["breed"],
+        "color": row["color"],
+        "profile_photo_url": row["profile_photo_url"],
+        "aruco_marker_id": row["aruco_marker_id"],
+        "visual_features": row["visual_features"] if "visual_features" in keys else None,
+        "weight": row["weight"] if "weight" in keys else None,
+        "notes": row["notes"] if "notes" in keys else None,
+        "goals": goals,
+        "last_mission_id": row["last_mission_id"] if "last_mission_id" in keys else None,
+        "photo_version": row["photo_version"] if "photo_version" in keys else 1,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"] if "updated_at" in keys else row["created_at"],
+    }
+
+
 def get_dog_by_id(dog_id: str) -> Optional[dict]:
     """Get a dog by ID."""
     conn = get_connection()
@@ -376,29 +442,22 @@ def get_dog_by_id(dog_id: str) -> Optional[dict]:
     row = cursor.fetchone()
     conn.close()
 
-    if row:
-        return {
-            "id": row["id"],
-            "name": row["name"],
-            "breed": row["breed"],
-            "color": row["color"],
-            "profile_photo_url": row["profile_photo_url"],
-            "aruco_marker_id": row["aruco_marker_id"],
-            "visual_features": row["visual_features"],
-            "created_at": row["created_at"]
-        }
-    return None
+    return _row_to_dog(row) if row else None
 
 
 def update_dog(dog_id: str, **fields) -> Optional[dict]:
-    """Update a dog's fields."""
+    """Update a dog's fields. JSON-encodes 'goals' if a list is provided. Always bumps updated_at."""
     if not fields:
         return get_dog_by_id(dog_id)
+
+    if "goals" in fields and fields["goals"] is not None and not isinstance(fields["goals"], str):
+        fields["goals"] = json.dumps(fields["goals"])
+
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Build dynamic UPDATE query
     set_clauses = ", ".join([f"{key} = ?" for key in fields.keys()])
     values = list(fields.values()) + [dog_id]
 
@@ -458,7 +517,7 @@ def add_user_dog(user_id: str, dog_id: str, role: str = "owner") -> dict:
 
 
 def get_user_dogs(user_id: str) -> list[dict]:
-    """Get all dogs for a user with their role."""
+    """Get all dogs for a user with their role, ordered by created_at ascending."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -467,25 +526,18 @@ def get_user_dogs(user_id: str) -> list[dict]:
         FROM dogs d
         JOIN user_dogs ud ON d.id = ud.dog_id
         WHERE ud.user_id = ?
+        ORDER BY d.created_at ASC
     """, (user_id,))
 
     rows = cursor.fetchall()
     conn.close()
 
-    return [
-        {
-            "id": row["id"],
-            "name": row["name"],
-            "breed": row["breed"],
-            "color": row["color"],
-            "profile_photo_url": row["profile_photo_url"],
-            "aruco_marker_id": row["aruco_marker_id"],
-            "visual_features": row["visual_features"],
-            "created_at": row["created_at"],
-            "role": row["role"]
-        }
-        for row in rows
-    ]
+    result = []
+    for row in rows:
+        d = _row_to_dog(row)
+        d["role"] = row["role"]
+        result.append(d)
+    return result
 
 
 def get_user_dog_role(user_id: str, dog_id: str) -> Optional[str]:

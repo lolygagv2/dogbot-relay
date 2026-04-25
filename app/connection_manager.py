@@ -50,6 +50,10 @@ class ConnectionManager:
         # Rate limiting: user_id -> deque of (timestamp, cmd_type)
         self.command_history: dict[str, deque] = {}
 
+        # Session table (B2.1): (user_id, device_id) -> {session_id, ws, connected_at, last_ping_at}
+        # Tracks active app WebSocket sessions for supersession + heartbeat enforcement.
+        self.sessions: dict[tuple[str, str], dict] = {}
+
         logger.info(f"ConnectionManager initialized with {len(self.device_owners)} device pairings from DB")
         for device_id, user_id in self.device_owners.items():
             logger.info(f"  {device_id} -> {user_id}")
@@ -401,6 +405,54 @@ class ConnectionManager:
             "active_webrtc_sessions": len(self.webrtc_sessions),
             "grace_period_users": len(self.grace_timers),
         }
+
+    # ============== Session table (B2) ==============
+
+    def get_session(self, user_id: str, device_id: str) -> Optional[dict]:
+        """Get the active session for a (user_id, device_id) pair, if any."""
+        return self.sessions.get((user_id, device_id))
+
+    def get_session_for_user(self, user_id: str) -> list[dict]:
+        """Return all active sessions for a given user."""
+        return [s for (uid, _), s in self.sessions.items() if uid == user_id]
+
+    def register_session(
+        self,
+        user_id: str,
+        device_id: str,
+        session_id: str,
+        websocket: WebSocket,
+    ) -> None:
+        """Insert/replace the session entry for (user_id, device_id)."""
+        now = datetime.now(timezone.utc)
+        self.sessions[(user_id, device_id)] = {
+            "session_id": session_id,
+            "ws": websocket,
+            "connected_at": now,
+            "last_ping_at": now,
+        }
+        logger.info(f"[SESSION] Registered session {session_id} for user={user_id} device={device_id}")
+
+    def remove_session(self, user_id: str, device_id: str, session_id: str) -> bool:
+        """Remove a session entry only if its session_id matches (avoids removing a newer session)."""
+        key = (user_id, device_id)
+        existing = self.sessions.get(key)
+        if existing and existing["session_id"] == session_id:
+            del self.sessions[key]
+            logger.info(f"[SESSION] Removed session {session_id} for user={user_id} device={device_id}")
+            return True
+        return False
+
+    def update_ping(self, user_id: str, device_id: str, session_id: str) -> None:
+        """Refresh last_ping_at for the session if session_id matches."""
+        existing = self.sessions.get((user_id, device_id))
+        if existing and existing["session_id"] == session_id:
+            existing["last_ping_at"] = datetime.now(timezone.utc)
+
+    def is_session_id_current(self, user_id: str, device_id: str, session_id: str) -> bool:
+        """Whether session_id matches the active session for the (user_id, device_id) pair."""
+        existing = self.sessions.get((user_id, device_id))
+        return bool(existing and existing["session_id"] == session_id)
 
     async def create_webrtc_session(self, device_id: str, user_id: str) -> str:
         """Create a new WebRTC session for a device, closing any existing session first."""
