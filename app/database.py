@@ -215,6 +215,24 @@ def init_db():
         )
     """)
 
+    # Voice commands (Phase 2 / A2): per-dog voice clips synced from app to robot
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS voice_commands (
+            user_id TEXT NOT NULL,
+            dog_id TEXT NOT NULL,
+            command_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            format TEXT NOT NULL DEFAULT 'wav',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, dog_id, command_id)
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_voice_commands_dog
+        ON voice_commands(user_id, dog_id, updated_at DESC)
+    """)
+
     # Device event storage (for offline app retrieval)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS device_events (
@@ -1316,6 +1334,114 @@ def get_device_event_summary(device_id: str, owner_user_id: str, days: int = 7) 
         "active_minutes": active_minutes,
         "period_days": days,
     }
+
+
+# ============== Voice Commands (Phase 2 / A2) ==============
+
+def upsert_voice_command(
+    user_id: str,
+    dog_id: str,
+    command_id: str,
+    file_path: str,
+    format: str,
+    size_bytes: int,
+) -> dict:
+    """Insert or update a voice command record. Returns the persisted row."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    updated_at = datetime.now(timezone.utc).isoformat()
+
+    cursor.execute(
+        """INSERT INTO voice_commands (user_id, dog_id, command_id, file_path, format, size_bytes, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, dog_id, command_id) DO UPDATE SET
+               file_path = excluded.file_path,
+               format = excluded.format,
+               size_bytes = excluded.size_bytes,
+               updated_at = excluded.updated_at""",
+        (user_id, dog_id, command_id, file_path, format, size_bytes, updated_at),
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "user_id": user_id,
+        "dog_id": dog_id,
+        "command_id": command_id,
+        "file_path": file_path,
+        "format": format,
+        "size_bytes": size_bytes,
+        "updated_at": updated_at,
+    }
+
+
+def list_voice_commands(user_id: str, dog_id: str) -> list[dict]:
+    """List all voice commands for a (user_id, dog_id) pair."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT user_id, dog_id, command_id, file_path, format, size_bytes, updated_at
+           FROM voice_commands
+           WHERE user_id = ? AND dog_id = ?
+           ORDER BY updated_at DESC""",
+        (user_id, dog_id),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "user_id": row["user_id"],
+            "dog_id": row["dog_id"],
+            "command_id": row["command_id"],
+            "file_path": row["file_path"],
+            "format": row["format"],
+            "size_bytes": row["size_bytes"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_voice_command(user_id: str, dog_id: str, command_id: str) -> Optional[dict]:
+    """Fetch a single voice command record."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT user_id, dog_id, command_id, file_path, format, size_bytes, updated_at
+           FROM voice_commands
+           WHERE user_id = ? AND dog_id = ? AND command_id = ?""",
+        (user_id, dog_id, command_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "user_id": row["user_id"],
+        "dog_id": row["dog_id"],
+        "command_id": row["command_id"],
+        "file_path": row["file_path"],
+        "format": row["format"],
+        "size_bytes": row["size_bytes"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def delete_voice_command(user_id: str, dog_id: str, command_id: str) -> Optional[dict]:
+    """Delete the row and return the previous state, or None if it didn't exist."""
+    existing = get_voice_command(user_id, dog_id, command_id)
+    if not existing:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM voice_commands WHERE user_id = ? AND dog_id = ? AND command_id = ?",
+        (user_id, dog_id, command_id),
+    )
+    conn.commit()
+    conn.close()
+    return existing
 
 
 def delete_old_events(days: int = 30) -> int:

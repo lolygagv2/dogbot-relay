@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.connection_manager import get_connection_manager
 from app.models import HealthResponse
-from app.routers import auth, device, dogs, events, media, metrics, music, schedule, turn, user, websocket
+from app.routers import auth, device, dogs, events, media, metrics, music, schedule, turn, user, voice_commands, websocket
 
 # Configure logging
 logging.basicConfig(
@@ -46,6 +46,7 @@ app.include_router(music.router)
 app.include_router(schedule.router)
 app.include_router(turn.router)
 app.include_router(user.router)
+app.include_router(voice_commands.router)
 app.include_router(websocket.router)
 
 
