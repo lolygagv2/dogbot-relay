@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -14,6 +15,7 @@ from app.database import (
     get_device_owner as db_get_device_owner,
     get_metrics as db_get_metrics,
     get_user_dogs,
+    insert_activity_event as db_insert_activity_event,
     log_metric as db_log_metric,
     log_mission as db_log_mission,
     store_event as db_store_event,
@@ -755,6 +757,60 @@ async def websocket_device_endpoint(
                         logger.info(f"[EVENT-OK] audio_state delivered to {delivered} app(s)")
                     else:
                         logger.warning(f"[EVENT-FAIL] audio_state NOT delivered - no apps connected")
+                continue
+
+            # Phase 3 / A3 — Activity event ingest (persist + forward to user's apps)
+            if msg_type == "activity_event":
+                owner_id = manager.get_device_owner(device_id)
+                if not owner_id:
+                    logger.warning(f"[ACTIVITY] activity_event from {device_id} dropped (no owner)")
+                    continue
+
+                event_type = message.get("type_name") or message.get("event_type") or message.get("activity_type")
+                # The robot may put the activity type in `type` itself; that's the message.type
+                # we already consumed. Look for explicit nested type fields first; fall back
+                # to the payload's `type` if present, then the message's payload sub-key.
+                payload = message.get("payload") or {}
+                if not event_type:
+                    event_type = payload.get("type") if isinstance(payload, dict) else None
+                if not event_type:
+                    event_type = "unknown"
+
+                ts = message.get("timestamp") or datetime.now(timezone.utc).isoformat()
+                event_id = message.get("event_id") or str(uuid.uuid4())
+                dog_id = message.get("dog_id")
+                if dog_id == "":
+                    dog_id = None
+
+                try:
+                    stored = db_insert_activity_event(
+                        event_id=event_id,
+                        user_id=owner_id,
+                        device_id=device_id,
+                        dog_id=dog_id,
+                        type=event_type,
+                        timestamp=ts,
+                        payload=payload if isinstance(payload, dict) else {"value": payload},
+                    )
+                    logger.info(
+                        f"[ACTIVITY] Stored {event_type} id={event_id} user={owner_id} "
+                        f"device={device_id} dog={dog_id}"
+                    )
+                except Exception as e:
+                    logger.error(f"[ACTIVITY] Failed to persist activity_event: {e}")
+                    continue
+
+                # Forward to all of the user's app sessions for live UI update
+                forward = {
+                    "type": "activity_event",
+                    "id": event_id,
+                    "device_id": device_id,
+                    "dog_id": dog_id,
+                    "event_type": event_type,
+                    "timestamp": ts,
+                    "payload": stored["payload"],
+                }
+                await manager.send_to_user_apps(owner_id, forward)
                 continue
 
             # Handle schedule events from robot (Build 41 - Schedule Event Verification)

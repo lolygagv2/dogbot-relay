@@ -215,6 +215,28 @@ def init_db():
         )
     """)
 
+    # Activity events (Phase 3 / A3): per-event log streamed by robots, queryable by app
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS activity_events (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            dog_id TEXT,
+            type TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            payload TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_activity_events_user_dog_ts
+        ON activity_events(user_id, dog_id, timestamp DESC)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_activity_events_user_ts
+        ON activity_events(user_id, timestamp DESC)
+    """)
+
     # Voice commands (Phase 2 / A2): per-dog voice clips synced from app to robot
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS voice_commands (
@@ -1458,6 +1480,121 @@ def delete_old_events(days: int = 30) -> int:
 
     if deleted > 0:
         logger.info(f"[EVENT-CLEANUP] Deleted {deleted} events older than {days} days")
+    return deleted
+
+
+# ============== Activity Events (Phase 3 / A3) ==============
+
+ACTIVITY_RETENTION_DAYS = 90
+
+
+def insert_activity_event(
+    event_id: str,
+    user_id: str,
+    device_id: str,
+    dog_id: Optional[str],
+    type: str,
+    timestamp: str,
+    payload: Optional[dict],
+) -> dict:
+    """Persist a single activity event row."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    created_at = datetime.now(timezone.utc).isoformat()
+    payload_json = json.dumps(payload) if payload is not None else None
+    cursor.execute(
+        """INSERT INTO activity_events (id, user_id, device_id, dog_id, type, timestamp, payload, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (event_id, user_id, device_id, dog_id, type, timestamp, payload_json, created_at),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "id": event_id,
+        "user_id": user_id,
+        "device_id": device_id,
+        "dog_id": dog_id,
+        "type": type,
+        "timestamp": timestamp,
+        "payload": payload or {},
+        "created_at": created_at,
+    }
+
+
+def query_activity_events(
+    user_id: str,
+    dog_id: Optional[str] = None,
+    since: Optional[str] = None,
+    cursor_ts: Optional[str] = None,
+    cursor_id: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Query events, sorted by (timestamp DESC, id DESC). Returns up to `limit` rows.
+
+    `cursor_ts` + `cursor_id` form the keyset cursor: rows strictly older than the cursor.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    conditions = ["user_id = ?"]
+    params: list = [user_id]
+
+    if dog_id is not None:
+        conditions.append("dog_id = ?")
+        params.append(dog_id)
+
+    if since is not None:
+        conditions.append("timestamp >= ?")
+        params.append(since)
+
+    if cursor_ts is not None:
+        # Strictly older than cursor (keyset pagination by (timestamp, id))
+        conditions.append("(timestamp < ? OR (timestamp = ? AND id < ?))")
+        params.extend([cursor_ts, cursor_ts, cursor_id or ""])
+
+    where_clause = " AND ".join(conditions)
+
+    cursor.execute(
+        f"""SELECT id, user_id, device_id, dog_id, type, timestamp, payload, created_at
+            FROM activity_events
+            WHERE {where_clause}
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?""",
+        params + [limit],
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    result = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        result.append({
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "device_id": row["device_id"],
+            "dog_id": row["dog_id"],
+            "type": row["type"],
+            "timestamp": row["timestamp"],
+            "payload": payload,
+            "created_at": row["created_at"],
+        })
+    return result
+
+
+def delete_old_activity_events(days: int = ACTIVITY_RETENTION_DAYS) -> int:
+    """Apply rolling retention to activity_events. Returns count deleted."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cursor.execute("DELETE FROM activity_events WHERE timestamp < ?", (cutoff,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    if deleted > 0:
+        logger.info(f"[ACTIVITY-CLEANUP] Deleted {deleted} events older than {days} days")
     return deleted
 
 

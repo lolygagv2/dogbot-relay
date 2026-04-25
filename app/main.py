@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.connection_manager import get_connection_manager
 from app.models import HealthResponse
-from app.routers import auth, device, dogs, events, media, metrics, music, schedule, turn, user, voice_commands, websocket
+from app.routers import activity, auth, device, dogs, events, media, metrics, music, schedule, turn, user, voice_commands, websocket
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +36,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(activity.router)
 app.include_router(auth.router)
 app.include_router(device.router)
 app.include_router(dogs.router)
@@ -103,10 +104,15 @@ async def startup_event():
     logger.info(f"Debug mode: {settings.debug}")
 
     # Prune old stored events (30-day retention)
-    from app.database import delete_old_events
+    from app.database import delete_old_activity_events, delete_old_events
     deleted = delete_old_events(days=30)
     if deleted:
         logger.info(f"Startup cleanup: removed {deleted} old events")
+
+    # Phase 3 / A3: 90-day rolling retention on activity_events
+    pruned = delete_old_activity_events(days=90)
+    if pruned:
+        logger.info(f"Startup cleanup: removed {pruned} old activity events")
 
 
 @app.on_event("shutdown")
