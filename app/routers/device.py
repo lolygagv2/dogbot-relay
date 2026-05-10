@@ -70,7 +70,7 @@ async def register_device(
 
     return DeviceRegisterResponse(
         success=True,
-        websocket_url="wss://api.wimz.io/ws/device"
+        websocket_url="wss://api.wimzai.com/ws/device"
     )
 
 

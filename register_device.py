@@ -49,7 +49,7 @@ def main():
     print("WebSocket Connection URL:")
     print("-" * 60)
     print(f"\nws://localhost:8000/ws/device?device_id={device_id}&sig={signature}")
-    print(f"\nwss://api.wimz.io/ws/device?device_id={device_id}&sig={signature}")
+    print(f"\nwss://api.wimzai.com/ws/device?device_id={device_id}&sig={signature}")
 
     print("\n" + "-" * 60)
     print("IMPORTANT: Signature Format")

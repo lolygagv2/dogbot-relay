@@ -44,7 +44,7 @@ Version: 1.1 - Added WebRTC/Cloudflare Calls integration
 **Robot (.env)**
 ```bash
 # Relay Server
-RELAY_URL=wss://api.wimz.io/ws/device
+RELAY_URL=wss://api.wimzai.com/ws/device
 DEVICE_ID=wimz_abc123
 DEVICE_SECRET=your_device_secret_here
 
@@ -71,7 +71,7 @@ CLOUDFLARE_TURN_API_TOKEN=your_turn_api_token
 ```dart
 // lib/core/config/environment.dart
 class CloudConfig {
-  static const relayUrl = 'wss://api.wimz.io';
+  static const relayUrl = 'wss://api.wimzai.com';
   // ICE servers fetched from relay at runtime
 }
 ```

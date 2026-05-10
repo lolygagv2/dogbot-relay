@@ -68,7 +68,7 @@
 - [ ] Set up Let's Encrypt SSL certificate
 
 ### Domain & SSL
-- [ ] Set up domain (api.wimz.io or similar)
+- [ ] Set up domain (api.wimzai.com or similar)
 - [ ] Point domain to Lightsail static IP
 - [ ] Update CORS settings for production
 
