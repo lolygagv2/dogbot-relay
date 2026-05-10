@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.connection_manager import ConnectionManager, get_connection_manager
 from app.database import (
     get_device_owner as db_get_device_owner,
+    get_device_secret as db_get_device_secret,
     get_metrics as db_get_metrics,
     get_user_dogs,
     insert_activity_event as db_insert_activity_event,
@@ -590,8 +591,11 @@ async def websocket_device_endpoint(
     # Log what we received for debugging
     logger.info(f"Device auth attempt: device_id={device_id}, timestamp={timestamp}, sig={sig[:16]}...")
 
+    # Use per-device secret if stored, otherwise fall back to global
+    device_secret = db_get_device_secret(device_id) or settings.device_secret
+
     # Verify device signature - try with timestamp first, then without
-    sig_valid = verify_device_signature_with_timestamp(device_id, timestamp, sig, settings.device_secret)
+    sig_valid = verify_device_signature_with_timestamp(device_id, timestamp, sig, device_secret)
 
     if not sig_valid:
         logger.warning(f"Signature verification failed for {device_id}")
@@ -1341,7 +1345,8 @@ async def websocket_generic_endpoint(
         # Determine if this is a robot or app connection
         if device_id:
             # Robot connection - token is HMAC signature
-            if not verify_device_signature(device_id, token, settings.device_secret):
+            device_secret = db_get_device_secret(device_id) or settings.device_secret
+            if not verify_device_signature(device_id, token, device_secret):
                 await websocket.send_json({
                     "type": "auth_result",
                     "success": False,

@@ -9,6 +9,7 @@ from app.auth import (
 )
 from app.config import Settings, get_settings
 from app.connection_manager import ConnectionManager, get_connection_manager
+from app.database import get_device_secret as db_get_device_secret
 from app.models import (
     Device,
     DevicePair,
@@ -44,8 +45,9 @@ async def register_device(
             detail="Invalid authorization header format"
         )
 
-    # Verify device signature
-    if not verify_device_signature(device_data.device_id, signature, settings.device_secret):
+    # Verify device signature (per-device secret if stored, else global)
+    device_secret = db_get_device_secret(device_data.device_id) or settings.device_secret
+    if not verify_device_signature(device_data.device_id, signature, device_secret):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid device signature"

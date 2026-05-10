@@ -126,6 +126,13 @@ def init_db():
         )
     """)
 
+    # Migration: add device_secret column to robots (per-device HMAC secrets)
+    cursor.execute("PRAGMA table_info(robots)")
+    robot_columns = [col[1] for col in cursor.fetchall()]
+    if "device_secret" not in robot_columns:
+        cursor.execute("ALTER TABLE robots ADD COLUMN device_secret TEXT")
+        logger.info("[MIGRATION] Added device_secret column to robots table")
+
     # Dog photos table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS dog_photos (
@@ -761,6 +768,21 @@ def get_device_owner(device_id: str) -> Optional[str]:
     return row["owner_user_id"] if row else None
 
 
+def get_device_secret(device_id: str) -> Optional[str]:
+    """Get the per-device HMAC secret from the robots table, if set."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT device_secret FROM robots WHERE device_id = ?",
+        (device_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    return row["device_secret"] if row and row["device_secret"] else None
+
+
 def get_all_device_pairings() -> dict[str, str]:
     """Get all device_id -> user_id pairings for loading into memory."""
     conn = get_connection()
@@ -804,17 +826,18 @@ def seed_default_pairings():
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # Seed default test pairings
+    # Seed default test pairings: (id, device_id, owner_user_id, name, device_secret)
     default_pairings = [
-        ("robot_001", "wimz_robot_01", "user_000001", "WIM-Z Robot 01"),
-        ("robot_002", "wimz_robot_02", "user_000001", "WIM-Z Robot 02"),
+        ("robot_001", "wimz_robot_01", "user_000001", "WIM-Z Robot 01", None),
+        ("robot_002", "wimz_robot_02", "user_000001", "WIM-Z Robot 02", None),
+        ("robot_003", "wimz_robot_03", "user_000001", "WIM-Z Robot 03", "hwPpwQG6bIXNIQYOK5sdHCkb9weY64wzbnBzr8f7lWY"),
     ]
 
-    for robot_id, device_id, owner_id, name in default_pairings:
+    for robot_id, device_id, owner_id, name, secret in default_pairings:
         cursor.execute(
-            """INSERT OR IGNORE INTO robots (id, device_id, owner_user_id, name, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (robot_id, device_id, owner_id, name, now)
+            """INSERT OR IGNORE INTO robots (id, device_id, owner_user_id, name, device_secret, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (robot_id, device_id, owner_id, name, secret, now)
         )
         logger.info(f"[PAIRING] Seeded: device {device_id} -> user {owner_id}")
 
