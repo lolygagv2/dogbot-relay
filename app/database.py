@@ -831,6 +831,7 @@ def seed_default_pairings():
         ("robot_001", "wimz_robot_01", "user_000001", "WIM-Z Robot 01", None),
         ("robot_002", "wimz_robot_02", "user_000001", "WIM-Z Robot 02", None),
         ("robot_003", "wimz_robot_03", "user_000001", "WIM-Z Robot 03", "hwPpwQG6bIXNIQYOK5sdHCkb9weY64wzbnBzr8f7lWY"),
+        ("robot_004", "wimz_robot_04", "user_000001", "WIM-Z Robot 04", "OsRl_fMmesv-8CYskeLran9pBWUato-2kXQF_jVTuMk"),
     ]
 
     for robot_id, device_id, owner_id, name, secret in default_pairings:
