@@ -51,3 +51,10 @@ Thumbs.db
 
 # Zone identifier files (Windows/WSL)
 *:Zone.Identifier
+
+# Misplaced robot ML artifacts (belong to dogbot repo, not the relay)
+behavior_shared.pt
+behavior_shared.ts
+train_behavior_lstm.py
+sequences_imx500/
+sequences_imx708/
