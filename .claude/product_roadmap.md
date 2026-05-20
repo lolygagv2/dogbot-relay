@@ -1,9 +1,9 @@
 # WIM-Z Cloud Relay Server - Product Roadmap
-*Last Updated: January 2026*
+*Last Updated: 2026-05-20 (Build 50)*
 
 ## Overview
 
-The WIM-Z Cloud Relay Server is the cloud infrastructure component that connects WIM-Z robots to mobile apps. It handles WebSocket message routing and WebRTC signaling for video streaming.
+The WIM-Z Cloud Relay Server is the cloud infrastructure component that connects WIM-Z robots to mobile apps. It handles WebSocket message routing, WebRTC signaling, REST APIs for accounts/devices/dogs/media, and persistent storage.
 
 ## Architecture Position
 
@@ -21,10 +21,12 @@ The WIM-Z Cloud Relay Server is the cloud infrastructure component that connects
                          │  (FastAPI)      │
                          └────────┬────────┘
                                   │
-                         ┌────────▼────────┐
-                         │ Cloudflare TURN │
-                         │ (Credential Gen)│
-                         └─────────────────┘
+                  ┌───────────────┼────────────────┐
+                  │               │                │
+         ┌────────▼──────┐ ┌──────▼──────┐ ┌───────▼────────┐
+         │ Cloudflare    │ │ SQLite DB   │ │ Media storage  │
+         │ TURN          │ │ (relay.db)  │ │ (uploads dir)  │
+         └───────────────┘ └─────────────┘ └────────────────┘
 ```
 
 ## Current Status
@@ -32,89 +34,92 @@ The WIM-Z Cloud Relay Server is the cloud infrastructure component that connects
 ### Phase 1: Core Infrastructure ✅ COMPLETE
 - [x] FastAPI application structure
 - [x] Pydantic configuration from environment
-- [x] Health check endpoint
+- [x] Health check + stats endpoints
 - [x] CORS middleware
 
 ### Phase 2: Authentication ✅ COMPLETE
 - [x] JWT token generation and validation
-- [x] Device signature verification (HMAC)
-- [x] Auth router with login endpoint
+- [x] Per-device HMAC signature verification (timestamped)
+- [x] Auth router (register / login / me)
 
 ### Phase 3: WebSocket Management ✅ COMPLETE
 - [x] ConnectionManager for tracking connections
-- [x] Robot WebSocket endpoint (/ws/device)
-- [x] App WebSocket endpoint (/ws/app)
+- [x] Robot (`/ws/device`) and app (`/ws/app`) endpoints + generic `/ws`
 - [x] Message routing between app and robot
-- [x] Device ownership tracking
+- [x] Device ownership tracking (database-backed)
+- [x] Single-session enforcement, stale command rejection (>2s dropped)
+- [x] `user_connected` / `user_disconnected` lifecycle events
 
 ### Phase 4: WebRTC Signaling ✅ COMPLETE
-- [x] Cloudflare TURN service integration
-- [x] TURN credentials endpoint
-- [x] WebRTC signaling message types defined
-- [x] Ready for signaling message routing
+- [x] Cloudflare TURN service integration (24h TTL)
+- [x] TURN credentials endpoint (POST + GET)
 
----
+### Phase 5: WebRTC Signaling Implementation ✅ COMPLETE
+- [x] `webrtc_request` handling — session ID, TURN creds, forward to robot
+- [x] `webrtc_offer` / `webrtc_answer` / `webrtc_ice` routing
+- [x] `webrtc_close` cleanup
+- [x] Active WebRTC session tracking, single session per device
 
-## Remaining Work
-
-### Phase 5: WebRTC Signaling Implementation 🔄 IN PROGRESS
-- [ ] Handle `webrtc_request` from app
-- [ ] Forward `webrtc_offer` from robot to app
-- [ ] Forward `webrtc_answer` from app to robot
-- [ ] Route `webrtc_ice` candidates bidirectionally
-- [ ] Handle `webrtc_close` cleanup
-- [ ] Track active WebRTC sessions
-
-### Phase 6: Production Hardening
-- [ ] Rate limiting
-- [ ] Request logging and monitoring
+### Phase 6: Production Hardening 🔄 PARTIAL
+- [x] Command rate limiting (ghost-command hardening)
+- [x] Client IP logging throughout
+- [x] Diagnostic logging (set_mode, status_update mode field, schedule/mission)
+- [x] Connection stability / disconnect grace period
+- [x] Drive-command fast path + uvloop (latency reduction)
 - [ ] Error tracking (Sentry or similar)
-- [ ] Connection timeout handling
-- [ ] Graceful shutdown
+- [ ] Metrics/monitoring export (Prometheus)
+- [ ] Formal graceful shutdown audit
 
-### Phase 7: AWS Lightsail Deployment
-- [ ] Set up Lightsail instance (Ubuntu)
-- [ ] Configure security group (ports 8000, 22)
-- [ ] Install Python and dependencies
-- [ ] Set up environment variables (.env)
-- [ ] Configure domain and SSL (Let's Encrypt)
-- [ ] Set up process manager (systemd or supervisor)
+### Phase 7: AWS Lightsail Deployment ✅ COMPLETE (live)
+- [x] Lightsail instance running, served at `api.wimzai.com`
+- [x] Environment variables in `.env`
+- [x] Per-device HMAC secrets for registered robots (03–05)
+- Note: ongoing ops happen directly on the server.
 
-### Phase 8: Database Integration (Future)
-- [ ] PostgreSQL for persistent data
-- [ ] User account storage
-- [ ] Device registration storage
-- [ ] Session history logging
+### Phase 8: Persistence ✅ COMPLETE (SQLite)
+- [x] SQLite database (`app/database.py`) — users, dogs, user_dogs, robots,
+      dog_photos, dog_metrics, mission_log, mission_schedules, user_settings,
+      activity_events, voice_commands, device_events
+- [ ] (Future) migrate to PostgreSQL if scale requires it
 
----
-
-## API Endpoints Summary
-
-| Endpoint | Method | Status | Purpose |
-|----------|--------|--------|---------|
-| `/health` | GET | ✅ | Health check |
-| `/stats` | GET | ✅ | Connection statistics |
-| `/api/auth/login` | POST | ✅ | Get JWT token |
-| `/api/turn/credentials` | POST | ✅ | Generate TURN creds |
-| `/ws/app` | WS | ✅ | App WebSocket |
-| `/ws/device` | WS | ✅ | Robot WebSocket |
+### Build 48–50 Feature Work ✅ COMPLETE
+- [x] Build 48: treat_counter_set logging, dog profile sync to robot
+- [x] Build 49: media upload/download endpoints for robot video delivery
+- [x] Build 50 Phase 1: `session_hello` handshake + dog profile schema
+- [x] Build 50 Phase 2: voice command sync
+- [x] Build 50 Phase 3: activity event log
 
 ---
 
-## Dependencies
+## Remaining / Future Work
 
-**Core:**
-- FastAPI + Uvicorn
-- Pydantic + pydantic-settings
-- python-jose (JWT)
-- websockets
+- Phase 6 hardening leftovers: error tracking, metrics export, shutdown audit
+- Rate-limit tuning under real load
+- PostgreSQL migration (only if SQLite becomes a bottleneck)
+- Redis for multi-instance session state (only if horizontally scaling)
+- Deprecate the legacy `/missions/schedule/*` route aliases once the app
+  fully moves to `/schedules/*`
 
-**External Services:**
-- Cloudflare Calls (TURN service)
+---
 
-**Future:**
-- PostgreSQL (user/device storage)
-- Redis (session caching, optional)
+## API Surface (Build 50)
+
+| Area | Prefix | Notes |
+|------|--------|-------|
+| Health/Debug | `/health`, `/stats`, `/debug/pairing`, `/debug/latency` | |
+| Auth | `/api/auth/*` | register, login, me |
+| Device | `/api/device/*` | register, pair, list, get, delete |
+| User | `/api/user/*` | pair/unpair device, devices, delete |
+| Dogs | `/api/dogs/*` | CRUD + photos |
+| Metrics | `/api/metrics/*` | log, get, history |
+| Events | `/api/events/{device_id}` | dashboard, summary |
+| Activity | `/api/activity` | activity event log |
+| Voice Commands | `/api/voice-commands/*` | CRUD + file |
+| Media | `/api/media/*` | upload, download |
+| Music | `/api/music/*` | upload, file get/delete |
+| Schedules | `/schedules/*`, `/missions/schedule/*` | legacy aliases, deprecated tag |
+| TURN | `/api/turn/credentials` | POST + GET |
+| WebSocket | `/ws/device`, `/ws/app`, `/ws` | |
 
 ---
 

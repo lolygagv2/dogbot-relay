@@ -1,118 +1,72 @@
 # WIM-Z Relay Server - Development TODO List
-*Last Updated: January 20, 2026*
+*Last Updated: 2026-05-20 (Build 50)*
 
-## Current Status: WebRTC Signaling Implementation
+## Current Status: Live in production (`api.wimzai.com`), Build 50
 
-### ✅ COMPLETED - Core Infrastructure
-- [x] FastAPI application setup
-- [x] Configuration from environment
-- [x] Health check endpoint
-- [x] Connection statistics endpoint
-
-### ✅ COMPLETED - Authentication
-- [x] JWT token generation
-- [x] JWT token validation
-- [x] Device signature verification
-- [x] Auth router
-
-### ✅ COMPLETED - WebSocket Infrastructure
-- [x] ConnectionManager class
-- [x] Robot connection handling
-- [x] App connection handling
-- [x] Message routing
-- [x] Device ownership tracking
-
-### ✅ COMPLETED - TURN Service
-- [x] Cloudflare TURN integration
-- [x] Credentials endpoint
+Core infrastructure, auth, WebSocket routing, WebRTC signaling, REST APIs,
+and SQLite persistence are all complete and deployed. Ongoing work happens
+directly on the Lightsail server.
 
 ---
 
-## 🔄 IN PROGRESS - WebRTC Signaling
+## ✅ COMPLETED
 
-### Priority 1: Complete WebRTC Message Routing
-- [ ] Handle `webrtc_request` in WebSocket handler
-  - Generate session ID
-  - Get TURN credentials
-  - Forward to robot with credentials
-  - Send credentials to app
-- [ ] Route `webrtc_offer` from robot to app
-- [ ] Route `webrtc_answer` from app to robot
-- [ ] Route `webrtc_ice` bidirectionally
-- [ ] Handle `webrtc_close` with cleanup
-
-### Priority 2: Session Tracking
-- [ ] Track active WebRTC sessions
-- [ ] Clean up sessions on disconnect
-- [ ] Handle session timeouts
-
----
-
-## 🎯 NEXT - AWS Lightsail Deployment
-
-### Lightsail Instance Setup
-- [ ] Create Lightsail instance (Ubuntu 22.04)
-- [ ] Configure firewall rules (ports 22, 8000, 443)
-- [ ] SSH into instance and update packages
-
-### Application Deployment
-- [ ] Clone/upload code to instance
-- [ ] Install Python 3.11+ and pip
-- [ ] Install requirements (`pip install -r requirements.txt`)
-- [ ] Create `.env` file with production secrets
-- [ ] Test server runs (`python run.py`)
-
-### Production Configuration
-- [ ] Set up systemd service for auto-restart
-- [ ] Configure Nginx as reverse proxy (optional)
-- [ ] Set up Let's Encrypt SSL certificate
-
-### Domain & SSL
-- [ ] Set up domain (api.wimzai.com or similar)
-- [ ] Point domain to Lightsail static IP
-- [ ] Update CORS settings for production
+- Core infrastructure (FastAPI, config, health/stats)
+- Authentication (JWT + per-device HMAC signatures)
+- WebSocket infrastructure (ConnectionManager, robot/app endpoints, routing,
+  single-session enforcement, stale-command rejection, lifecycle events)
+- WebRTC signaling — full request/offer/answer/ice/close routing + session tracking
+- Cloudflare TURN integration (24h TTL)
+- REST APIs: auth, device, user, dogs, metrics, events, activity,
+  voice-commands, media, music, schedules
+- SQLite persistence (13 tables, `app/database.py`)
+- AWS Lightsail deployment (live at `api.wimzai.com`)
+- Diagnostic logging + command rate limiting (ghost-command hardening)
+- set_mode source/timestamp passthrough + logging (see MODE_AUDIT_FINDINGS.md)
+- Builds 48–50: media delivery, session_hello handshake, voice command sync,
+  activity event log
 
 ---
 
-## 🔮 FUTURE - Enhancements
+## 🔄 OPEN - Production Hardening (Phase 6 leftovers)
 
-### Production Hardening
-- [ ] Rate limiting middleware
-- [ ] Request logging
-- [ ] Error tracking (Sentry)
-- [ ] Metrics collection (Prometheus)
+- [ ] Error tracking (Sentry or similar)
+- [ ] Metrics/monitoring export (Prometheus or similar)
+- [ ] Formal graceful-shutdown audit
+- [ ] Rate-limit tuning under real load
 
-### Database Integration
-- [ ] Add PostgreSQL
-- [ ] User account table
-- [ ] Device registration table
-- [ ] Session history table
+---
 
-### Scaling
-- [ ] Redis for session state (multi-instance)
-- [ ] Connection state synchronization
-- [ ] Auto-scaling configuration
+## 🔮 FUTURE
+
+- [ ] Deprecate legacy `/missions/schedule/*` aliases once app moves to `/schedules/*`
+- [ ] PostgreSQL migration (only if SQLite becomes a bottleneck)
+- [ ] Redis for multi-instance session state (only if horizontally scaling)
 
 ---
 
 ## Key Files Reference
 
 ### Core Application
-- `app/main.py` - FastAPI app entry
+- `app/main.py` - FastAPI app entry, router includes, health/stats/debug
 - `app/config.py` - Settings
 - `app/models.py` - Pydantic models
+- `app/database.py` - SQLite schema + access
 
 ### Authentication
-- `app/auth.py` - JWT + device auth
+- `app/auth.py` - JWT + per-device HMAC signature verification
 
-### WebSocket
-- `app/connection_manager.py` - Connection tracking
-- `app/routers/websocket.py` - WS endpoints
+### WebSocket / WebRTC
+- `app/connection_manager.py` - Connection + WebRTC session tracking
+- `app/routers/websocket.py` - WS endpoints + WebRTC signaling handlers
 
-### WebRTC
-- `app/services/turn_service.py` - TURN credentials
-- `app/routers/turn.py` - TURN endpoint
+### REST Routers
+- `app/routers/` - auth, device, user, dogs, metrics, events, activity,
+  voice_commands, media, music, schedule, turn
+
+### Services
+- `app/services/turn_service.py` - Cloudflare TURN credentials
 
 ---
 
-*This TODO list reflects relay server development status as of January 20, 2026*
+*Reflects relay server development status as of Build 50, 2026-05-20.*
