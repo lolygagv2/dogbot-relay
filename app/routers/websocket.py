@@ -309,6 +309,35 @@ async def _await_session_hello(
 
 # ============== WebRTC Signaling Handlers ==============
 
+# Normalized signaling type names for forwarding logs
+_SIGNALING_LOG_NAMES = {
+    "webrtc_request": "register",
+    "webrtc_offer": "offer",
+    "webrtc_answer": "answer",
+    "webrtc_ice": "ice-candidate",
+    "webrtc_close": "close",
+}
+
+
+def log_signaling_forward(source: str, destination: str, message: dict) -> None:
+    """Log a forwarded WebRTC signaling message for latency diagnostics.
+
+    Records relay-side timestamp, direction, normalized message type, and
+    serialized payload size. Pure logging — does not alter forwarding behavior.
+    """
+    raw_type = message.get("type", "unknown")
+    msg_type = _SIGNALING_LOG_NAMES.get(raw_type, raw_type)
+    try:
+        size = len(json.dumps(message).encode("utf-8"))
+    except (TypeError, ValueError):
+        size = -1
+    logger.info(
+        f"[SIGNAL] ts={datetime.now(timezone.utc).isoformat()} "
+        f"src={source} dst={destination} type={msg_type} "
+        f"size={size}B session={message.get('session_id')}"
+    )
+
+
 async def handle_webrtc_request(
     websocket: WebSocket,
     message: dict,
@@ -416,6 +445,7 @@ async def handle_webrtc_request(
         "ice_servers": ice_servers.get("iceServers", ice_servers)
     })
 
+    log_signaling_forward("app", f"robot:{device_id}", message)
     logger.info(f"[WEBRTC] Session {session_id} initiated: user {user_id} -> device {device_id}")
     logger.info(f"[WEBRTC] Routing table entries: {len(webrtc_sessions)}, Manager active sessions: {manager.webrtc_sessions}")
 
@@ -430,6 +460,7 @@ async def handle_webrtc_offer(message: dict, device_id: str, manager: Connection
     if session and session["app_ws"] and session["device_id"] == device_id:
         try:
             await session["app_ws"].send_json(message)
+            log_signaling_forward(f"robot:{device_id}", f"app:{session['user_id']}", message)
             logger.info(f"[WEBRTC] Forwarded offer for session {session_id}")
         except Exception as e:
             logger.error(f"[WEBRTC] Failed to forward offer for session {session_id}: {e}")
@@ -448,6 +479,7 @@ async def handle_webrtc_answer(message: dict, user_id: str, manager: ConnectionM
         device_id = session["device_id"]
         success = await manager.send_to_robot(device_id, message)
         if success:
+            log_signaling_forward(f"app:{user_id}", f"robot:{device_id}", message)
             logger.info(f"[WEBRTC] Forwarded answer for session {session_id} to device {device_id}")
         else:
             logger.error(f"[WEBRTC] Failed to forward answer for session {session_id}")
@@ -474,6 +506,7 @@ async def handle_webrtc_ice(
         if session["device_id"] == identifier and session["app_ws"]:
             try:
                 await session["app_ws"].send_json(message)
+                log_signaling_forward(f"robot:{identifier}", f"app:{session['user_id']}", message)
             except Exception as e:
                 logger.error(f"[WEBRTC] Failed to forward ICE to app: {e}")
     else:
@@ -481,6 +514,7 @@ async def handle_webrtc_ice(
         if session["user_id"] == identifier:
             device_id = session["device_id"]
             await manager.send_to_robot(device_id, message)
+            log_signaling_forward(f"app:{identifier}", f"robot:{device_id}", message)
 
 
 async def handle_webrtc_close(message: dict, manager: ConnectionManager):
@@ -499,6 +533,7 @@ async def handle_webrtc_close(message: dict, manager: ConnectionManager):
         if session["app_ws"]:
             try:
                 await session["app_ws"].send_json({"type": "webrtc_close", "session_id": session_id})
+                log_signaling_forward("relay", f"app:{session['user_id']}", {"type": "webrtc_close", "session_id": session_id})
             except Exception:
                 pass
 
