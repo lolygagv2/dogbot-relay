@@ -42,7 +42,7 @@ SESSION_HEARTBEAT_CHECK_INTERVAL = 5
 
 # WS close codes (B2)
 WS_CLOSE_HELLO_FAILED = 4000          # missing/invalid session_hello or user_id mismatch
-WS_CLOSE_INVALID_TOKEN = 4001         # invalid/expired JWT — permanent, app should re-auth
+WS_CLOSE_AUTH_FAILED = 4001           # invalid/expired JWT or device signature — permanent, re-auth
 WS_CLOSE_HEARTBEAT_TIMEOUT = 4002     # no ping for SESSION_HEARTBEAT_TIMEOUT_SECONDS
 WS_CLOSE_SESSION_SUPERSEDED = 4003    # replaced by a newer session — expected, app should not retry
 
@@ -642,7 +642,7 @@ async def websocket_device_endpoint(
 
     if not sig_valid:
         logger.warning(f"Signature verification failed for {device_id}")
-        await websocket.close(code=4001, reason="Invalid device signature")
+        await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason="Invalid device signature")
         return
 
     logger.info(f"Device {device_id} authenticated successfully")
@@ -1009,12 +1009,12 @@ async def websocket_app_endpoint(
     # Decode and verify JWT token
     payload = decode_token(token, settings)
     if not payload:
-        await websocket.close(code=WS_CLOSE_INVALID_TOKEN, reason="Invalid or expired token")
+        await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason="Invalid or expired token")
         return
 
     user_id = payload.get("sub")
     if not user_id:
-        await websocket.close(code=WS_CLOSE_INVALID_TOKEN, reason="Invalid token payload")
+        await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason="Invalid token payload")
         return
 
     # Extract client IP
@@ -1395,7 +1395,7 @@ async def websocket_generic_endpoint(
                     "success": False,
                     "message": "Invalid device signature"
                 })
-                await websocket.close(code=4001)
+                await websocket.close(code=WS_CLOSE_AUTH_FAILED)
                 return
 
             connection_type = "robot"
@@ -1435,7 +1435,7 @@ async def websocket_generic_endpoint(
                     "success": False,
                     "message": "Invalid or expired token"
                 })
-                await websocket.close(code=4001)
+                await websocket.close(code=WS_CLOSE_AUTH_FAILED)
                 return
 
             user_id = payload.get("sub")
@@ -1445,7 +1445,7 @@ async def websocket_generic_endpoint(
                     "success": False,
                     "message": "Invalid token payload"
                 })
-                await websocket.close(code=4001)
+                await websocket.close(code=WS_CLOSE_AUTH_FAILED)
                 return
 
             connection_type = "app"
