@@ -349,6 +349,13 @@ async def handle_webrtc_request(
     The session_id field is the WebSocket session_id (B2.4) — the relay reuses it
     as the WebRTC session_id so all signaling frames carry one consistent identifier.
     """
+    # Mark inbound receipt before any processing — paired with the outbound
+    # [SIGNAL] forward log, this gives the relay's request processing delta.
+    logger.info(
+        f"[SIGNAL] ts={datetime.now(timezone.utc).isoformat()} "
+        f"src=app:{user_id} inbound=register session={message.get('session_id')}"
+    )
+
     device_id = message.get("device_id")
 
     if not device_id:
