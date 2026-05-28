@@ -262,6 +262,22 @@ def init_db():
         ON voice_commands(user_id, dog_id, updated_at DESC)
     """)
 
+    # Password reset codes
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS password_reset_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            code TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_reset_codes_email
+        ON password_reset_codes(email, used, expires_at)
+    """)
+
     # Device event storage (for offline app retrieval)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS device_events (
@@ -365,6 +381,78 @@ def update_user_name(user_id: str, name: str) -> bool:
     cursor = conn.cursor()
 
     cursor.execute("UPDATE users SET name = ? WHERE id = ?", (name, user_id))
+    updated = cursor.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    return updated
+
+
+# ============== Password Reset Functions ==============
+
+def create_reset_code(email: str, code: str, expires_at: str) -> None:
+    """Store a password reset code."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Invalidate any existing unused codes for this email
+    cursor.execute(
+        "UPDATE password_reset_codes SET used = 1 WHERE email = ? AND used = 0",
+        (email,)
+    )
+
+    created_at = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        "INSERT INTO password_reset_codes (email, code, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)",
+        (email, code, expires_at, created_at)
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_valid_reset_code(email: str, code: str) -> Optional[dict]:
+    """Get a valid (unexpired, unused) reset code."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    now = datetime.now(timezone.utc).isoformat()
+    cursor.execute(
+        "SELECT * FROM password_reset_codes WHERE email = ? AND code = ? AND used = 0 AND expires_at > ?",
+        (email, code, now)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return {"id": row["id"], "email": row["email"], "code": row["code"]}
+    return None
+
+
+def invalidate_reset_codes(email: str) -> None:
+    """Mark all reset codes for an email as used."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "UPDATE password_reset_codes SET used = 1 WHERE email = ? AND used = 0",
+        (email,)
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def update_user_password(email: str, hashed_password: str) -> bool:
+    """Update a user's password by email."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "UPDATE users SET hashed_password = ? WHERE email = ?",
+        (hashed_password, email)
+    )
     updated = cursor.rowcount > 0
 
     conn.commit()

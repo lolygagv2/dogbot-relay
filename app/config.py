@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # TURN credential TTL (24 hours default for stability)
     turn_credential_ttl: int = 86400  # 24 hours in seconds
 
+    # AWS SES (password reset emails)
+    aws_ses_access_key_id: str = ""
+    aws_ses_secret_access_key: str = ""
+    aws_ses_region: str = "us-east-1"
+    ses_sender_email: str = "noreply@wimzai.com"
+
     # Rate limiting (app-to-robot commands)
     rate_limit_window_seconds: int = 60
     rate_limit_max_commands: int = 30
