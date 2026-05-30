@@ -144,7 +144,9 @@ class EventReplayManager:
 
     def get_or_create(self, device_id: str) -> EventBuffer:
         if device_id not in self._buffers:
-            initial_seq = self._persisted_seqs.get(device_id, 0)
+            # Seed at persisted + interval to avoid seq reuse after unclean restart
+            persisted = self._persisted_seqs.get(device_id, 0)
+            initial_seq = persisted + SEQ_PERSIST_INTERVAL
             self._buffers[device_id] = EventBuffer(device_id, initial_seq)
         return self._buffers[device_id]
 

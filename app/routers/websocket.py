@@ -124,7 +124,12 @@ def maybe_store_event(device_id: str, owner_id: str, message: dict):
 
 
 def maybe_buffer_event(device_id: str, message: dict) -> Optional[int]:
-    """Buffer a device event for offline replay. Stamps seq/ts_server in-place if sequenced."""
+    """Buffer a device event for offline replay.
+
+    Stamps seq, ts_server, and event_id in-place on all sequenced events so that
+    live forwarding and replay share a single stable id for app-side dedup against
+    /api/activity rows.
+    """
     event_type = message.get("event") or message.get("type")
     if not event_type:
         return None
@@ -133,6 +138,9 @@ def maybe_buffer_event(device_id: str, message: dict) -> Optional[int]:
     if seq is not None:
         message["seq"] = seq
         message["ts_server"] = buf._buffer[-1]["ts_server"] if buf._buffer else None
+        # Assign a stable event_id once — used by both DB storage and WS forwarding/replay
+        if "event_id" not in message:
+            message["event_id"] = str(uuid.uuid4())
     return seq
 
 
@@ -1121,8 +1129,10 @@ async def websocket_app_endpoint(
         # Replay missed events
         events = device_buf.replay_since(last_seen_seq)
         for entry in events:
+            payload = entry["payload"]
             await _safe_send_json(websocket, {
-                **entry["payload"],
+                **payload,
+                "id": payload.get("event_id"),
                 "seq": entry["seq"],
                 "ts_server": entry["ts_server"],
                 "buffered": True,
@@ -1556,8 +1566,10 @@ async def websocket_generic_endpoint(
                         })
                     events = device_buf.replay_since(0)
                     for entry in events:
+                        payload = entry["payload"]
                         await websocket.send_json({
-                            **entry["payload"],
+                            **payload,
+                            "id": payload.get("event_id"),
                             "seq": entry["seq"],
                             "ts_server": entry["ts_server"],
                             "buffered": True,
