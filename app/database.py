@@ -312,6 +312,32 @@ def init_db():
             ON device_events(device_id, event_type, timestamp DESC)
         """)
 
+        # Replay buffer seq counters (persisted across restarts)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS replay_seq (
+                device_id TEXT PRIMARY KEY,
+                seq INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+
+        conn.commit()
+
+
+def get_replay_seqs() -> dict[str, int]:
+    """Load all persisted per-device seq counters."""
+    with db_connection() as conn:
+        rows = conn.execute("SELECT device_id, seq FROM replay_seq").fetchall()
+    return {row["device_id"]: row["seq"] for row in rows}
+
+
+def save_replay_seq(device_id: str, seq: int) -> None:
+    """Persist the current seq counter for a device."""
+    with db_connection() as conn:
+        conn.execute(
+            "INSERT INTO replay_seq (device_id, seq) VALUES (?, ?) "
+            "ON CONFLICT(device_id) DO UPDATE SET seq = excluded.seq",
+            (device_id, seq),
+        )
         conn.commit()
 
 

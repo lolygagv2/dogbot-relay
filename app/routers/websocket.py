@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from app.auth import decode_token, verify_device_signature, verify_device_signature_with_timestamp
 from app.config import Settings, get_settings
 from app.connection_manager import ConnectionManager, get_connection_manager
+from app.event_buffer import replay_manager
 from app.database import (
     get_device_owner as db_get_device_owner,
     get_device_secret as db_get_device_secret,
@@ -120,6 +121,19 @@ def maybe_store_event(device_id: str, owner_id: str, message: dict):
         db_store_event(device_id, owner_id, event_type, message)
     except Exception as e:
         logger.error(f"[EVENT-STORE] Failed to store {event_type} for {device_id}: {e}")
+
+
+def maybe_buffer_event(device_id: str, message: dict) -> Optional[int]:
+    """Buffer a device event for offline replay. Stamps seq/ts_server in-place if sequenced."""
+    event_type = message.get("event") or message.get("type")
+    if not event_type:
+        return None
+    buf = replay_manager.get_or_create(device_id)
+    seq = buf.append(event_type, message)
+    if seq is not None:
+        message["seq"] = seq
+        message["ts_server"] = buf._buffer[-1]["ts_server"] if buf._buffer else None
+    return seq
 
 
 # ============== B2 Session helpers ==============
@@ -305,6 +319,7 @@ async def _await_session_hello(
         "session_id": session_id,
         "device_id": device_id,
         "user_id": claimed_user_id,
+        "last_seen_seq": message.get("last_seen_seq", 0),
     }
 
 
@@ -689,6 +704,9 @@ async def websocket_device_endpoint(
                 continue
 
             msg_type = message.get("type")
+
+            # Buffer event for offline replay (stamps seq/ts_server in-place)
+            maybe_buffer_event(device_id, message)
 
             # Log large payloads with connection health monitoring (P1: Build 34)
             msg_size = len(data)
@@ -1087,6 +1105,30 @@ async def websocket_app_endpoint(
                 "user_id": user_id
             })
             logger.info(f"[CONNECT] Sent user_connected to robot {paired_device_id} for user {user_id} from {client_ip}")
+
+    # Replay buffered events for the device
+    last_seen_seq = hello.get("last_seen_seq", 0)
+    device_buf = replay_manager.get(device_id)
+    if device_buf:
+        # Send latest battery snapshot if available
+        battery = device_buf.get_latest_battery()
+        if battery:
+            await _safe_send_json(websocket, {
+                "type": "battery_snapshot",
+                "device_id": device_id,
+                **battery,
+            })
+        # Replay missed events
+        events = device_buf.replay_since(last_seen_seq)
+        for entry in events:
+            await _safe_send_json(websocket, {
+                **entry["payload"],
+                "seq": entry["seq"],
+                "ts_server": entry["ts_server"],
+                "buffered": True,
+            })
+        if events:
+            logger.info(f"[REPLAY] Sent {len(events)} buffered events to user {user_id} for device {device_id} (last_seen_seq={last_seen_seq})")
 
     # Send today's metrics for each of the user's dogs
     try:
@@ -1501,6 +1543,28 @@ async def websocket_generic_endpoint(
                     })
                     logger.info(f"[CONNECT] Sent user_connected to robot {device_id} for user {identifier} from {client_ip}")
 
+            # Replay buffered events for all user devices (legacy path)
+            for device_id in user_devices:
+                device_buf = replay_manager.get(device_id)
+                if device_buf:
+                    battery = device_buf.get_latest_battery()
+                    if battery:
+                        await websocket.send_json({
+                            "type": "battery_snapshot",
+                            "device_id": device_id,
+                            **battery,
+                        })
+                    events = device_buf.replay_since(0)
+                    for entry in events:
+                        await websocket.send_json({
+                            **entry["payload"],
+                            "seq": entry["seq"],
+                            "ts_server": entry["ts_server"],
+                            "buffered": True,
+                        })
+                    if events:
+                        logger.info(f"[REPLAY] Sent {len(events)} buffered events to user {identifier} for device {device_id} (legacy)")
+
             # Send today's metrics for each of the user's dogs
             try:
                 user_dogs_list = get_user_dogs(identifier)
@@ -1530,6 +1594,10 @@ async def websocket_generic_endpoint(
                 continue
 
             msg_type = message.get("type")
+
+            # Buffer event for offline replay (legacy /ws robot path)
+            if connection_type == "robot":
+                maybe_buffer_event(identifier, message)
 
             # Log large payloads with connection health monitoring (P1: Build 34)
             msg_size = len(data)

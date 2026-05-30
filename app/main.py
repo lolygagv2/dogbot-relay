@@ -75,6 +75,13 @@ async def debug_pairing():
     }
 
 
+@app.get("/debug/replay", tags=["Debug"])
+async def debug_replay():
+    """Debug endpoint showing per-device replay buffer stats."""
+    from app.event_buffer import replay_manager
+    return replay_manager.stats()
+
+
 @app.get("/debug/latency", tags=["Debug"])
 async def debug_latency(client_ts: int = Query(None, description="Client timestamp in ms (epoch)")):
     """

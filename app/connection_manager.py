@@ -10,6 +10,7 @@ from fastapi import WebSocket
 
 from app.config import get_settings
 from app.database import get_all_device_pairings
+from app.event_buffer import replay_manager
 
 logger = logging.getLogger(__name__)
 
@@ -404,6 +405,7 @@ class ConnectionManager:
             "registered_devices": len(self.device_owners),
             "active_webrtc_sessions": len(self.webrtc_sessions),
             "grace_period_users": len(self.grace_timers),
+            "replay_buffers": len(replay_manager._buffers),
         }
 
     # ============== Session table (B2) ==============
