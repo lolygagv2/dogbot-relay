@@ -74,6 +74,7 @@ class User(BaseModel):
 class TokenResponse(BaseModel):
     token: str
     expires_in: int
+    user_id: Optional[str] = None
 
 
 class AuthResult(BaseModel):

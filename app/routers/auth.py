@@ -15,7 +15,7 @@ from app.database import (
     create_user,
     get_user_by_email,
     get_user_by_id,
-    get_user_count,
+    get_next_user_number,
     get_valid_reset_code,
     invalidate_reset_codes,
     update_user_password,
@@ -50,7 +50,7 @@ async def register(
         )
 
     # Create user
-    user_id = f"user_{get_user_count() + 1:06d}"
+    user_id = f"user_{get_next_user_number():06d}"
     hashed_password = hash_password(user_data.password)
     create_user(user_id, email, hashed_password)
 
@@ -62,7 +62,8 @@ async def register(
 
     return TokenResponse(
         token=token,
-        expires_in=settings.jwt_expire_minutes * 60
+        expires_in=settings.jwt_expire_minutes * 60,
+        user_id=user_id,
     )
 
 
@@ -88,8 +89,25 @@ async def login(
 
     return TokenResponse(
         token=token,
-        expires_in=settings.jwt_expire_minutes * 60
+        expires_in=settings.jwt_expire_minutes * 60,
+        user_id=user["user_id"],
     )
+
+
+@router.get("/validate")
+async def validate_token(current_user: dict = Depends(get_current_user)):
+    """Validate a JWT token. Returns user info if valid, 401 if not."""
+    user = get_user_by_email(current_user["email"])
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    return {
+        "valid": True,
+        "user_id": user["user_id"],
+        "email": user["email"],
+    }
 
 
 @router.get("/me", response_model=User)
@@ -169,4 +187,5 @@ async def reset_password(
     return TokenResponse(
         token=token,
         expires_in=settings.jwt_expire_minutes * 60,
+        user_id=user["user_id"],
     )

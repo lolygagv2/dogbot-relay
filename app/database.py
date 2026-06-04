@@ -409,6 +409,22 @@ def get_user_count() -> int:
     return count
 
 
+def get_next_user_number() -> int:
+    """Get the next available user number based on MAX existing ID.
+
+    Avoids collisions that occur when COUNT(*) doesn't match the highest
+    allocated user number (e.g. after deletions or manual inserts).
+    """
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT MAX(CAST(SUBSTR(id, 6) AS INTEGER)) FROM users WHERE id LIKE 'user_%'"
+        )
+        row = cursor.fetchone()
+        max_num = row[0] if row[0] is not None else 0
+    return max_num + 1
+
+
 def update_user_name(user_id: str, name: str) -> bool:
     """Update a user's name."""
     with db_connection() as conn:
