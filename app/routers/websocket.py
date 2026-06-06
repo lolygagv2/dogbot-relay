@@ -84,6 +84,16 @@ TRACKED_EVENTS = {
     "schedule_triggered",
 }
 
+# Map legacy robot event names → activity_events.type for auto-persist
+LEGACY_TO_ACTIVITY_TYPE = {
+    "bark_detected": "bark",
+    "dog_detected": "behavior_flag",
+    "treat_dispensed": "treat_dispensed",
+    "alert": "guardian_alert",
+    "unknown_dog_detected": "guardian_alert",
+    "mission_complete": "mission_completed",
+}
+
 
 def get_client_ip(websocket: WebSocket) -> str:
     """Extract client IP from WebSocket, checking X-Forwarded-For for proxied connections."""
@@ -121,6 +131,36 @@ def maybe_store_event(device_id: str, owner_id: str, message: dict):
         db_store_event(device_id, owner_id, event_type, message)
     except Exception as e:
         logger.error(f"[EVENT-STORE] Failed to store {event_type} for {device_id}: {e}")
+
+
+def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
+    """Auto-persist mapped legacy robot events to activity_events table.
+
+    Fire-and-forget: errors are logged but never break WS forwarding.
+    """
+    event_name = message.get("event") or message.get("type")
+    if not event_name or not owner_id:
+        return
+    activity_type = LEGACY_TO_ACTIVITY_TYPE.get(event_name)
+    if not activity_type:
+        return
+    try:
+        event_id = message.get("event_id") or str(uuid.uuid4())
+        data = message.get("data") or {}
+        dog_id = message.get("dog_id") or data.get("dog_id")
+        timestamp = message.get("timestamp") or datetime.now(timezone.utc).isoformat()
+        db_insert_activity_event(
+            event_id=event_id,
+            user_id=owner_id,
+            device_id=device_id,
+            dog_id=dog_id,
+            type=activity_type,
+            timestamp=timestamp,
+            payload=data,
+        )
+        logger.info(f"[ACTIVITY-AUTO] Persisted {event_name}->{activity_type} id={event_id} device={device_id}")
+    except Exception as e:
+        logger.error(f"[ACTIVITY-AUTO] Failed to persist {event_name} for {device_id}: {e}")
 
 
 def maybe_buffer_event(device_id: str, message: dict) -> Optional[int]:
@@ -940,6 +980,9 @@ async def websocket_device_endpoint(
 
                 # Store event for offline retrieval
                 maybe_store_event(device_id, owner_id, message)
+
+                # Auto-persist SG events to activity_events for REST timeline
+                _maybe_persist_as_activity(device_id, owner_id, message)
 
                 # Forward event and verify delivery (P2: Build 34 - Event Forwarding Verification)
                 delivered_count = await manager.forward_event_to_owner(device_id, message)
@@ -1774,6 +1817,9 @@ async def websocket_generic_endpoint(
 
                     # Store event for offline retrieval
                     maybe_store_event(identifier, owner_id, message)
+
+                    # Auto-persist SG events to activity_events for REST timeline
+                    _maybe_persist_as_activity(identifier, owner_id, message)
 
                     # Forward event and verify delivery (P2: Build 34 - Event Forwarding Verification)
                     delivered_count = await manager.forward_event_to_owner(identifier, message)

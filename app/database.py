@@ -1617,7 +1617,7 @@ def insert_activity_event(
         created_at = datetime.now(timezone.utc).isoformat()
         payload_json = json.dumps(payload) if payload is not None else None
         cursor.execute(
-            """INSERT INTO activity_events (id, user_id, device_id, dog_id, type, timestamp, payload, created_at)
+            """INSERT OR IGNORE INTO activity_events (id, user_id, device_id, dog_id, type, timestamp, payload, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (event_id, user_id, device_id, dog_id, type, timestamp, payload_json, created_at),
         )

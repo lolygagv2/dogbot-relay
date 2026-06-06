@@ -20,6 +20,8 @@ FEED_WORTHY_EVENTS = {
     "mission_progress",
     "mission_complete",
     "unknown_dog_detected",
+    "activity_event",
+    "treat_dispensed",
 }
 
 # Events excluded from seq assignment entirely
