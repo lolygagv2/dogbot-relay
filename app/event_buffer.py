@@ -15,10 +15,13 @@ logger = logging.getLogger(__name__)
 # Events worth buffering for offline replay
 FEED_WORTHY_EVENTS = {
     "bark_detected",
+    "bark",
     "dog_detected",
     "alert",
+    "guardian",
     "mission_progress",
     "mission_complete",
+    "mission_stopped",
     "unknown_dog_detected",
     "activity_event",
     "treat_dispensed",

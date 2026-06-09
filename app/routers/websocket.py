@@ -86,13 +86,20 @@ TRACKED_EVENTS = {
 
 # Map legacy robot event names → activity_events.type for auto-persist
 LEGACY_TO_ACTIVITY_TYPE = {
-    "bark_detected": "bark",
+    "bark": "bark",
+    "bark_detected": "bark",  # alias kept for backwards compat
     "dog_detected": "behavior_flag",
     "treat_dispensed": "treat_dispensed",
     "alert": "guardian_alert",
     "unknown_dog_detected": "guardian_alert",
+    "guardian": "guardian",
     "mission_complete": "mission_completed",
+    "mission_progress": "mission_progress",
+    "mission_stopped": "mission_stopped",
 }
+
+# Fields to extract from top-level message into payload for specific event types
+_GUARDIAN_PAYLOAD_KEYS = ("action", "escalation_level", "session_id")
 
 
 def get_client_ip(websocket: WebSocket) -> str:
@@ -145,10 +152,19 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
     if not activity_type:
         return
     try:
-        event_id = message.get("event_id") or str(uuid.uuid4())
+        event_id = message.get("event_id") or message.get("id") or str(uuid.uuid4())
         data = message.get("data") or {}
         dog_id = message.get("dog_id") or data.get("dog_id")
         timestamp = message.get("timestamp") or datetime.now(timezone.utc).isoformat()
+
+        # Guardian events carry action/escalation_level/session_id at
+        # the message top-level, not nested under "data".  Merge them
+        # into the stored payload so the app can distinguish session
+        # start/stop markers from real interventions.
+        if event_name == "guardian":
+            extra = {k: message[k] for k in _GUARDIAN_PAYLOAD_KEYS if k in message}
+            data = {**data, **extra}
+
         db_insert_activity_event(
             event_id=event_id,
             user_id=owner_id,

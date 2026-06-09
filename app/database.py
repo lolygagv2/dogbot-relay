@@ -1303,10 +1303,11 @@ def set_scheduling_enabled(user_id: str, enabled: bool) -> bool:
 
 STORABLE_EVENT_TYPES = {
     "mission_progress", "mission_complete", "mission_stopped",
-    "mode_changed", "dog_detected", "treat_dispensed", "bark_detected",
+    "mode_changed", "dog_detected", "treat_dispensed", "bark_detected", "bark",
     "upload_complete", "upload_error", "upload_result",
     "audio_state",
     "schedule_created", "schedule_updated", "schedule_deleted", "schedule_triggered",
+    "guardian",
     "error",
 }
 
