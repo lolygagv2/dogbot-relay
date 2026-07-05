@@ -257,6 +257,16 @@ def init_db():
             ON activity_events(user_id, timestamp DESC)
         """)
 
+        # Migration (L-SYNC / Chain SG): add cleared_at so a "clear" from the app
+        # persists durably at the relay. Cleared rows are kept (history/moat) but
+        # drop out of the timeline. NULL = not cleared. This is the fix for the
+        # "cleared events reappear" bug: the clear now round-trips and survives.
+        cursor.execute("PRAGMA table_info(activity_events)")
+        activity_cols = [col[1] for col in cursor.fetchall()]
+        if "cleared_at" not in activity_cols:
+            cursor.execute("ALTER TABLE activity_events ADD COLUMN cleared_at TEXT")
+            logger.info("[MIGRATION] Added cleared_at column to activity_events")
+
         # Voice commands (Phase 2 / A2): per-dog voice clips synced from app to robot
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS voice_commands (
@@ -317,6 +327,43 @@ def init_db():
             CREATE TABLE IF NOT EXISTS replay_seq (
                 device_id TEXT PRIMARY KEY,
                 seq INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+
+        # ---- L-REPORT / Chain STORE scaffold (Data Arch Spec v0.2) --------------
+        # Relay-generated per-session natural-language summary. Real schema, per
+        # spec section 4. Written by the report-generation layer; read by the app.
+        # NOTE: gated behind Edge Workstream A (real training_attempt rows) before
+        # it can produce anything — see report_generator.py.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS session_report (
+                report_id     TEXT PRIMARY KEY,        -- UUIDv7, generated on relay
+                session_id    TEXT NOT NULL,           -- FK -> session.session_id (edge)
+                dog_id        TEXT NOT NULL,            -- denormalized for fast read
+                generated_at  INTEGER NOT NULL,        -- epoch ms, UTC
+                model_id      TEXT NOT NULL,            -- API model string, e.g. 'claude-haiku-4-5'
+                input_hash    TEXT NOT NULL,            -- sha256 of structured input, for idempotency
+                summary_text  TEXT NOT NULL,           -- the report shown in the app
+                stats_json    TEXT,                    -- the raw numbers the summary was built from
+                created_at    INTEGER NOT NULL,
+                updated_at    INTEGER NOT NULL
+            )
+        """)
+        # Idempotency guard: same session + same input never produces a duplicate report.
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_session_report_idem
+            ON session_report(session_id, input_hash)
+        """)
+
+        # Incremental-sync watermark. Verbatim from WIMZ_Data_Architecture_Spec.md
+        # section 4 (do not diverge): high-water mark per table so re-sync only
+        # pulls newer rows. Spec section 9.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sync_state (
+                table_name       TEXT PRIMARY KEY,
+                last_synced_at   INTEGER NOT NULL DEFAULT 0,  -- high-water mark (created_at/updated_at)
+                last_attempt_at  INTEGER,
+                last_error       TEXT
             )
         """)
 
@@ -1643,16 +1690,23 @@ def query_activity_events(
     cursor_ts: Optional[str] = None,
     cursor_id: Optional[str] = None,
     limit: int = 100,
+    include_cleared: bool = False,
 ) -> list[dict]:
     """Query events, sorted by (timestamp DESC, id DESC). Returns up to `limit` rows.
 
     `cursor_ts` + `cursor_id` form the keyset cursor: rows strictly older than the cursor.
+
+    Cleared events (cleared_at IS NOT NULL) are excluded by default so a durable
+    clear does not reappear on the timeline. Pass `include_cleared=True` to see them.
     """
     with db_connection() as conn:
         cursor = conn.cursor()
 
         conditions = ["user_id = ?"]
         params: list = [user_id]
+
+        if not include_cleared:
+            conditions.append("cleared_at IS NULL")
 
         if dog_id is not None:
             conditions.append("dog_id = ?")
@@ -1698,6 +1752,74 @@ def query_activity_events(
     return result
 
 
+def clear_activity_events(
+    user_id: str,
+    event_ids: Optional[list[str]] = None,
+    dog_id: Optional[str] = None,
+    before_ts: Optional[str] = None,
+) -> dict:
+    """Durably mark activity events as cleared (soft-clear, never delete).
+
+    L-SYNC / Chain SG. This is the write-back that makes a clear survive re-query,
+    fixing the "cleared events reappear" bug. Rows are kept for history/moat; they
+    just leave the timeline (see query_activity_events).
+
+    Selectors (combinable), always scoped to `user_id`:
+      - event_ids: clear exactly these rows (per-event dismiss).
+      - dog_id:    restrict clear-all to a single dog.
+      - before_ts: restrict clear-all to events at/older than this ISO timestamp.
+    With no selectors, clears ALL of the user's events (full clear-all).
+
+    Idempotent: only rows with cleared_at IS NULL are touched, so re-issuing a
+    clear is a no-op and an event re-sent by the robot (INSERT OR IGNORE) keeps
+    its cleared_at. Returns {cleared, event_ids, device_ids} for the robot round-trip.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+
+    conditions = ["user_id = ?", "cleared_at IS NULL"]
+    params: list = [user_id]
+
+    if event_ids:
+        placeholders = ",".join("?" for _ in event_ids)
+        conditions.append(f"id IN ({placeholders})")
+        params.extend(event_ids)
+    if dog_id is not None:
+        conditions.append("dog_id = ?")
+        params.append(dog_id)
+    if before_ts is not None:
+        conditions.append("timestamp <= ?")
+        params.append(before_ts)
+
+    where_clause = " AND ".join(conditions)
+
+    with db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Capture the exact set being cleared, so the caller can round-trip the
+        # clear to the owning robot(s) and confirm ids back to the app.
+        cursor.execute(
+            f"SELECT id, device_id FROM activity_events WHERE {where_clause}",
+            params,
+        )
+        affected = cursor.fetchall()
+        cleared_ids = [row["id"] for row in affected]
+        device_ids = sorted({row["device_id"] for row in affected if row["device_id"]})
+
+        if cleared_ids:
+            cursor.execute(
+                f"UPDATE activity_events SET cleared_at = ? WHERE {where_clause}",
+                [now] + params,
+            )
+            conn.commit()
+
+    logger.info(
+        f"[ACTIVITY-CLEAR] user={user_id} cleared={len(cleared_ids)} "
+        f"devices={device_ids} scope="
+        f"{'ids' if event_ids else 'all'}{'+dog' if dog_id else ''}{'+before' if before_ts else ''}"
+    )
+    return {"cleared": len(cleared_ids), "event_ids": cleared_ids, "device_ids": device_ids}
+
+
 def delete_old_activity_events(days: int = ACTIVITY_RETENTION_DAYS) -> int:
     """Apply rolling retention to activity_events. Returns count deleted."""
     with db_connection() as conn:
@@ -1710,6 +1832,112 @@ def delete_old_activity_events(days: int = ACTIVITY_RETENTION_DAYS) -> int:
     if deleted > 0:
         logger.info(f"[ACTIVITY-CLEANUP] Deleted {deleted} events older than {days} days")
     return deleted
+
+
+# ============== Session Reports (L-REPORT / Chain STORE, spec v0.2) ==============
+
+def get_session_report(session_id: str, input_hash: str) -> Optional[dict]:
+    """Return an existing report for (session_id, input_hash), or None.
+
+    This is the idempotency check: if a report already exists for the same
+    session and the same structured input, the generator returns it instead of
+    making a second API call.
+    """
+    with db_connection() as conn:
+        row = conn.execute(
+            """SELECT report_id, session_id, dog_id, generated_at, model_id,
+                      input_hash, summary_text, stats_json, created_at, updated_at
+               FROM session_report
+               WHERE session_id = ? AND input_hash = ?""",
+            (session_id, input_hash),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    if result.get("stats_json"):
+        try:
+            result["stats_json"] = json.loads(result["stats_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return result
+
+
+def upsert_session_report(
+    report_id: str,
+    session_id: str,
+    dog_id: str,
+    generated_at: int,
+    model_id: str,
+    input_hash: str,
+    summary_text: str,
+    stats_json: Optional[dict],
+) -> dict:
+    """Persist a generated session report. Idempotent on (session_id, input_hash).
+
+    On conflict the existing row wins (a re-run with identical input is a no-op),
+    keeping generation idempotent end to end.
+    """
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    stats_str = json.dumps(stats_json) if stats_json is not None else None
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO session_report
+                   (report_id, session_id, dog_id, generated_at, model_id,
+                    input_hash, summary_text, stats_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, input_hash) DO NOTHING""",
+            (report_id, session_id, dog_id, generated_at, model_id,
+             input_hash, summary_text, stats_str, now, now),
+        )
+        conn.commit()
+    stored = get_session_report(session_id, input_hash)
+    return stored if stored is not None else {
+        "report_id": report_id, "session_id": session_id, "dog_id": dog_id,
+        "generated_at": generated_at, "model_id": model_id, "input_hash": input_hash,
+        "summary_text": summary_text, "stats_json": stats_json,
+        "created_at": now, "updated_at": now,
+    }
+
+
+# ============== Sync Watermarks (Chain STORE ingest, spec section 9) ==============
+
+def get_sync_state(table_name: str) -> Optional[dict]:
+    """Return the incremental-sync watermark for one table, or None.
+
+    Shape is verbatim from WIMZ_Data_Architecture_Spec.md section 4 — keyed by
+    table_name only (do not add per-device keys without bumping the spec).
+    """
+    with db_connection() as conn:
+        row = conn.execute(
+            """SELECT table_name, last_synced_at, last_attempt_at, last_error
+               FROM sync_state WHERE table_name = ?""",
+            (table_name,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def advance_sync_state(
+    table_name: str,
+    last_synced_at: int,
+    last_error: Optional[str] = None,
+) -> None:
+    """Advance the high-water mark for one table after an ingest batch.
+
+    last_synced_at only moves forward (MAX) so out-of-order/retried batches never
+    rewind the watermark. Records the attempt time and any error for observability.
+    """
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO sync_state (table_name, last_synced_at, last_attempt_at, last_error)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(table_name) DO UPDATE SET
+                   last_synced_at  = MAX(sync_state.last_synced_at, excluded.last_synced_at),
+                   last_attempt_at = excluded.last_attempt_at,
+                   last_error      = excluded.last_error""",
+            (table_name, last_synced_at, now, last_error),
+        )
+        conn.commit()
 
 
 # Initialize database on module import

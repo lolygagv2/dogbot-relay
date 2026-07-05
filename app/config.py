@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     aws_ses_region: str = "us-east-1"
     ses_sender_email: str = "noreply@wimzai.com"
 
+    # Session-report LLM layer (L-REPORT / Workstream B). Thin per-call API layer,
+    # no always-on model. Empty key = report generation disabled (scaffold-safe).
+    anthropic_api_key: str = ""
+    session_report_model: str = "claude-haiku-4-5"
+    session_report_max_tokens: int = 512
+
     # Rate limiting (app-to-robot commands)
     rate_limit_window_seconds: int = 60
     rate_limit_max_commands: int = 30
