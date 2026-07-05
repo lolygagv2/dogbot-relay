@@ -2,7 +2,7 @@
 
 **Shared data contract for the Edge (robot), App, and Relay components.**
 
-Version: 0.2 (draft)
+Version: 0.3 (draft)
 Owner: Morgan Hill (morgan@wimzai.com)
 Status: Authoritative source of truth for the data schema and data flow. All three component instances build against this file. Do not diverge from it without bumping the version and updating the changelog at the bottom.
 
@@ -137,11 +137,13 @@ CREATE TABLE dog (
   dog_id           TEXT PRIMARY KEY,        -- UUIDv7, never recycled
   user_id          TEXT REFERENCES user(user_id),
   name             TEXT,                    -- PII-adjacent; not used as a key
-  qr_code_id       TEXT,                    -- app-generated, printed, maps here
-  id_method        TEXT,                    -- 'qr' | 'direct_trained' | 'manual'
+  qr_code_id       TEXT,                    -- app-generated marker id; the fleet's physical markers are ArUco, called "QR" throughout
+  id_method        TEXT,                    -- 'qr' | 'direct_trained' | 'manual'  ('qr' covers ArUco markers)
   breed            TEXT,
   birthdate        INTEGER,                 -- epoch ms, nullable
   weight_g         INTEGER,                 -- nullable
+  color            TEXT,                    -- v0.3: app-authoritative, human-entered; robot-consumed
+  treats_per_reward INTEGER,                -- v0.3: app-authoritative reward config; robot-consumed (null -> robot defaults to 1)
   signature        TEXT,                    -- optional visual embedding ref/hash
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
@@ -311,7 +313,7 @@ CREATE TABLE schema_meta (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.2');
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.3');
 ```
 
 ---
@@ -457,5 +459,6 @@ corpus/       ML-ready datasets: vision (COCO/YOLO) + behavioral (Parquet)
 
 ## Changelog
 
+- **0.3** Additive-only. Added `color` and `treats_per_reward` (both app-authoritative, robot-consumed) to `dog`. Clarified that ArUco markers are represented via the existing `qr_code_id` / `id_method='qr'` — the fleet's physical markers are ArUco but are called "QR" everywhere; no separate identity fields added. No existing tables or columns changed.
 - **0.2** Additive-only. Added `session_report` table (Relay-generated per-session natural-language summary, with `input_hash` idempotency guard) and two columns on `dispense_log` (`dispensed_confirmed`, `confirm_latency_ms`) for IR-through-beam dispense confirmation. No existing tables or columns changed.
 - **0.1** Initial draft. Core schema, event taxonomy, closed-loop model, local-first sync and consent design.
