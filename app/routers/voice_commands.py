@@ -63,6 +63,10 @@ def _audio_url(user_id: str, dog_id: str, command_id: str) -> str:
 def _to_response(row: dict) -> dict:
     return {
         "command_id": row["command_id"],
+        # Stamp the owning dog on every entry so the app can drop any manifest
+        # row whose dog_id doesn't match the dog it requested (defense-in-depth
+        # against id confusion — see relay contract fix 2026-07-12).
+        "dog_id": row["dog_id"],
         "audio_url": _audio_url(row["user_id"], row["dog_id"], row["command_id"]),
         "updated_at": row["updated_at"],
         "format": row["format"],

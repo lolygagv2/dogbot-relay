@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import get_current_user
@@ -36,6 +36,10 @@ class DogProfileWrite(BaseModel):
     """Accepts both camelCase (preferred) and snake_case keys."""
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
+    # Client-supplied stable dog id (UUIDv7 or legacy dog_<epochms>). The app
+    # sends this as `id` today; the spec name is `dog_id` — both are accepted.
+    # Optional: older app builds omit it and the relay mints a fallback id.
+    id: Optional[str] = Field(None, alias="dog_id")
     name: str = Field(..., min_length=1, max_length=50)
     breed: Optional[str] = None
     color: Optional[str] = None
@@ -102,22 +106,61 @@ async def list_user_dogs(
 async def create_dog_profile(
     dog_data: DogProfileWrite,
     current_user: Annotated[dict, Depends(get_current_user)],
+    response: Response,
 ) -> dict:
-    """Create a new dog profile. The current user becomes the owner.
+    """Create or update a dog profile — upsert by the client-supplied id.
 
-    Body must include updatedAt; server-generated updated_at takes precedence
-    on conflict, so the field is recorded but the server clock authoritative.
+    The relay NEVER mints an id when the client supplies one: honoring the app's
+    id is what keeps a profile from forking on every logout/login. If the same id
+    already exists for this owner, the POST updates that row (idempotent re-POST)
+    and returns 200. A never-seen id (or an omitted id, for older app builds that
+    get a minted fallback) creates a new row and returns 201.
     """
     user_id = current_user["user_id"]
+    incoming_id = dog_data.id
 
+    # ---- Upsert path: the client id already exists ----
+    if incoming_id and get_dog_by_id(incoming_id) is not None:
+        role = get_user_dog_role(user_id, incoming_id)
+        if role is None:
+            # The id exists but isn't this user's — never recycle an id across users.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Dog id already belongs to another user",
+            )
+        if role == "viewer":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Viewers cannot modify dog profiles",
+            )
+        dog = update_dog(
+            incoming_id,
+            name=dog_data.name,
+            breed=dog_data.breed,
+            color=dog_data.color,
+            profile_photo_url=dog_data.photo_url,
+            weight=dog_data.weight,
+            notes=dog_data.notes,
+            aruco_marker_id=dog_data.aruco_marker_id,
+            goals=dog_data.goals,
+            last_mission_id=dog_data.last_mission_id,
+            **({"photo_version": dog_data.photo_version} if dog_data.photo_version is not None else {}),
+        )
+        logger.info(f"User {user_id} upserted (updated) dog {incoming_id}: {dog_data.name}")
+        await _notify_robots_reload_dogs(user_id)
+        response.status_code = status.HTTP_200_OK
+        return _to_response(dog)
+
+    # ---- Create path: new id (or minted fallback) ----
+    # Name-uniqueness only blocks a *different* dog reusing the name; the upsert
+    # path above already handled a re-POST of an existing id.
     if check_duplicate_dog_name(user_id, dog_data.name):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"A dog named '{dog_data.name}' already exists"
         )
 
-    count = get_dog_count()
-    dog_id = f"dog_{count + 1:06d}"
+    dog_id = incoming_id or f"dog_{get_dog_count() + 1:06d}"
 
     dog = create_dog(
         dog_id=dog_id,
@@ -136,7 +179,10 @@ async def create_dog_profile(
 
     add_user_dog(user_id, dog_id, "owner")
 
-    logger.info(f"User {user_id} created dog {dog_id}: {dog_data.name}")
+    logger.info(
+        f"User {user_id} created dog {dog_id}: {dog_data.name}"
+        f"{' (minted fallback id)' if not incoming_id else ''}"
+    )
 
     await _notify_robots_reload_dogs(user_id)
 

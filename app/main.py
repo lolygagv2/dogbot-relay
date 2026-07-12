@@ -122,6 +122,14 @@ async def startup_event():
     if pruned:
         logger.info(f"Startup cleanup: removed {pruned} old activity events")
 
+    # Relay contract fix 2026-07-12: collapse any same-name duplicate dog rows
+    # that predate honoring the client-supplied id. Dry-run to log the plan,
+    # then apply. Idempotent — a no-op once there are no duplicates.
+    from app.database import dedupe_duplicate_dogs
+    preview = dedupe_duplicate_dogs(dry_run=True)
+    if preview["losers"]:
+        dedupe_duplicate_dogs(dry_run=False)
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

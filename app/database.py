@@ -788,6 +788,123 @@ def remove_user_dog(user_id: str, dog_id: str) -> bool:
     return deleted
 
 
+def dedupe_duplicate_dogs(dry_run: bool = True) -> dict:
+    """One-time / idempotent cleanup of same-name duplicate dog rows per user.
+
+    Relay contract fix 2026-07-12: before POST /dogs honored the client id, a
+    forked profile could leave two rows with the same name under one user. This
+    collapses each such group to a single survivor:
+
+      - Survivor = the id that voice_commands rows point at (that's the row the
+        app/robot actually references); if none or ambiguous, the OLDEST row.
+      - Losers   = every other row in the group. Their voice_commands are re-keyed
+        onto the survivor (UPDATE OR IGNORE to respect the PK); any that would
+        collide on command_id are dropped as orphans. Then the loser dog rows and
+        their user_dogs / photos / metrics / mission_log rows are deleted.
+
+    Idempotent: with no duplicate names it changes nothing. Always logs the plan;
+    with dry_run=True (default) it ONLY logs and returns the plan, touching nothing.
+    Returns {"groups": n, "losers": m, "voice_rekeyed": k, "voice_orphans": o}.
+    """
+    plan: list[dict] = []
+    with db_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, user_id, name, created_at FROM dogs WHERE user_id IS NOT NULL")
+        rows = cursor.fetchall()
+
+        # Group ids by (user_id, lower(name)), preserving created_at for tie-breaks.
+        groups: dict[tuple, list[dict]] = {}
+        for r in rows:
+            key = (r["user_id"], (r["name"] or "").lower())
+            groups.setdefault(key, []).append(
+                {"id": r["id"], "created_at": r["created_at"] or ""}
+            )
+
+        for (user_id, name_lc), members in groups.items():
+            if len(members) < 2:
+                continue
+
+            member_ids = [m["id"] for m in members]
+            # Which of these ids are referenced by voice_commands for this user?
+            qmarks = ",".join("?" for _ in member_ids)
+            cursor.execute(
+                f"SELECT DISTINCT dog_id FROM voice_commands "
+                f"WHERE user_id = ? AND dog_id IN ({qmarks})",
+                [user_id] + member_ids,
+            )
+            referenced = {row["dog_id"] for row in cursor.fetchall()}
+
+            members_sorted = sorted(members, key=lambda m: m["created_at"])
+            referenced_sorted = [m for m in members_sorted if m["id"] in referenced]
+            survivor = (referenced_sorted[0] if referenced_sorted else members_sorted[0])["id"]
+            losers = [m["id"] for m in members_sorted if m["id"] != survivor]
+
+            plan.append({
+                "user_id": user_id,
+                "name": name_lc,
+                "survivor": survivor,
+                "losers": losers,
+                "survivor_from": "voice_ref" if referenced_sorted else "oldest",
+            })
+
+        # --- Log the plan (always) ---
+        total_losers = sum(len(p["losers"]) for p in plan)
+        if not plan:
+            logger.info("[DOG-DEDUPE] No same-name duplicate dog groups found (no-op)")
+            return {"groups": 0, "losers": 0, "voice_rekeyed": 0, "voice_orphans": 0}
+
+        for p in plan:
+            logger.info(
+                f"[DOG-DEDUPE]{' DRY-RUN' if dry_run else ''} user={p['user_id']} "
+                f"name={p['name']!r} keep={p['survivor']} ({p['survivor_from']}) "
+                f"drop={p['losers']}"
+            )
+
+        if dry_run:
+            logger.info(
+                f"[DOG-DEDUPE] DRY-RUN summary: {len(plan)} group(s), "
+                f"{total_losers} loser row(s) would be removed"
+            )
+            return {"groups": len(plan), "losers": total_losers,
+                    "voice_rekeyed": 0, "voice_orphans": 0}
+
+        # --- Apply ---
+        rekeyed = 0
+        orphans = 0
+        for p in plan:
+            survivor = p["survivor"]
+            for loser in p["losers"]:
+                # Re-key voice_commands onto the survivor; PK collisions are skipped
+                # (survivor already owns that command_id) and then deleted as orphans.
+                cursor.execute(
+                    "UPDATE OR IGNORE voice_commands SET dog_id = ? "
+                    "WHERE user_id = ? AND dog_id = ?",
+                    (survivor, p["user_id"], loser),
+                )
+                rekeyed += cursor.rowcount
+                cursor.execute(
+                    "DELETE FROM voice_commands WHERE user_id = ? AND dog_id = ?",
+                    (p["user_id"], loser),
+                )
+                orphans += cursor.rowcount
+                # Remove the loser dog and its dependent rows.
+                cursor.execute("DELETE FROM user_dogs WHERE dog_id = ?", (loser,))
+                cursor.execute("DELETE FROM dog_photos WHERE dog_id = ?", (loser,))
+                cursor.execute("DELETE FROM dog_metrics WHERE dog_id = ?", (loser,))
+                cursor.execute("DELETE FROM mission_log WHERE dog_id = ?", (loser,))
+                cursor.execute("DELETE FROM dogs WHERE id = ?", (loser,))
+
+        conn.commit()
+
+    logger.info(
+        f"[DOG-DEDUPE] Applied: {len(plan)} group(s), {total_losers} loser row(s) removed, "
+        f"{rekeyed} voice row(s) re-keyed, {orphans} voice orphan(s) dropped"
+    )
+    return {"groups": len(plan), "losers": total_losers,
+            "voice_rekeyed": rekeyed, "voice_orphans": orphans}
+
+
 # ============== Dog Photo Functions ==============
 
 def get_photo_count() -> int:
