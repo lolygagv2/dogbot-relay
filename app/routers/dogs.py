@@ -55,18 +55,69 @@ class DogProfileWrite(BaseModel):
 
 # ============== Helpers ==============
 
+def _dog_to_profile(dog: dict) -> dict[str, Any]:
+    """Serialize a dog row to the robot-facing profile object (dog-id contract 2026-07-12).
+
+    The robot keys its store on `dog_id` (the app's canonical, rename-stable id) and
+    treats name/aruco_id/color as informational. `aruco_id` is the int marker the app
+    configured (nullable); it is NOT the dog's identity.
+    """
+    return {
+        "dog_id": dog["id"],
+        "name": dog["name"],
+        "aruco_id": dog.get("aruco_marker_id"),
+        "color": dog.get("color"),
+        "breed": dog.get("breed"),
+        "photo_url": dog.get("profile_photo_url"),
+        "photo_version": dog.get("photo_version") or 1,
+    }
+
+
+def build_user_profiles(user_id: str) -> list[dict[str, Any]]:
+    """Build the {"type":"profiles"} payload list for all of a user's dogs."""
+    return [_dog_to_profile(d) for d in get_user_dogs(user_id)]
+
+
+async def push_profiles_to_device(device_id: str, user_id: str) -> bool:
+    """Send the full profiles snapshot to a single robot (used on device connect)."""
+    manager = get_connection_manager()
+    profiles = build_user_profiles(user_id)
+    sent = await manager.send_to_robot(device_id, {
+        "type": "profiles",
+        "profiles": profiles,
+    })
+    if sent:
+        logger.info(f"[DOG-SYNC] Pushed {len(profiles)} profile(s) to device {device_id} for user {user_id}")
+    else:
+        logger.warning(f"[DOG-SYNC] profiles push not delivered to {device_id} (offline)")
+    return sent
+
+
 async def _notify_robots_reload_dogs(user_id: str):
-    """Send reload_dogs command to all robots owned by this user."""
+    """Sync dogs to all of the user's robots.
+
+    Pushes the full {"type":"profiles"} snapshot (canonical dog_id + aruco_id), then
+    the legacy {"command":"reload_dogs"} nudge as a backward-compatible fallback for
+    robots that haven't adopted the profiles push yet.
+    """
     manager = get_connection_manager()
     devices = manager.get_user_devices(user_id)
+    profiles = build_user_profiles(user_id)
     for device_id in devices:
         sent = await manager.send_to_robot(device_id, {
+            "type": "profiles",
+            "profiles": profiles,
+        })
+        await manager.send_to_robot(device_id, {
             "command": "reload_dogs",
         })
         if sent:
-            logger.info(f"[DOG-SYNC] Sent reload_dogs to device {device_id} for user {user_id}")
+            logger.info(
+                f"[DOG-SYNC] Synced {len(profiles)} profile(s) + reload_dogs to "
+                f"device {device_id} for user {user_id}"
+            )
         else:
-            logger.warning(f"[DOG-SYNC] reload_dogs not delivered to {device_id} (offline)")
+            logger.warning(f"[DOG-SYNC] dog sync not delivered to {device_id} (offline)")
 
 
 def _to_response(dog: dict) -> dict[str, Any]:

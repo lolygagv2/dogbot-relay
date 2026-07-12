@@ -756,6 +756,15 @@ async def websocket_device_endpoint(
         })
         logger.info(f"Broadcast robot_connected and robot_status online=true for {device_id} to user {owner_id}")
 
+        # Initial dog-profile sync (dog-id contract 2026-07-12): give the robot the
+        # canonical dog_id/aruco_id snapshot as soon as it connects, so it can key its
+        # store on the app id before any events flow.
+        try:
+            from app.routers.dogs import push_profiles_to_device
+            await push_profiles_to_device(device_id, owner_id)
+        except Exception as e:
+            logger.warning(f"[DOG-SYNC] initial profiles push to {device_id} failed: {e}")
+
     try:
         while True:
             # Receive message from robot
