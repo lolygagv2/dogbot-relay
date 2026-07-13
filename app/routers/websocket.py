@@ -101,6 +101,33 @@ LEGACY_TO_ACTIVITY_TYPE = {
 # Fields to extract from top-level message into payload for specific event types
 _GUARDIAN_PAYLOAD_KEYS = ("action", "escalation_level", "session_id")
 
+# Dog-identity display/provenance fields the app reads back from the activity
+# payload (dog-id contract 2026-07-12).
+_DOG_PAYLOAD_KEYS = ("dog_name", "id_method")
+
+
+def _resolve_dog_fields(message: dict, sub: dict) -> tuple[Optional[str], dict]:
+    """Resolve the row-level dog_id and fold dog_name/id_method into the payload.
+
+    Robots place dog identity either at the message top level or nested inside the
+    event's data/payload sub-dict. The app's REST timeline hydration keys off the
+    ``activity_events.dog_id`` COLUMN, so we lift the id out to the row level here
+    instead of leaving it buried in the payload. ``dog_name`` and ``id_method`` are
+    display/provenance fields the app reads back from the payload, so we make sure
+    they land there regardless of where the robot put them.
+
+    Returns ``(dog_id_or_None, enriched_payload)``. The returned payload is a copy;
+    the caller's sub-dict is not mutated.
+    """
+    dog_id = message.get("dog_id") or sub.get("dog_id")
+    if not dog_id:  # normalize "" / missing → None so the column stays clean
+        dog_id = None
+    enriched = dict(sub)
+    for key in _DOG_PAYLOAD_KEYS:
+        if enriched.get(key) is None and message.get(key) is not None:
+            enriched[key] = message[key]
+    return dog_id, enriched
+
 
 def get_client_ip(websocket: WebSocket) -> str:
     """Extract client IP from WebSocket, checking X-Forwarded-For for proxied connections."""
@@ -154,7 +181,6 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
     try:
         event_id = message.get("event_id") or message.get("id") or str(uuid.uuid4())
         data = message.get("data") or {}
-        dog_id = message.get("dog_id") or data.get("dog_id")
         timestamp = message.get("timestamp") or datetime.now(timezone.utc).isoformat()
 
         # Guardian events carry action/escalation_level/session_id at
@@ -164,6 +190,9 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
         if event_name == "guardian":
             extra = {k: message[k] for k in _GUARDIAN_PAYLOAD_KEYS if k in message}
             data = {**data, **extra}
+
+        # Lift dog_id to the row-level column and keep dog_name/id_method in payload.
+        dog_id, data = _resolve_dog_fields(message, data)
 
         db_insert_activity_event(
             event_id=event_id,
@@ -918,9 +947,14 @@ async def websocket_device_endpoint(
 
                 ts = message.get("timestamp") or datetime.now(timezone.utc).isoformat()
                 event_id = message.get("event_id") or str(uuid.uuid4())
-                dog_id = message.get("dog_id")
-                if dog_id == "":
-                    dog_id = None
+
+                # Lift dog_id to the row-level column (the robot may nest it inside
+                # payload, not just top-level) and keep dog_name/id_method in payload.
+                if isinstance(payload, dict):
+                    dog_id, payload = _resolve_dog_fields(message, payload)
+                else:
+                    payload = {"value": payload}
+                    dog_id = message.get("dog_id") or None
 
                 try:
                     stored = db_insert_activity_event(
@@ -930,7 +964,7 @@ async def websocket_device_endpoint(
                         dog_id=dog_id,
                         type=event_type,
                         timestamp=ts,
-                        payload=payload if isinstance(payload, dict) else {"value": payload},
+                        payload=payload,
                     )
                     logger.info(
                         f"[ACTIVITY] Stored {event_type} id={event_id} user={owner_id} "
