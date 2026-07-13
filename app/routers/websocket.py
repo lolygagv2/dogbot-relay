@@ -193,7 +193,9 @@ def maybe_buffer_event(device_id: str, message: dict) -> Optional[int]:
     seq = buf.append(event_type, message)
     if seq is not None:
         message["seq"] = seq
-        message["ts_server"] = buf._buffer[-1]["ts_server"] if buf._buffer else None
+        # Stamp this event's own server timestamp (the buffer records it per
+        # sequenced event, whether ring-buffered, latched, or neither).
+        message["ts_server"] = buf.last_ts_server
         # Assign a stable event_id once — used by both DB storage and WS forwarding/replay
         if "event_id" not in message:
             message["event_id"] = str(uuid.uuid4())

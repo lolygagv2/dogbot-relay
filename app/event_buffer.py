@@ -25,12 +25,11 @@ FEED_WORTHY_EVENTS = {
     "unknown_dog_detected",
     "activity_event",
     "treat_dispensed",
-    # Music/audio playback state — buffered so an app reconnecting mid-song
-    # gets replayed the current state instead of a blank. Idempotent on the
-    # app side (replayed state frames don't advance the track), so a redundant
-    # replay is harmless.
-    "audio_state",
 }
+
+# audio_state is feed-worthy but latched to a single latest slot per device
+# (see EventBuffer) rather than ring-buffered — music emits it frequently and
+# only the current state is worth replaying on reconnect.
 
 # Events excluded from seq assignment entirely
 EXCLUDED_EVENTS = {"ping", "pong", "heartbeat"}
@@ -55,6 +54,8 @@ class EventBuffer:
         self._last_persisted_seq: int = initial_seq
         self._buffer: deque[dict] = deque()
         self._latest_battery: Optional[dict] = None
+        self._latest_audio_state: Optional[dict] = None
+        self._last_ts_server: Optional[float] = None
 
     def append(self, event_type: str, message: dict) -> Optional[int]:
         """Ingest an event from a device.
@@ -83,15 +84,23 @@ class EventBuffer:
         self._seq += 1
         seq = self._seq
         ts_server = time.time()
+        self._last_ts_server = ts_server
 
-        # Only buffer feed-worthy events
-        if event_type in FEED_WORTHY_EVENTS:
-            self._buffer.append({
-                "seq": seq,
-                "ts_server": ts_server,
-                "event": event_type,
-                "payload": message,
-            })
+        entry = {
+            "seq": seq,
+            "ts_server": ts_server,
+            "event": event_type,
+            "payload": message,
+        }
+
+        # Audio/playback state: latch only the latest frame rather than ring-
+        # buffering. Music emits these frequently and only the current state is
+        # worth replaying on reconnect, so one slot per device caps the cost.
+        if event_type == "audio_state":
+            self._latest_audio_state = entry
+        # Ring-buffer other feed-worthy events for offline replay
+        elif event_type in FEED_WORTHY_EVENTS:
+            self._buffer.append(entry)
             self._evict()
 
         # Persist seq counter periodically
@@ -121,12 +130,36 @@ class EventBuffer:
             self._buffer.popleft()
 
     def replay_since(self, last_seen_seq: int) -> list[dict]:
-        """Return buffered entries with seq > last_seen_seq, oldest-first."""
-        return [entry for entry in self._buffer if entry["seq"] > last_seen_seq]
+        """Return buffered entries with seq > last_seen_seq, oldest-first.
+
+        Merges in the latched latest audio_state when it is newer than the
+        watermark and still within the buffer age window, so a reconnecting app
+        gets the current playback state without replaying every intermediate
+        frame.
+        """
+        entries = [entry for entry in self._buffer if entry["seq"] > last_seen_seq]
+        audio = self._latest_audio_state
+        if (
+            audio
+            and audio["seq"] > last_seen_seq
+            and audio["ts_server"] >= time.time() - MAX_BUFFER_AGE_SECONDS
+        ):
+            entries.append(audio)
+            entries.sort(key=lambda e: e["seq"])
+        return entries
 
     def get_latest_battery(self) -> Optional[dict]:
         """Return the latest battery snapshot, or None."""
         return self._latest_battery
+
+    def get_latest_audio_state(self) -> Optional[dict]:
+        """Return the latched latest audio_state entry, or None."""
+        return self._latest_audio_state
+
+    @property
+    def last_ts_server(self) -> Optional[float]:
+        """ts_server stamped on the most recent sequenced event."""
+        return self._last_ts_server
 
     @property
     def current_seq(self) -> int:
@@ -170,6 +203,7 @@ class EventReplayManager:
                 "seq": buf.current_seq,
                 "buffered": buf.buffered_count,
                 "has_battery": buf.get_latest_battery() is not None,
+                "has_audio": buf.get_latest_audio_state() is not None,
             }
             for device_id, buf in self._buffers.items()
         }
