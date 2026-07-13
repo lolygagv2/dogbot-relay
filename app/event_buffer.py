@@ -25,6 +25,11 @@ FEED_WORTHY_EVENTS = {
     "unknown_dog_detected",
     "activity_event",
     "treat_dispensed",
+    # Music/audio playback state — buffered so an app reconnecting mid-song
+    # gets replayed the current state instead of a blank. Idempotent on the
+    # app side (replayed state frames don't advance the track), so a redundant
+    # replay is harmless.
+    "audio_state",
 }
 
 # Events excluded from seq assignment entirely
