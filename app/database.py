@@ -322,6 +322,30 @@ def init_db():
             ON device_events(device_id, event_type, timestamp DESC)
         """)
 
+        # Migration (replay dedup 2026-07-25): robots replay events buffered
+        # during relay outages, each carrying a stable unique id. Store it and
+        # enforce uniqueness so a replayed event can never insert twice.
+        # Partial index: legacy events without an id (NULL) stay unconstrained.
+        cursor.execute("PRAGMA table_info(device_events)")
+        device_event_cols = [col[1] for col in cursor.fetchall()]
+        if "event_id" not in device_event_cols:
+            cursor.execute("ALTER TABLE device_events ADD COLUMN event_id TEXT")
+            logger.info("[MIGRATION] Added event_id column to device_events")
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_device_events_event_id
+            ON device_events(event_id) WHERE event_id IS NOT NULL
+        """)
+
+        # Replay dedup ledger for non-idempotent writes (dog_metrics increments,
+        # mission_log inserts). Rows are pruned on the same schedule as
+        # device_events retention.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS processed_robot_events (
+                event_id TEXT PRIMARY KEY,
+                seen_at TEXT NOT NULL
+            )
+        """)
+
         # Replay buffer seq counters (persisted across restarts)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS replay_seq (
@@ -788,6 +812,113 @@ def remove_user_dog(user_id: str, dog_id: str) -> bool:
     return deleted
 
 
+def _merge_dog_rows(cursor, user_id: str, survivor: str, losers: list[str]) -> dict:
+    """Re-key every table that references a loser dog_id onto the survivor, then
+    delete the loser dog rows. Runs inside the caller's transaction.
+
+    Unlike the old delete-based cleanup, history is PRESERVED: activity events,
+    mission log, schedules, and photos move to the survivor; daily metric rows
+    are summed into the survivor's row for the same date.
+
+    Returns {"voice_rekeyed": n, "voice_orphans": m}.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    stats = {"voice_rekeyed": 0, "voice_orphans": 0}
+    for loser in losers:
+        # Activity timeline + mission history + schedules follow the survivor.
+        cursor.execute("UPDATE activity_events SET dog_id = ? WHERE dog_id = ?", (survivor, loser))
+        cursor.execute("UPDATE mission_log SET dog_id = ? WHERE dog_id = ?", (survivor, loser))
+        cursor.execute("UPDATE mission_schedules SET dog_id = ? WHERE dog_id = ?", (survivor, loser))
+
+        # Photos move over but never displace the survivor's profile photo.
+        cursor.execute(
+            "UPDATE dog_photos SET dog_id = ?, is_profile_photo = 0 WHERE dog_id = ?",
+            (survivor, loser),
+        )
+
+        # Daily metrics: sum loser rows into the survivor's row for the same date.
+        cursor.execute("SELECT * FROM dog_metrics WHERE dog_id = ?", (loser,))
+        for row in cursor.fetchall():
+            cursor.execute(
+                """INSERT INTO dog_metrics (dog_id, user_id, date, treat_count, detection_count,
+                       mission_attempts, mission_successes, session_minutes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(dog_id, date) DO UPDATE SET
+                       treat_count = treat_count + excluded.treat_count,
+                       detection_count = detection_count + excluded.detection_count,
+                       mission_attempts = mission_attempts + excluded.mission_attempts,
+                       mission_successes = mission_successes + excluded.mission_successes,
+                       session_minutes = session_minutes + excluded.session_minutes,
+                       updated_at = excluded.updated_at""",
+                (survivor, row["user_id"], row["date"], row["treat_count"], row["detection_count"],
+                 row["mission_attempts"], row["mission_successes"], row["session_minutes"],
+                 row["created_at"], now),
+            )
+        cursor.execute("DELETE FROM dog_metrics WHERE dog_id = ?", (loser,))
+
+        # Voice commands re-key onto the survivor; PK collisions mean the
+        # survivor already owns that command_id, so leftovers are dropped.
+        cursor.execute(
+            "UPDATE OR IGNORE voice_commands SET dog_id = ? WHERE dog_id = ?",
+            (survivor, loser),
+        )
+        stats["voice_rekeyed"] += cursor.rowcount
+        cursor.execute("DELETE FROM voice_commands WHERE dog_id = ?", (loser,))
+        stats["voice_orphans"] += cursor.rowcount
+
+        # User links: move any user's link to the survivor (PK collision = user
+        # already linked to the survivor, drop the duplicate link).
+        cursor.execute(
+            "UPDATE OR IGNORE user_dogs SET dog_id = ? WHERE dog_id = ?",
+            (survivor, loser),
+        )
+        cursor.execute("DELETE FROM user_dogs WHERE dog_id = ?", (loser,))
+
+        cursor.execute("DELETE FROM dogs WHERE id = ?", (loser,))
+    return stats
+
+
+def merge_dogs(user_id: str, target_dog_id: str, source_dog_ids: list[str]) -> dict:
+    """Merge one or more dog rows into a canonical target dog, server-side.
+
+    Used to collapse name variants (e.g. 'Elsa' profiles created across robots
+    or test runs) under one canonical dog_id. All referenced history follows the
+    target; the source dog rows are deleted.
+
+    Raises ValueError if the target/sources are invalid or not owned by user_id.
+    """
+    sources = [s for s in dict.fromkeys(source_dog_ids) if s != target_dog_id]
+    if not sources:
+        raise ValueError("No source dogs to merge (sources empty or same as target)")
+
+    with db_connection() as conn:
+        cursor = conn.cursor()
+
+        def _owned(dog_id: str) -> bool:
+            cursor.execute(
+                """SELECT 1 FROM dogs d
+                   LEFT JOIN user_dogs ud ON ud.dog_id = d.id AND ud.user_id = ?
+                   WHERE d.id = ? AND (d.user_id = ? OR ud.user_id IS NOT NULL)""",
+                (user_id, dog_id, user_id),
+            )
+            return cursor.fetchone() is not None
+
+        if not _owned(target_dog_id):
+            raise ValueError(f"Target dog {target_dog_id} not found or not owned by user")
+        for source in sources:
+            if not _owned(source):
+                raise ValueError(f"Source dog {source} not found or not owned by user")
+
+        stats = _merge_dog_rows(cursor, user_id, target_dog_id, sources)
+        conn.commit()
+
+    logger.info(
+        f"[DOG-MERGE] user={user_id} target={target_dog_id} merged={sources} "
+        f"voice_rekeyed={stats['voice_rekeyed']} voice_orphans={stats['voice_orphans']}"
+    )
+    return {"target": target_dog_id, "merged": sources, **stats}
+
+
 def dedupe_duplicate_dogs(dry_run: bool = True) -> dict:
     """One-time / idempotent cleanup of same-name duplicate dog rows per user.
 
@@ -797,10 +928,10 @@ def dedupe_duplicate_dogs(dry_run: bool = True) -> dict:
 
       - Survivor = the id that voice_commands rows point at (that's the row the
         app/robot actually references); if none or ambiguous, the OLDEST row.
-      - Losers   = every other row in the group. Their voice_commands are re-keyed
-        onto the survivor (UPDATE OR IGNORE to respect the PK); any that would
-        collide on command_id are dropped as orphans. Then the loser dog rows and
-        their user_dogs / photos / metrics / mission_log rows are deleted.
+      - Losers   = every other row in the group. All their history (activity
+        events, mission log, schedules, photos, metrics, voice commands, user
+        links) is re-keyed onto the survivor via _merge_dog_rows; only the loser
+        dog rows themselves are deleted.
 
     Idempotent: with no duplicate names it changes nothing. Always logs the plan;
     with dry_run=True (default) it ONLY logs and returns the plan, touching nothing.
@@ -816,7 +947,7 @@ def dedupe_duplicate_dogs(dry_run: bool = True) -> dict:
         # Group ids by (user_id, lower(name)), preserving created_at for tie-breaks.
         groups: dict[tuple, list[dict]] = {}
         for r in rows:
-            key = (r["user_id"], (r["name"] or "").lower())
+            key = (r["user_id"], (r["name"] or "").strip().lower())
             groups.setdefault(key, []).append(
                 {"id": r["id"], "created_at": r["created_at"] or ""}
             )
@@ -869,36 +1000,18 @@ def dedupe_duplicate_dogs(dry_run: bool = True) -> dict:
             return {"groups": len(plan), "losers": total_losers,
                     "voice_rekeyed": 0, "voice_orphans": 0}
 
-        # --- Apply ---
+        # --- Apply: full merge (history re-keyed onto the survivor, not deleted) ---
         rekeyed = 0
         orphans = 0
         for p in plan:
-            survivor = p["survivor"]
-            for loser in p["losers"]:
-                # Re-key voice_commands onto the survivor; PK collisions are skipped
-                # (survivor already owns that command_id) and then deleted as orphans.
-                cursor.execute(
-                    "UPDATE OR IGNORE voice_commands SET dog_id = ? "
-                    "WHERE user_id = ? AND dog_id = ?",
-                    (survivor, p["user_id"], loser),
-                )
-                rekeyed += cursor.rowcount
-                cursor.execute(
-                    "DELETE FROM voice_commands WHERE user_id = ? AND dog_id = ?",
-                    (p["user_id"], loser),
-                )
-                orphans += cursor.rowcount
-                # Remove the loser dog and its dependent rows.
-                cursor.execute("DELETE FROM user_dogs WHERE dog_id = ?", (loser,))
-                cursor.execute("DELETE FROM dog_photos WHERE dog_id = ?", (loser,))
-                cursor.execute("DELETE FROM dog_metrics WHERE dog_id = ?", (loser,))
-                cursor.execute("DELETE FROM mission_log WHERE dog_id = ?", (loser,))
-                cursor.execute("DELETE FROM dogs WHERE id = ?", (loser,))
+            stats = _merge_dog_rows(cursor, p["user_id"], p["survivor"], p["losers"])
+            rekeyed += stats["voice_rekeyed"]
+            orphans += stats["voice_orphans"]
 
         conn.commit()
 
     logger.info(
-        f"[DOG-DEDUPE] Applied: {len(plan)} group(s), {total_losers} loser row(s) removed, "
+        f"[DOG-DEDUPE] Applied: {len(plan)} group(s), {total_losers} loser row(s) merged, "
         f"{rekeyed} voice row(s) re-keyed, {orphans} voice orphan(s) dropped"
     )
     return {"groups": len(plan), "losers": total_losers,
@@ -1477,9 +1590,13 @@ STORABLE_EVENT_TYPES = {
 
 
 def store_event(device_id: str, owner_user_id: str, event_type: str, message: dict) -> Optional[int]:
-    """Store a robot event for offline retrieval. Returns row id or None if not storable."""
+    """Store a robot event for offline retrieval. Returns row id, or None if not
+    storable or a replay of an already-stored event (deduped on event_id)."""
     if event_type not in STORABLE_EVENT_TYPES:
         return None
+
+    event_id = message.get("event_id") or message.get("id")
+    event_id = str(event_id) if event_id else None
 
     with db_connection() as conn:
         cursor = conn.cursor()
@@ -1489,16 +1606,53 @@ def store_event(device_id: str, owner_user_id: str, event_type: str, message: di
         message_json = json.dumps(message)
 
         cursor.execute(
-            """INSERT INTO device_events (device_id, owner_user_id, event_type, message, timestamp, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (device_id, owner_user_id, event_type, message_json, timestamp, now)
+            """INSERT OR IGNORE INTO device_events
+               (device_id, owner_user_id, event_type, message, timestamp, created_at, event_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (device_id, owner_user_id, event_type, message_json, timestamp, now, event_id)
         )
+
+        if cursor.rowcount == 0:
+            conn.commit()
+            logger.info(f"[EVENT-STORE] Deduped replayed {event_type} for device {device_id} (event_id={event_id})")
+            return None
 
         row_id = cursor.lastrowid
         conn.commit()
 
     logger.debug(f"[EVENT-STORE] Stored {event_type} for device {device_id} (id={row_id})")
     return row_id
+
+
+def mark_robot_event_processed(event_id: str) -> bool:
+    """Record a robot event id in the replay-dedup ledger.
+
+    Returns True if this is the first time the id is seen (caller should apply
+    its non-idempotent side effects), False if it was already processed (replay
+    — caller must skip persistence to avoid double-counting).
+    """
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO processed_robot_events (event_id, seen_at) VALUES (?, ?)",
+            (event_id, datetime.now(timezone.utc).isoformat()),
+        )
+        first_time = cursor.rowcount > 0
+        conn.commit()
+    return first_time
+
+
+def delete_old_processed_events(days: int = 30) -> int:
+    """Prune replay-dedup ledger entries older than N days. Returns count deleted."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor.execute("DELETE FROM processed_robot_events WHERE seen_at < ?", (cutoff,))
+        deleted = cursor.rowcount
+        conn.commit()
+    if deleted > 0:
+        logger.info(f"[EVENT-CLEANUP] Pruned {deleted} processed-event ledger rows older than {days} days")
+    return deleted
 
 
 def get_device_events(

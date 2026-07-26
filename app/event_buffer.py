@@ -176,6 +176,12 @@ class EventReplayManager:
     def __init__(self):
         self._buffers: dict[str, EventBuffer] = {}
         self._persisted_seqs: dict[str, int] = {}
+        # Highest seq already replayed to a given (user, device) — in-memory
+        # safety net against re-delivering the same buffered events on every
+        # reconnect (e.g. apps that always send last_seen_seq=0, or the legacy
+        # /ws path which sends no watermark at all). Reset on relay restart,
+        # so at most one duplicate replay burst after a deploy.
+        self._delivered: dict[tuple[str, str], int] = {}
         # Load persisted seq counters from DB
         try:
             from app.database import get_replay_seqs
@@ -195,6 +201,16 @@ class EventReplayManager:
 
     def get(self, device_id: str) -> Optional[EventBuffer]:
         return self._buffers.get(device_id)
+
+    def delivered_watermark(self, user_id: str, device_id: str) -> int:
+        """Highest seq already replayed to this user for this device (0 if none)."""
+        return self._delivered.get((user_id, device_id), 0)
+
+    def advance_delivered(self, user_id: str, device_id: str, seq: int) -> None:
+        """Record that events up to `seq` have been replayed to this user."""
+        key = (user_id, device_id)
+        if seq > self._delivered.get(key, 0):
+            self._delivered[key] = seq
 
     def stats(self) -> dict:
         """Per-device buffer stats for debug endpoint."""

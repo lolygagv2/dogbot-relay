@@ -20,6 +20,7 @@ from app.database import (
     insert_activity_event as db_insert_activity_event,
     log_metric as db_log_metric,
     log_mission as db_log_mission,
+    mark_robot_event_processed as db_mark_robot_event_processed,
     store_event as db_store_event,
 )
 from app.routers.device import get_device_data, update_device_online_status
@@ -167,6 +168,20 @@ def maybe_store_event(device_id: str, owner_id: str, message: dict):
         logger.error(f"[EVENT-STORE] Failed to store {event_type} for {device_id}: {e}")
 
 
+def _is_replayed_duplicate(message: dict) -> bool:
+    """True if this message's event id was already applied to non-idempotent
+    sinks (metric increments / mission log). First sighting records the id and
+    returns False. Messages without any id are never treated as duplicates."""
+    event_id = message.get("event_id") or message.get("id")
+    if not event_id:
+        return False
+    try:
+        return not db_mark_robot_event_processed(str(event_id))
+    except Exception as e:
+        logger.error(f"[DEDUP] processed-event ledger check failed: {e}")
+        return False
+
+
 def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
     """Auto-persist mapped legacy robot events to activity_events table.
 
@@ -225,9 +240,13 @@ def maybe_buffer_event(device_id: str, message: dict) -> Optional[int]:
         # Stamp this event's own server timestamp (the buffer records it per
         # sequenced event, whether ring-buffered, latched, or neither).
         message["ts_server"] = buf.last_ts_server
-        # Assign a stable event_id once — used by both DB storage and WS forwarding/replay
+        # Assign a stable event_id once — used by both DB storage and WS forwarding/replay.
+        # Prefer the robot's own unique id (sent as "id" on replayed events) so a
+        # replay carries the SAME event_id as the original delivery and dedupes
+        # at every persistence sink; mint a uuid only when the robot sent none.
         if "event_id" not in message:
-            message["event_id"] = str(uuid.uuid4())
+            robot_id = message.get("id")
+            message["event_id"] = str(robot_id) if robot_id else str(uuid.uuid4())
     return seq
 
 
@@ -1067,7 +1086,12 @@ async def websocket_device_endpoint(
                     mission_result = message.get("mission_result")
                     details = message.get("details")
 
-                    if dog_id and mission_type and mission_result:
+                    # Metric writes are increments (non-idempotent) — a replayed
+                    # event must never double-count. Still forwarded to apps.
+                    if _is_replayed_duplicate(message):
+                        logger.info(f"[DEDUP] Replayed metric_event from {device_id} "
+                                    f"(event_id={message.get('event_id')}) — skipping persist")
+                    elif dog_id and mission_type and mission_result:
                         db_log_mission(dog_id, owner_id, mission_type, mission_result, details)
                     elif dog_id and metric_type:
                         try:
@@ -1218,7 +1242,9 @@ async def websocket_app_endpoint(
             })
             logger.info(f"[CONNECT] Sent user_connected to robot {paired_device_id} for user {user_id} from {client_ip}")
 
-    # Replay buffered events for the device
+    # Replay buffered events for the device. The client watermark is combined
+    # with the server-side delivered watermark so an app that always reconnects
+    # with last_seen_seq=0 doesn't get the same alerts re-delivered every time.
     last_seen_seq = hello.get("last_seen_seq", 0)
     device_buf = replay_manager.get(device_id)
     if device_buf:
@@ -1231,7 +1257,8 @@ async def websocket_app_endpoint(
                 **battery,
             })
         # Replay missed events
-        events = device_buf.replay_since(last_seen_seq)
+        replay_from = max(last_seen_seq, replay_manager.delivered_watermark(user_id, device_id))
+        events = device_buf.replay_since(replay_from)
         for entry in events:
             payload = entry["payload"]
             await _safe_send_json(websocket, {
@@ -1242,7 +1269,11 @@ async def websocket_app_endpoint(
                 "buffered": True,
             })
         if events:
-            logger.info(f"[REPLAY] Sent {len(events)} buffered events to user {user_id} for device {device_id} (last_seen_seq={last_seen_seq})")
+            replay_manager.advance_delivered(user_id, device_id, max(e["seq"] for e in events))
+            logger.info(
+                f"[REPLAY] Sent {len(events)} buffered events to user {user_id} for device {device_id} "
+                f"(last_seen_seq={last_seen_seq}, replay_from={replay_from})"
+            )
 
     # Send today's metrics for each of the user's dogs
     try:
@@ -1659,7 +1690,12 @@ async def websocket_generic_endpoint(
                     })
                     logger.info(f"[CONNECT] Sent user_connected to robot {device_id} for user {identifier} from {client_ip}")
 
-            # Replay buffered events for all user devices (legacy path)
+            # Replay buffered events for all user devices (legacy path).
+            # The legacy path carries no client watermark, so without the
+            # server-side delivered watermark EVERY reconnect re-delivered the
+            # entire buffer (up to 200 events) — the "same guardian alert every
+            # minute" duplication. Now each event is replayed to a user at most
+            # once per relay process lifetime.
             for device_id in user_devices:
                 device_buf = replay_manager.get(device_id)
                 if device_buf:
@@ -1670,7 +1706,8 @@ async def websocket_generic_endpoint(
                             "device_id": device_id,
                             **battery,
                         })
-                    events = device_buf.replay_since(0)
+                    replay_from = replay_manager.delivered_watermark(identifier, device_id)
+                    events = device_buf.replay_since(replay_from)
                     for entry in events:
                         payload = entry["payload"]
                         await websocket.send_json({
@@ -1681,7 +1718,11 @@ async def websocket_generic_endpoint(
                             "buffered": True,
                         })
                     if events:
-                        logger.info(f"[REPLAY] Sent {len(events)} buffered events to user {identifier} for device {device_id} (legacy)")
+                        replay_manager.advance_delivered(identifier, device_id, max(e["seq"] for e in events))
+                        logger.info(
+                            f"[REPLAY] Sent {len(events)} buffered events to user {identifier} "
+                            f"for device {device_id} (legacy, replay_from={replay_from})"
+                        )
 
             # Send today's metrics for each of the user's dogs
             try:
@@ -1906,7 +1947,12 @@ async def websocket_generic_endpoint(
                         mission_result = message.get("mission_result")
                         details = message.get("details")
 
-                        if dog_id and mission_type and mission_result:
+                        # Metric writes are increments (non-idempotent) — a replayed
+                        # event must never double-count. Still forwarded to apps.
+                        if _is_replayed_duplicate(message):
+                            logger.info(f"[DEDUP] Replayed metric_event from {identifier} "
+                                        f"(event_id={message.get('event_id')}) — skipping persist")
+                        elif dog_id and mission_type and mission_result:
                             db_log_mission(dog_id, owner_id, mission_type, mission_result, details)
                         elif dog_id and metric_type:
                             try:

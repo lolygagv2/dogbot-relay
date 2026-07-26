@@ -105,22 +105,47 @@ async def debug_latency(client_ts: int = Query(None, description="Client timesta
     return response
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize resources on startup."""
-    logger.info(f"Starting {settings.app_name}")
-    logger.info(f"Debug mode: {settings.debug}")
-
-    # Prune old stored events (30-day retention)
-    from app.database import delete_old_activity_events, delete_old_events
+def _run_retention_cleanup():
+    """Apply retention policy: 30d device_events + dedup ledger, 90d activity_events."""
+    from app.database import (
+        delete_old_activity_events,
+        delete_old_events,
+        delete_old_processed_events,
+    )
     deleted = delete_old_events(days=30)
     if deleted:
-        logger.info(f"Startup cleanup: removed {deleted} old events")
+        logger.info(f"Retention cleanup: removed {deleted} old device events")
 
     # Phase 3 / A3: 90-day rolling retention on activity_events
     pruned = delete_old_activity_events(days=90)
     if pruned:
-        logger.info(f"Startup cleanup: removed {pruned} old activity events")
+        logger.info(f"Retention cleanup: removed {pruned} old activity events")
+
+    delete_old_processed_events(days=30)
+
+
+async def _daily_cleanup_loop():
+    """Run retention cleanup every 24h — the server restarts rarely, so
+    startup-only pruning let tables grow unbounded between deploys."""
+    import asyncio
+    while True:
+        await asyncio.sleep(24 * 60 * 60)
+        try:
+            _run_retention_cleanup()
+        except Exception as e:
+            logger.error(f"Daily retention cleanup failed: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize resources on startup."""
+    import asyncio
+
+    logger.info(f"Starting {settings.app_name}")
+    logger.info(f"Debug mode: {settings.debug}")
+
+    _run_retention_cleanup()
+    app.state.cleanup_task = asyncio.create_task(_daily_cleanup_loop())
 
     # Relay contract fix 2026-07-12: collapse any same-name duplicate dog rows
     # that predate honoring the client-supplied id. Dry-run to log the plan,
@@ -135,6 +160,9 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup resources on shutdown."""
     logger.info("Shutting down relay server")
+    cleanup_task = getattr(app.state, "cleanup_task", None)
+    if cleanup_task:
+        cleanup_task.cancel()
     manager = get_connection_manager()
     # Cancel all grace period timers
     for user_id, task in list(manager.grace_timers.items()):

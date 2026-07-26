@@ -21,6 +21,7 @@ from app.database import (
     get_photo_count,
     get_user_dog_role,
     get_user_dogs,
+    merge_dogs,
     update_dog,
 )
 from app.models import DogPhoto, DogPhotoCreate, DogRole
@@ -350,6 +351,40 @@ async def delete_dog_profile(
     logger.info(f"Deleted dog {dog_id} for user {user_id}")
 
     await _notify_robots_reload_dogs(user_id)
+
+
+class DogMergeRequest(BaseModel):
+    """Body for POST /api/dogs/merge — collapse dog-id variants server-side."""
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    target_dog_id: str = Field(..., alias="targetDogId", description="Canonical dog that survives")
+    source_dog_ids: list[str] = Field(..., alias="sourceDogIds", min_length=1,
+                                      description="Variant dog ids to merge into the target")
+
+
+@router.post("/merge", response_model=None)
+async def merge_dog_profiles(
+    body: DogMergeRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+) -> dict:
+    """Merge duplicate/variant dog profiles into one canonical dog_id.
+
+    All history (activity events, mission log, metrics, schedules, photos,
+    voice commands) is re-keyed onto the target; the source dog rows are
+    deleted. Robots are pushed the updated profile snapshot afterwards so
+    they re-key their local stores on the canonical id.
+    """
+    user_id = current_user["user_id"]
+    try:
+        result = merge_dogs(user_id, body.target_dog_id, body.source_dog_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    logger.info(f"User {user_id} merged dogs {result['merged']} -> {result['target']}")
+
+    await _notify_robots_reload_dogs(user_id)
+
+    return result
 
 
 @router.get("/{dog_id}/photos", response_model=list[DogPhoto])
