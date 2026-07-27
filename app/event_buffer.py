@@ -80,6 +80,12 @@ class EventBuffer:
         if event_type.startswith(WEBRTC_PREFIXES):
             return None
 
+        # network_state: retained snapshot delivered on every app connect (see
+        # websocket router). Never sequenced — a seq would let a persisted app
+        # watermark drop the retained copy as already-seen.
+        if event_type == "network_state":
+            return None
+
         # Assign monotonic seq to all other events
         self._seq += 1
         seq = self._seq

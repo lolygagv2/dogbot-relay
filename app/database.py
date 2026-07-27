@@ -354,6 +354,20 @@ def init_db():
             )
         """)
 
+        # Retained network_state per device (local-mode contract 2026-07-27).
+        # The robot announces its network situation (wifi/ap, ssid, local_ap
+        # hotspot credentials) on every relay connect; the app needs the latest
+        # one even in sessions that connect AFTER the robot sent it — including
+        # after a relay restart while the robot is offline in AP mode, which is
+        # exactly the moment the app needs the hotspot info. Hence DB, not RAM.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS device_network_state (
+                device_id TEXT PRIMARY KEY,
+                message TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
         # ---- L-REPORT / Chain STORE scaffold (Data Arch Spec v0.2) --------------
         # Relay-generated per-session natural-language summary. Real schema, per
         # spec section 4. Written by the report-generation layer; read by the app.
@@ -410,6 +424,33 @@ def save_replay_seq(device_id: str, seq: int) -> None:
             (device_id, seq),
         )
         conn.commit()
+
+
+def save_network_state(device_id: str, message: dict) -> None:
+    """Retain the latest network_state message for a device."""
+    with db_connection() as conn:
+        conn.execute(
+            "INSERT INTO device_network_state (device_id, message, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(device_id) DO UPDATE SET message = excluded.message, "
+            "updated_at = excluded.updated_at",
+            (device_id, json.dumps(message), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def get_network_state(device_id: str) -> Optional[dict]:
+    """Return the retained network_state message for a device, or None."""
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT message FROM device_network_state WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["message"])
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def create_user(user_id: str, email: str, hashed_password: str) -> dict:

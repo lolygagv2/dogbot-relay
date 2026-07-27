@@ -17,10 +17,12 @@ from app.database import (
     get_device_secret as db_get_device_secret,
     get_metrics as db_get_metrics,
     get_user_dogs,
+    get_network_state as db_get_network_state,
     insert_activity_event as db_insert_activity_event,
     log_metric as db_log_metric,
     log_mission as db_log_mission,
     mark_robot_event_processed as db_mark_robot_event_processed,
+    save_network_state as db_save_network_state,
     store_event as db_store_event,
 )
 from app.routers.device import get_device_data, update_device_online_status
@@ -248,6 +250,44 @@ def maybe_buffer_event(device_id: str, message: dict) -> Optional[int]:
             robot_id = message.get("id")
             message["event_id"] = str(robot_id) if robot_id else str(uuid.uuid4())
     return seq
+
+
+def _maybe_retain_network_state(device_id: str, message: dict) -> None:
+    """Retain the latest network_state per device (local-mode contract 2026-07-27).
+
+    The robot announces network_state on every relay connect and WiFi rejoin; app
+    sessions that connect later still need the latest one (hotspot join info), so
+    it's persisted and re-delivered on app connect like an MQTT retained message.
+    Fire-and-forget: errors never break WS forwarding.
+    """
+    event_type = message.get("event") or message.get("type")
+    if event_type != "network_state":
+        return
+    if "device_id" not in message:
+        message["device_id"] = device_id
+    if "timestamp" not in message:
+        message["timestamp"] = datetime.now(timezone.utc).isoformat()
+    try:
+        db_save_network_state(device_id, message)
+        logger.info(f"[NETWORK] Retained network_state for {device_id}: mode={message.get('mode')}")
+    except Exception as e:
+        logger.error(f"[NETWORK] Failed to retain network_state for {device_id}: {e}")
+
+
+async def _send_retained_network_state(websocket: WebSocket, device_id: str) -> None:
+    """Deliver the retained network_state for a device to a newly connected app.
+
+    Sent with retained=true and no seq, so app-side watermark dedup never eats it.
+    """
+    try:
+        retained = db_get_network_state(device_id)
+    except Exception as e:
+        logger.error(f"[NETWORK] Failed to load retained network_state for {device_id}: {e}")
+        return
+    if not retained:
+        return
+    await _safe_send_json(websocket, {**retained, "retained": True})
+    logger.info(f"[NETWORK] Sent retained network_state for {device_id} (mode={retained.get('mode')})")
 
 
 # ============== B2 Session helpers ==============
@@ -831,6 +871,9 @@ async def websocket_device_endpoint(
             # Buffer event for offline replay (stamps seq/ts_server in-place)
             maybe_buffer_event(device_id, message)
 
+            # Retain latest network_state for late-connecting app sessions
+            _maybe_retain_network_state(device_id, message)
+
             # Log large payloads with connection health monitoring (P1: Build 34)
             msg_size = len(data)
             if msg_size > LARGE_MESSAGE_THRESHOLD:
@@ -1241,6 +1284,11 @@ async def websocket_app_endpoint(
                 "user_id": user_id
             })
             logger.info(f"[CONNECT] Sent user_connected to robot {paired_device_id} for user {user_id} from {client_ip}")
+
+    # Deliver retained network_state for the session's device (local-mode
+    # contract 2026-07-27) — unconditional, so an app connecting after a relay
+    # restart while the robot sits offline in AP mode still gets hotspot info.
+    await _send_retained_network_state(websocket, device_id)
 
     # Replay buffered events for the device. The client watermark is combined
     # with the server-side delivered watermark so an app that always reconnects
@@ -1697,6 +1745,8 @@ async def websocket_generic_endpoint(
             # minute" duplication. Now each event is replayed to a user at most
             # once per relay process lifetime.
             for device_id in user_devices:
+                # Deliver retained network_state (local-mode contract 2026-07-27)
+                await _send_retained_network_state(websocket, device_id)
                 device_buf = replay_manager.get(device_id)
                 if device_buf:
                     battery = device_buf.get_latest_battery()
@@ -1757,6 +1807,8 @@ async def websocket_generic_endpoint(
             # Buffer event for offline replay (legacy /ws robot path)
             if connection_type == "robot":
                 maybe_buffer_event(identifier, message)
+                # Retain latest network_state for late-connecting app sessions
+                _maybe_retain_network_state(identifier, message)
 
             # Log large payloads with connection health monitoring (P1: Build 34)
             msg_size = len(data)

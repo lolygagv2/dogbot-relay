@@ -56,7 +56,7 @@ async def register(
 
     # Generate token
     token = create_access_token(
-        data={"sub": user_id, "email": email},
+        data={"sub": user_id, "user_id": user_id, "email": email},
         settings=settings
     )
 
@@ -83,7 +83,7 @@ async def login(
         )
 
     token = create_access_token(
-        data={"sub": user["user_id"], "email": email},
+        data={"sub": user["user_id"], "user_id": user["user_id"], "email": email},
         settings=settings
     )
 
@@ -178,7 +178,7 @@ async def reset_password(
     # Return a fresh token so user is logged in
     user = get_user_by_email(email)
     token = create_access_token(
-        data={"sub": user["user_id"], "email": email},
+        data={"sub": user["user_id"], "user_id": user["user_id"], "email": email},
         settings=settings,
     )
 
