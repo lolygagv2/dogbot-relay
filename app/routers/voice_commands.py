@@ -7,6 +7,7 @@ robot via WebSocket so it can prefetch the new audio.
 """
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Annotated
 
@@ -23,12 +24,14 @@ from fastapi import (
 from fastapi.responses import FileResponse
 
 from app.auth import get_current_user
+from app.config import get_settings
 from app.connection_manager import get_connection_manager
 from app.database import (
     delete_voice_command,
     get_user_dog_role,
     get_voice_command,
     list_voice_commands,
+    list_voice_commands_for_user,
     upsert_voice_command,
 )
 
@@ -36,9 +39,43 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/voice-commands", tags=["VoiceCommands"])
 
-# Storage root: /tmp/wimz-voice-commands/<user_id>/<dog_id>/<command_id>.wav
-STORAGE_ROOT = Path("/tmp/wimz-voice-commands")
+
+def _resolve_storage_root() -> Path:
+    configured = get_settings().voice_storage_dir
+    if configured:
+        return Path(configured)
+    return Path(__file__).parent.parent.parent / "data" / "voice_commands"
+
+
+# Storage root: <root>/<user_id>/<dog_id>/<command_id>.wav — must be persistent;
+# DB rows outlive /tmp across reboots, leaving 404s on download (contract 2026-07-30).
+STORAGE_ROOT = _resolve_storage_root()
 STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Pre-2026-07-30 storage root. Files still there (i.e. no reboot since upload)
+# are moved into STORAGE_ROOT at import.
+LEGACY_STORAGE_ROOT = Path("/tmp/wimz-voice-commands")
+
+
+def _migrate_legacy_files() -> None:
+    if LEGACY_STORAGE_ROOT == STORAGE_ROOT or not LEGACY_STORAGE_ROOT.is_dir():
+        return
+    moved = 0
+    try:
+        for wav in LEGACY_STORAGE_ROOT.rglob("*.wav"):
+            dest = STORAGE_ROOT / wav.relative_to(LEGACY_STORAGE_ROOT)
+            if dest.exists():
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(wav), str(dest))
+            moved += 1
+    except Exception as e:
+        logger.warning(f"[VOICE-CMD] legacy /tmp migration failed: {e}")
+    if moved:
+        logger.info(f"[VOICE-CMD] Migrated {moved} file(s) from {LEGACY_STORAGE_ROOT} to {STORAGE_ROOT}")
+
+
+_migrate_legacy_files()
 
 # Conservative cap — voice clips are short
 MAX_FILE_SIZE = 5 * 1024 * 1024
@@ -86,6 +123,36 @@ async def _push_to_robots(user_id: str, message: dict) -> None:
             )
         else:
             logger.warning(f"[VOICE-CMD] Robot {device_id} offline; skipping {message.get('type')}")
+
+
+async def replay_voice_commands_to_device(device_id: str, user_id: str) -> None:
+    """Re-push voice_command_updated for every stored row on robot connect.
+
+    Uploads made while the robot was offline are otherwise lost —
+    _push_to_robots skips disconnected robots and nothing catches them up
+    (contract 2026-07-30). Idempotent on the robot side: it overwrites by
+    (dog_id, command_id) or skips on matching updated_at.
+    """
+    rows = list_voice_commands_for_user(user_id)
+    if not rows:
+        return
+    manager = get_connection_manager()
+    sent = 0
+    for row in rows:
+        delivered = await manager.send_to_robot(device_id, {
+            "type": "voice_command_updated",
+            "dog_id": row["dog_id"],
+            "command_id": row["command_id"],
+            "audio_url": _audio_url(user_id, row["dog_id"], row["command_id"]),
+            "updated_at": row["updated_at"],
+        })
+        if not delivered:
+            break
+        sent += 1
+    logger.info(
+        f"[VOICE-CMD] Replayed {sent}/{len(rows)} voice commands to robot "
+        f"{device_id} (user={user_id})"
+    )
 
 
 def _require_dog_access(user_id: str, dog_id: str) -> None:
@@ -218,8 +285,12 @@ async def serve_command(user_id: str, dog_id: str, command_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Voice command not found")
 
-    target = Path(row["file_path"])
-    if not target.exists() or not target.is_file():
+    # Rows written before the persistent-storage move carry stale /tmp paths;
+    # the canonical location is computed from the current storage root.
+    target = _file_path(user_id, dog_id, command_id)
+    if not target.is_file():
+        target = Path(row["file_path"])
+    if not target.is_file():
         raise HTTPException(status_code=404, detail="Voice command file missing")
 
     return FileResponse(

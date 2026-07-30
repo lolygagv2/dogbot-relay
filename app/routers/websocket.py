@@ -855,6 +855,15 @@ async def websocket_device_endpoint(
         except Exception as e:
             logger.warning(f"[DOG-SYNC] initial profiles push to {device_id} failed: {e}")
 
+        # Voice-command catch-up (contract 2026-07-30): re-push every stored
+        # voice_command_updated so uploads made while the robot was offline
+        # arrive now. Idempotent on the robot side.
+        try:
+            from app.routers.voice_commands import replay_voice_commands_to_device
+            await replay_voice_commands_to_device(device_id, owner_id)
+        except Exception as e:
+            logger.warning(f"[VOICE-CMD] connect replay to {device_id} failed: {e}")
+
     try:
         while True:
             # Receive message from robot

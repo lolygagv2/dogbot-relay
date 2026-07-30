@@ -1901,6 +1901,33 @@ def list_voice_commands(user_id: str, dog_id: str) -> list[dict]:
     ]
 
 
+def list_voice_commands_for_user(user_id: str) -> list[dict]:
+    """List all voice commands across all of a user's dogs (robot connect replay)."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT user_id, dog_id, command_id, file_path, format, size_bytes, updated_at
+               FROM voice_commands
+               WHERE user_id = ?
+               ORDER BY dog_id, command_id""",
+            (user_id,),
+        )
+        rows = cursor.fetchall()
+
+    return [
+        {
+            "user_id": row["user_id"],
+            "dog_id": row["dog_id"],
+            "command_id": row["command_id"],
+            "file_path": row["file_path"],
+            "format": row["format"],
+            "size_bytes": row["size_bytes"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
 def get_voice_command(user_id: str, dog_id: str, command_id: str) -> Optional[dict]:
     """Fetch a single voice command record."""
     with db_connection() as conn:

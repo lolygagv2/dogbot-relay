@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     session_report_model: str = "claude-haiku-4-5"
     session_report_max_tokens: int = 512
 
+    # Voice command WAV storage. Empty = <repo>/data/voice_commands (next to the
+    # SQLite DB). Must be a persistent path — /tmp is wiped on reboot (2026-07-30).
+    voice_storage_dir: str = ""
+
     # Rate limiting (app-to-robot commands)
     rate_limit_window_seconds: int = 60
     rate_limit_max_commands: int = 30
