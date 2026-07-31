@@ -26,6 +26,7 @@ from app.database import (
     store_event as db_store_event,
 )
 from app.routers.device import get_device_data, update_device_online_status
+from app.services import push_service
 from app.services.turn_service import turn_service
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
         # Lift dog_id to the row-level column and keep dog_name/id_method in payload.
         dog_id, data = _resolve_dog_fields(message, data)
 
-        db_insert_activity_event(
+        stored = db_insert_activity_event(
             event_id=event_id,
             user_id=owner_id,
             device_id=device_id,
@@ -221,6 +222,17 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
             payload=data,
         )
         logger.info(f"[ACTIVITY-AUTO] Persisted {event_name}->{activity_type} id={event_id} device={device_id}")
+
+        # FCM push (contract 2026-07-30) — only on first insert, so buffered
+        # replays of the same event never re-notify.
+        if stored["inserted"]:
+            asyncio.create_task(push_service.notify_activity_event(
+                user_id=owner_id,
+                row_type=activity_type,
+                dog_id=dog_id,
+                payload=data,
+                event_id=event_id,
+            ))
     except Exception as e:
         logger.error(f"[ACTIVITY-AUTO] Failed to persist {event_name} for {device_id}: {e}")
 
@@ -1044,6 +1056,17 @@ async def websocket_device_endpoint(
                 except Exception as e:
                     logger.error(f"[ACTIVITY] Failed to persist activity_event: {e}")
                     continue
+
+                # FCM push (contract 2026-07-30) — only on first insert, so a
+                # re-sent event id never re-notifies.
+                if stored["inserted"]:
+                    asyncio.create_task(push_service.notify_activity_event(
+                        user_id=owner_id,
+                        row_type=event_type,
+                        dog_id=dog_id,
+                        payload=stored["payload"],
+                        event_id=event_id,
+                    ))
 
                 # Forward to all of the user's app sessions for live UI update
                 forward = {

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # SQLite DB). Must be a persistent path — /tmp is wiped on reboot (2026-07-30).
     voice_storage_dir: str = ""
 
+    # Firebase service-account JSON for FCM push (push contract 2026-07-30).
+    # Empty = <repo>/data/firebase-service-account.json; missing file disables push.
+    fcm_credentials_path: str = ""
+
     # Rate limiting (app-to-robot commands)
     rate_limit_window_seconds: int = 60
     rate_limit_max_commands: int = 30

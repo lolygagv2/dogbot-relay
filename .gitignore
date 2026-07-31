@@ -58,3 +58,7 @@ behavior_shared.ts
 train_behavior_lstm.py
 sequences_imx500/
 sequences_imx708/
+
+# Firebase/FCM service-account credentials (confidential — never commit)
+*firebase-adminsdk*.json
+firebase-service-account.json

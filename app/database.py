@@ -285,6 +285,23 @@ def init_db():
             ON voice_commands(user_id, dog_id, updated_at DESC)
         """)
 
+        # FCM push tokens (push contract 2026-07-30): one row per app install,
+        # upserted by device_token. enabled_types is a JSON array of app-side
+        # notification type names ("bark", "treatDispensed", ...).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS push_tokens (
+                device_token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                enabled_types TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_push_tokens_user
+            ON push_tokens(user_id)
+        """)
+
         # Password reset codes
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS password_reset_codes (
@@ -1989,6 +2006,77 @@ def delete_old_events(days: int = 30) -> int:
 ACTIVITY_RETENTION_DAYS = 90
 
 
+def upsert_push_token(
+    device_token: str,
+    user_id: str,
+    platform: str,
+    enabled_types: list[str],
+) -> dict:
+    """Insert or update an FCM push token row (keyed by device_token).
+
+    Serves first registration, FCM token rotation, and preference edits alike —
+    last write wins. An empty enabled_types list keeps the row but sends nothing.
+    """
+    updated_at = datetime.now(timezone.utc).isoformat()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO push_tokens (device_token, user_id, platform, enabled_types, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(device_token) DO UPDATE SET
+                   user_id = excluded.user_id,
+                   platform = excluded.platform,
+                   enabled_types = excluded.enabled_types,
+                   updated_at = excluded.updated_at""",
+            (device_token, user_id, platform, json.dumps(enabled_types), updated_at),
+        )
+        conn.commit()
+    return {
+        "device_token": device_token,
+        "user_id": user_id,
+        "platform": platform,
+        "enabled_types": enabled_types,
+        "updated_at": updated_at,
+    }
+
+
+def delete_push_token(device_token: str) -> bool:
+    """Remove a push token row (logout, or FCM reported it invalid)."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM push_tokens WHERE device_token = ?", (device_token,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+    return deleted
+
+
+def list_push_tokens_for_user(user_id: str) -> list[dict]:
+    """All registered push devices for a user, enabled_types decoded."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT device_token, user_id, platform, enabled_types, updated_at
+               FROM push_tokens WHERE user_id = ?""",
+            (user_id,),
+        )
+        rows = cursor.fetchall()
+
+    result = []
+    for row in rows:
+        try:
+            enabled = json.loads(row["enabled_types"])
+        except (TypeError, ValueError):
+            enabled = []
+        result.append({
+            "device_token": row["device_token"],
+            "user_id": row["user_id"],
+            "platform": row["platform"],
+            "enabled_types": enabled if isinstance(enabled, list) else [],
+            "updated_at": row["updated_at"],
+        })
+    return result
+
+
 def insert_activity_event(
     event_id: str,
     user_id: str,
@@ -2008,6 +2096,7 @@ def insert_activity_event(
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (event_id, user_id, device_id, dog_id, type, timestamp, payload_json, created_at),
         )
+        inserted = cursor.rowcount > 0
         conn.commit()
 
     return {
@@ -2019,6 +2108,9 @@ def insert_activity_event(
         "timestamp": timestamp,
         "payload": payload or {},
         "created_at": created_at,
+        # False = the id already existed (replayed robot event). Push sending
+        # keys off this so a replay never re-notifies.
+        "inserted": inserted,
     }
 
 
