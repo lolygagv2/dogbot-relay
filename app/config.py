@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     # Device HMAC secret for registration
     device_secret: str = "change-this-device-secret-in-production"
 
+    # Admin accounts (comma-separated emails). An admin's own password acts as a
+    # master password: logging in with any customer's email + the admin password
+    # issues a token for that customer's account (no ownership transfer needed).
+    admin_emails: str = "morgan@wimzai.com"
+
     # WebSocket settings
     ws_heartbeat_interval: int = 30  # seconds
     ws_connection_timeout: int = 120  # seconds (increased for background apps)

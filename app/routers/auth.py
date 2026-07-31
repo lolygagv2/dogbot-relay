@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -33,6 +34,24 @@ from app.services.email_service import email_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+
+def _admin_master_login(password: str, target_email: str, settings: Settings) -> Optional[dict]:
+    """
+    Check whether `password` is an admin's account password (master password).
+
+    Returns the admin user row if it matches, else None. Admins are listed in
+    settings.admin_emails; each must have a normal registered account whose
+    password serves as the master password.
+    """
+    for admin_email in settings.admin_emails.split(","):
+        admin_email = admin_email.strip().lower()
+        if not admin_email or admin_email == target_email:
+            continue
+        admin = get_user_by_email(admin_email)
+        if admin and verify_password(password, admin["hashed_password"]):
+            return admin
+    return None
 
 
 @router.post("/register", response_model=TokenResponse)
@@ -76,16 +95,29 @@ async def login(
     email = credentials.email.lower()
 
     user = get_user_by_email(email)
-    if not user or not verify_password(credentials.password, user["hashed_password"]):
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
         )
 
-    token = create_access_token(
-        data={"sub": user["user_id"], "user_id": user["user_id"], "email": email},
-        settings=settings
-    )
+    token_data = {"sub": user["user_id"], "user_id": user["user_id"], "email": email}
+
+    if not verify_password(credentials.password, user["hashed_password"]):
+        # Master-password fallback: an admin can log into any account using
+        # the account's email + the admin's own password.
+        admin = _admin_master_login(credentials.password, email, settings)
+        if not admin:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+        token_data["imp"] = admin["user_id"]
+        logger.warning(
+            f"[ADMIN] Impersonation login: {admin['email']} ({admin['user_id']}) -> {email} ({user['user_id']})"
+        )
+
+    token = create_access_token(data=token_data, settings=settings)
 
     return TokenResponse(
         token=token,
