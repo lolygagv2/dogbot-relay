@@ -42,12 +42,7 @@ class Settings(BaseSettings):
 
     # Session-report LLM layer (L-REPORT / Workstream B). Thin per-call API layer,
     # no always-on model. Empty key = report generation disabled (scaffold-safe).
-    # Also served to the Tripwire miniapp via /api/config/anthropic-key.
     anthropic_api_key: str = ""
-
-    # Static bearer token gating /api/config/anthropic-key (Tripwire miniapp
-    # runtime key fetch). Empty = endpoint disabled.
-    miniapp_config_token: str = ""
     session_report_model: str = "claude-haiku-4-5"
     session_report_max_tokens: int = 512
 
