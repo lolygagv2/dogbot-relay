@@ -465,6 +465,25 @@ stored payload's `event` key so the app can tell the three apart.
 is forwarded and then forgotten — persisting or replaying it would resurface a
 stale status read on every reconnect.
 
+### Push notification types
+
+| Event | FCM `data.type` | Title |
+|---|---|---|
+| `panic_alert` (warning/high) | `panicAlert` | "Panic alert" |
+| `sg_summary` (`level4_escalation`) | `alert` | "Guardian: escalation" |
+
+`panicAlert` is confirmed with the app team (2026-08-31). It is a **new** type:
+builds that predate it have not listed it in the `enabled_types` they send to
+`POST /api/push/register`, and the relay only pushes to devices whose
+`enabled_types` contains the mapped type.
+
+So the relay resolves the type per device — it prefers `panicAlert` and falls
+back to `alert` for devices that have not registered the dedicated type, with
+`data.type` carrying whichever was resolved. A device therefore never receives a
+type string its build cannot dispatch on, and once the app registers
+`panicAlert` the dedicated type is used with no relay change. A device that has
+registered neither type gets no panic push — a user preference, not a gap.
+
 **Payload preservation:** guardian-family events carry their fields at the
 message top level, not nested under `data`. Everything outside the transport
 envelope (`type`, `data`, `payload`, `device_id`, `timestamp`, `id`, `event_id`,
