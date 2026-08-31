@@ -408,9 +408,19 @@ its bytes are missing from storage.
 ### `POST /api/releases` — admin upload
 
 Auth: user JWT for an account listed in `ADMIN_EMAILS`. Multipart form:
-`version` (required), `file` (required, `.tar.gz`), `notes`, `min_updater_version`.
-Returns `201` with the manifest. `409` if the version already exists — releases
-are immutable. Max artifact size 500MB.
+`version` (required), `file` (required, `.tar.gz`), `sha256`, `notes`,
+`min_updater_version`. Returns `201` with the manifest.
+
+- `409` if the version already exists — releases are immutable.
+- `400` if `sha256` is supplied and does not match the received bytes; the
+  artifact is not stored. Optional but recommended: a truncated upload would
+  otherwise be recorded as a valid release, and every robot verifies its
+  download against this manifest.
+- `413` above 512MB.
+
+Artifacts run ~190MB. nginx caps the body at **512MB on `/api/releases` only**
+(50MB elsewhere) with request buffering off, so the upload streams to the app
+rather than being spooled to disk twice. A 187MB upload completes in ~11s.
 
 ### Device HMAC headers
 

@@ -194,14 +194,21 @@ async def upload_release(
     admin: Annotated[dict, Depends(require_admin)],
     version: str = Form(...),
     file: UploadFile = File(...),
+    sha256: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
     min_updater_version: Optional[str] = Form(None),
 ):
     """Upload a release artifact (.tar.gz of the repo tree). Admin only.
 
-    The artifact streams to a temp file while being hashed, so a 500MB upload
+    The artifact streams to a temp file while being hashed, so a ~190MB upload
     never lands in memory and a failed/oversized upload leaves no partial file
     in the storage root.
+
+    If the caller supplies ``sha256``, the computed digest must match or the
+    upload is rejected. Worth checking rather than trusting: a truncated upload
+    would otherwise be recorded as a valid release, and the robot verifies its
+    download against this manifest — so a bad hash here becomes a bad flash on
+    every unit that takes the update.
     """
     _validate_version(version)
 
@@ -236,6 +243,20 @@ async def upload_release(
                 detail="Empty artifact",
             )
 
+        computed = digest.hexdigest()
+        if sha256 and sha256.strip().lower() != computed:
+            logger.warning(
+                f"[RELEASE] Rejected {version}: sha256 mismatch "
+                f"(claimed {sha256.strip().lower()[:12]}…, got {computed[:12]}…, {size} bytes)"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "sha256 mismatch — the upload does not match the supplied "
+                    f"digest (received {size} bytes). Artifact not stored."
+                ),
+            )
+
         filename = f"{version}.tar.gz"
         final_path = STORAGE_ROOT / filename
         shutil.move(str(tmp_path), str(final_path))
@@ -243,7 +264,7 @@ async def upload_release(
 
         manifest = insert_release(
             version=version,
-            sha256=digest.hexdigest(),
+            sha256=computed,
             size_bytes=size,
             filename=filename,
             notes=notes,
