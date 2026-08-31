@@ -42,6 +42,30 @@ _GUARDIAN_LIFECYCLE_ACTIONS = {"start", "stop", "reset"}
 # severities are forwarded live and rendered in-app without a notification.
 _PANIC_PUSH_SEVERITIES = {"warning", "high"}
 
+# Dedicated app types that older builds have not registered in enabled_types yet.
+# A device that has not opted into the new type still gets the alert under the
+# fallback type it DOES know, rather than the push being silently dropped at the
+# enabled_types filter. Once the app registers the dedicated type, that device
+# receives the dedicated type instead and the fallback stops being consulted.
+_APP_TYPE_FALLBACKS = {
+    "panicAlert": "alert",
+}
+
+
+def _resolve_token_type(app_type: str, enabled_types: list) -> Optional[str]:
+    """Pick the notification type to send this device, or None to skip it.
+
+    Prefers the dedicated type; falls back only when the device has not
+    registered it. The resolved type is what goes in data.type, so a device
+    never receives a type string its build cannot dispatch on.
+    """
+    if app_type in enabled_types:
+        return app_type
+    fallback = _APP_TYPE_FALLBACKS.get(app_type)
+    if fallback and fallback in enabled_types:
+        return fallback
+    return None
+
 _BEHAVIOR_TO_TYPE = {
     "sit": "sit",
     "sitting": "sit",
@@ -250,11 +274,14 @@ async def notify_activity_event(
             return
         app_type, title, body = mapped
 
-        tokens = [
-            t for t in list_push_tokens_for_user(user_id)
-            if app_type in t["enabled_types"]
-        ]
-        if not tokens:
+        # Resolve the type per device: a build that has not registered the
+        # dedicated type still gets the alert under a type it understands.
+        by_type: dict[str, list[dict]] = {}
+        for t in list_push_tokens_for_user(user_id):
+            resolved = _resolve_token_type(app_type, t["enabled_types"])
+            if resolved:
+                by_type.setdefault(resolved, []).append(t)
+        if not by_type:
             return
 
         dog_name = _resolve_dog_name(dog_id, payload)
@@ -266,22 +293,34 @@ async def notify_activity_event(
             return
         project_id = _load_credentials()["project_id"]
 
-        message = {
-            "notification": {"title": title, "body": body},
-            "apns": {"payload": {"aps": {"sound": "default"}}},
-            "data": {
-                "type": app_type,
-                "dog_id": dog_id or "",
-                "event_id": str(event_id),
-            },
-        }
-        results = await asyncio.gather(
-            *(_send_fcm(t["device_token"], project_id, access_token, message) for t in tokens),
-            return_exceptions=True,
-        )
+        sends = []
+        for resolved_type, tokens in by_type.items():
+            message = {
+                "notification": {"title": title, "body": body},
+                "apns": {"payload": {"aps": {"sound": "default"}}},
+                "data": {
+                    # The type this device registered for — not necessarily the
+                    # dedicated one — so the app can always dispatch on it.
+                    "type": resolved_type,
+                    "dog_id": dog_id or "",
+                    "event_id": str(event_id),
+                },
+            }
+            if resolved_type != app_type:
+                logger.info(
+                    f"[PUSH] {app_type} delivered as '{resolved_type}' for "
+                    f"{len(tokens)} device(s) of user {user_id} — device has not "
+                    f"registered '{app_type}' in enabled_types"
+                )
+            sends.extend(
+                _send_fcm(t["device_token"], project_id, access_token, message)
+                for t in tokens
+            )
+
+        results = await asyncio.gather(*sends, return_exceptions=True)
         errors = sum(1 for r in results if isinstance(r, Exception))
         logger.info(
-            f"[PUSH] {row_type}->{app_type} sent to {len(tokens) - errors}/{len(tokens)} "
+            f"[PUSH] {row_type}->{app_type} sent to {len(results) - errors}/{len(results)} "
             f"device(s) for user {user_id}"
         )
     except Exception as e:
