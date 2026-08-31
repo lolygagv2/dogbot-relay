@@ -380,6 +380,117 @@ All WebSocket messages use this envelope:
 
 ---
 
+## Robot OTA Releases (added 2026-08-31)
+
+Relay-hosted release distribution for the robot updater (robot `c28ed1f`) and
+the app's update-availability card (app Build 154, `0dddd91`).
+
+Version strings are **opaque** — the app compares `latest.version` against the
+robot's telemetry `sw_version` with plain string inequality, no semver ordering.
+Never reuse a version string for different bytes. tb5 currently reports `2026.08.1`.
+
+### `GET /api/releases/latest` — app
+
+Auth: `Authorization: Bearer <user JWT>` (the ordinary user token).
+Returns the newest uploaded manifest as a **flat** top-level object.
+`404` when no release has been uploaded; the app treats that as "up to date".
+
+### `GET /api/releases/{version}` — robot
+
+Auth: device HMAC headers (below). `404` for unknown versions.
+
+### `GET /api/releases/{version}/download` — robot
+
+Auth: device HMAC headers. Returns the `.tar.gz` artifact with `Content-Length`
+set (drives the updater's `progress_pct`). `404` if the version is unknown or
+its bytes are missing from storage.
+
+### `POST /api/releases` — admin upload
+
+Auth: user JWT for an account listed in `ADMIN_EMAILS`. Multipart form:
+`version` (required), `file` (required, `.tar.gz`), `notes`, `min_updater_version`.
+Returns `201` with the manifest. `409` if the version already exists — releases
+are immutable. Max artifact size 500MB.
+
+### Device HMAC headers
+
+| Header | Value |
+|---|---|
+| `X-Device-Id` | the robot's device id |
+| `X-Timestamp` | unix seconds |
+| `X-Signature` | hex HMAC-SHA256 of `"{device_id}:{timestamp}"`, keyed with the device secret |
+
+Verified strictly: exactly that one message format, with a ±300s freshness
+window. This is deliberately narrower than the device WebSocket handshake, which
+accepts several formats including an unsigned-timestamp fallback.
+
+### Manifest shape
+
+```json
+{
+  "version": "2026.09.1",
+  "sha256": "<hex of tarball>",
+  "size_bytes": 4194304,
+  "size": 4194304,
+  "url": "/api/releases/2026.09.1/download",
+  "notes": "",
+  "created_at": "ISO8601",
+  "min_updater_version": null
+}
+```
+
+`size` and `size_bytes` carry the same value — the robot manifest contract names
+it `size`, the app contract names it `size_bytes`. Only `version` is load-bearing
+app-side. The object must stay flat: the app checks `data['version'] != null` on
+the top level, so any wrapper key reads as "no release available".
+
+---
+
+## Silent Guardian & Panic Events (added 2026-08-31)
+
+Robot contract `137a5e8`. Both new events use the flat robot format (`event` +
+`device_id` + robot-stamped `id`/`timestamp`) and are folded into the existing
+**`guardian`** activity type. The originating event name is preserved in the
+stored payload's `event` key so the app can tell the three apart.
+
+| Event | Forwarded live | Persisted to `/api/activity` | Replayed | Push |
+|---|---|---|---|---|
+| `panic_alert`, `severity` = `warning` \| `high` | yes | yes | yes | yes — "Panic alert" |
+| `panic_alert`, other/absent severity | yes | yes | yes | no |
+| `sg_summary`, `action` = `level4_escalation` | yes | yes | yes | yes |
+| `sg_summary`, `action` = `status_pull` | yes | **no** | **no** | no |
+| `sg_summary`, other actions | yes | yes | yes | no |
+
+`status_pull` is the live response to the app's `sg_status_pull` command, so it
+is forwarded and then forgotten — persisting or replaying it would resurface a
+stale status read on every reconnect.
+
+**Payload preservation:** guardian-family events carry their fields at the
+message top level, not nested under `data`. Everything outside the transport
+envelope (`type`, `data`, `payload`, `device_id`, `timestamp`, `id`, `event_id`,
+`seq`, `ts_server`, `dog_id`) is merged into the stored payload. This covers the
+`action="stopped"` additions — `bark_types`, `headline`, `aggressive_tag`,
+`panic_episodes` — and any field the robot adds later without a relay change.
+
+`dog_id` follows the existing canonical-UUID-or-null contract and is lifted to
+the `activity_events.dog_id` column rather than left in the payload.
+
+### New commands (App → Robot)
+
+`sg_status_pull` (no params) and `audio_loop` (`{"mode": "off"|"one"|"all"}`)
+route through the existing command channel with no relay-side logic.
+
+> **Note:** the relay drops commands whose `timestamp` is older than
+> **2 seconds** (`STALE_COMMAND_THRESHOLD_MS`), not 30 seconds. Stamp these
+> commands at send time.
+
+### `update_status` (Robot → App)
+
+Transient: assigned a `seq`, forwarded live, never buffered, replayed, or
+persisted — the same class as `controller_status` and `audio_state`.
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
@@ -388,3 +499,4 @@ All WebSocket messages use this envelope:
 | 1.1 | 2025-01-18 | Added WebRTC signaling, Cloudflare TURN |
 | 1.2 | 2026-01-26 | Added take_photo, audio_message, audio_request, call_dog commands; documented LED patterns and modes |
 | 1.3 | 2026-02-22 | Always-on WebRTC audio track (robot→app), deprecated audio_request/audio_message for listening, mode/UX restructure with resolution constraints, mode transition rules with source context, adaptive audio quality |
+| 1.3.1 | 2026-08-31 | Added robot OTA release endpoints (`/api/releases/*`) with device-HMAC and admin-JWT auth; added `sg_summary`/`panic_alert` events folded into the `guardian` activity type; documented `sg_status_pull`/`audio_loop` commands and `update_status` transient routing |

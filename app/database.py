@@ -318,6 +318,27 @@ def init_db():
             ON password_reset_codes(email, used, expires_at)
         """)
 
+        # Robot OTA releases (updater contract 2026-08-31, robot c28ed1f).
+        # One row per uploaded artifact; `filename` points into the releases
+        # storage dir. Version strings are opaque — the app compares them with
+        # plain inequality against the robot's telemetry sw_version, with no
+        # semver ordering, so a version string must never be reused.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS releases (
+                version TEXT PRIMARY KEY,
+                sha256 TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                notes TEXT,
+                min_updater_version TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_releases_created
+            ON releases(created_at DESC)
+        """)
+
         # Device event storage (for offline app retrieval)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS device_events (
@@ -1643,6 +1664,9 @@ STORABLE_EVENT_TYPES = {
     "audio_state",
     "schedule_created", "schedule_updated", "schedule_deleted", "schedule_triggered",
     "guardian",
+    # Silent Guardian summaries + panic alerts (robot contract 2026-08-31).
+    "sg_summary",
+    "panic_alert",
     "error",
 }
 
@@ -1651,6 +1675,12 @@ def store_event(device_id: str, owner_user_id: str, event_type: str, message: di
     """Store a robot event for offline retrieval. Returns row id, or None if not
     storable or a replay of an already-stored event (deduped on event_id)."""
     if event_type not in STORABLE_EVENT_TYPES:
+        return None
+
+    # Live query responses (sg_summary action="status_pull") are forwarded but
+    # never stored — see event_buffer.is_durable_event.
+    from app.event_buffer import is_durable_event
+    if not is_durable_event(event_type, message):
         return None
 
     event_id = message.get("event_id") or message.get("id")
@@ -2369,6 +2399,118 @@ def advance_sync_state(
             (table_name, last_synced_at, now, last_error),
         )
         conn.commit()
+
+
+
+
+# ============== Robot OTA Releases ==============
+
+def _release_row_to_manifest(row: sqlite3.Row) -> dict:
+    """Shape a releases row into the flat manifest the robot and app expect.
+
+    Flat by contract: the app's RobotApi.getLatestRelease() checks
+    ``data['version'] != null`` on the top-level object, so wrapping the manifest
+    under any key makes the app read it as "no release available".
+    """
+    return {
+        "version": row["version"],
+        "sha256": row["sha256"],
+        "size_bytes": row["size_bytes"],
+        "size": row["size_bytes"],  # robot manifest key (updater contract)
+        "url": f"/api/releases/{row['version']}/download",
+        "notes": row["notes"] or "",
+        "created_at": row["created_at"],
+        "min_updater_version": row["min_updater_version"],
+    }
+
+
+def get_release(version: str) -> Optional[dict]:
+    """Return the manifest for a version, or None if unknown."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM releases WHERE version = ?", (version,))
+        row = cursor.fetchone()
+
+    return _release_row_to_manifest(row) if row else None
+
+
+def get_latest_release() -> Optional[dict]:
+    """Return the most recently uploaded release manifest, or None if none exist.
+
+    Ordered by upload time, not version string — versions carry no orderable
+    semantics (the app compares them for inequality only).
+    """
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM releases ORDER BY created_at DESC LIMIT 1")
+        row = cursor.fetchone()
+
+    return _release_row_to_manifest(row) if row else None
+
+
+def get_release_filename(version: str) -> Optional[str]:
+    """Return the stored artifact filename for a version, or None if unknown."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT filename FROM releases WHERE version = ?", (version,))
+        row = cursor.fetchone()
+
+    return row["filename"] if row else None
+
+
+def insert_release(
+    version: str,
+    sha256: str,
+    size_bytes: int,
+    filename: str,
+    notes: Optional[str] = None,
+    min_updater_version: Optional[str] = None,
+) -> dict:
+    """Record an uploaded release. Raises ValueError if the version already exists.
+
+    Versions are never overwritten: the app treats any change in the version
+    string as "update available" with no ordering, so silently replacing an
+    artifact under a live version would leave already-updated robots believing
+    they are current.
+    """
+    created_at = datetime.now(timezone.utc).isoformat()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT OR IGNORE INTO releases
+               (version, sha256, size_bytes, filename, notes, min_updater_version, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (version, sha256, size_bytes, filename, notes, min_updater_version, created_at),
+        )
+        inserted = cursor.rowcount > 0
+        conn.commit()
+
+    if not inserted:
+        raise ValueError(f"Release {version} already exists")
+
+    logger.info(f"[RELEASE] Recorded {version} ({size_bytes} bytes, sha256={sha256[:12]}…)")
+    return get_release(version)
+
+
+def list_releases() -> list[dict]:
+    """Return all release manifests, newest upload first."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM releases ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+
+    return [_release_row_to_manifest(row) for row in rows]
+
+
+def delete_release(version: str) -> bool:
+    """Remove a release row. Returns True if a row was deleted."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM releases WHERE version = ?", (version,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+
+    return deleted
 
 
 # Initialize database on module import

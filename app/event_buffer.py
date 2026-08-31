@@ -25,7 +25,40 @@ FEED_WORTHY_EVENTS = {
     "unknown_dog_detected",
     "activity_event",
     "treat_dispensed",
+    # Silent Guardian summaries + panic alerts (robot contract 2026-08-31) —
+    # durable, app-visible events, so they replay to a reconnecting app like
+    # guardian alerts do.
+    "sg_summary",
+    "panic_alert",
 }
+
+# Transient event types: sequenced (they get a seq) but deliberately NOT
+# buffered — progress/state frames whose replay would duplicate stale UI on
+# every reconnect. They are transient by omission from FEED_WORTHY_EVENTS
+# above; this set documents that intent so a later edit does not "fix" the
+# omission by promoting them. controller_status and audio_state set the
+# precedent; update_status (robot updater, 2026-08-31) is the same class.
+TRANSIENT_EVENTS = {
+    "controller_status",
+    "update_status",
+}
+
+assert not (FEED_WORTHY_EVENTS & TRANSIENT_EVENTS), \
+    "an event type cannot be both feed-worthy and transient"
+
+
+def is_durable_event(event_type: str, message: dict) -> bool:
+    """True if this event belongs in durable sinks (replay buffer, device_events,
+    activity history) rather than being forwarded live and forgotten.
+
+    Type alone is not always enough: sg_summary is durable when it reports a real
+    Silent Guardian outcome, but action="status_pull" makes it the response to a
+    live app query (sg_status_pull). Replaying or storing those would resurface a
+    stale status read on every reconnect (contract 2026-08-31).
+    """
+    if event_type == "sg_summary":
+        return str(message.get("action") or "").lower() != "status_pull"
+    return True
 
 # audio_state is feed-worthy but latched to a single latest slot per device
 # (see EventBuffer) rather than ring-buffered — music emits it frequently and
@@ -105,7 +138,7 @@ class EventBuffer:
         if event_type == "audio_state":
             self._latest_audio_state = entry
         # Ring-buffer other feed-worthy events for offline replay
-        elif event_type in FEED_WORTHY_EVENTS:
+        elif event_type in FEED_WORTHY_EVENTS and is_durable_event(event_type, message):
             self._buffer.append(entry)
             self._evict()
 

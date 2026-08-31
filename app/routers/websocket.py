@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from app.auth import decode_token, verify_device_signature, verify_device_signature_with_timestamp
 from app.config import Settings, get_settings
 from app.connection_manager import ConnectionManager, get_connection_manager
-from app.event_buffer import replay_manager
+from app.event_buffer import is_durable_event, replay_manager
 from app.database import (
     get_device_owner as db_get_device_owner,
     get_device_secret as db_get_device_secret,
@@ -81,6 +81,9 @@ TRACKED_EVENTS = {
     "upload_result",
     # Audio state
     "audio_state",
+    # Silent Guardian / panic (contract 2026-08-31)
+    "sg_summary",
+    "panic_alert",
     # Schedule events (Robot -> App) - Build 38
     "schedule_created",
     "schedule_updated",
@@ -97,13 +100,28 @@ LEGACY_TO_ACTIVITY_TYPE = {
     "alert": "guardian_alert",
     "unknown_dog_detected": "guardian_alert",
     "guardian": "guardian",
+    # Silent Guardian summaries and panic alerts (robot contract 2026-08-31,
+    # commit 137a5e8) land in the same activity type as guardian events. The
+    # originating event name is preserved in the payload's "event" key so the
+    # app and the push mapper can still tell them apart.
+    "sg_summary": "guardian",
+    "panic_alert": "guardian",
     "mission_complete": "mission_completed",
     "mission_progress": "mission_progress",
     "mission_stopped": "mission_stopped",
 }
 
-# Fields to extract from top-level message into payload for specific event types
-_GUARDIAN_PAYLOAD_KEYS = ("action", "escalation_level", "session_id")
+# Robot events routed to the "guardian" activity type. Their meaningful fields
+# sit at the message top level rather than nested under "data", so everything
+# outside the envelope below is merged into the stored payload.
+_GUARDIAN_LIKE_EVENTS = {"guardian", "sg_summary", "panic_alert"}
+
+# Message-envelope keys — routing/transport metadata that must never be copied
+# into an activity payload when flattening a top-level robot event.
+_ENVELOPE_KEYS = frozenset({
+    "type", "data", "payload", "device_id", "timestamp", "id", "event_id",
+    "seq", "ts_server", "dog_id",
+})
 
 # Dog-identity display/provenance fields the app reads back from the activity
 # payload (dog-id contract 2026-07-12).
@@ -196,18 +214,31 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
     activity_type = LEGACY_TO_ACTIVITY_TYPE.get(event_name)
     if not activity_type:
         return
+
+    # Live query responses (sg_summary action="status_pull") are forwarded to the
+    # app but never written to history, where they would be pure noise.
+    if not is_durable_event(event_name, message):
+        return
+
     try:
         event_id = message.get("event_id") or message.get("id") or str(uuid.uuid4())
         data = message.get("data") or {}
         timestamp = message.get("timestamp") or datetime.now(timezone.utc).isoformat()
 
-        # Guardian events carry action/escalation_level/session_id at
-        # the message top-level, not nested under "data".  Merge them
-        # into the stored payload so the app can distinguish session
-        # start/stop markers from real interventions.
-        if event_name == "guardian":
-            extra = {k: message[k] for k in _GUARDIAN_PAYLOAD_KEYS if k in message}
+        # Guardian-family events (guardian / sg_summary / panic_alert) carry
+        # their meaningful fields at the message top level, not nested under
+        # "data" — action, escalation_level, session_id, severity, and, since
+        # robot 137a5e8, bark_types/headline/aggressive_tag/panic_episodes on
+        # action="stopped". Merge everything outside the transport envelope
+        # rather than an allowlist: an allowlist silently drops any field the
+        # robot adds later, which is exactly how the 137a5e8 fields would have
+        # been lost. "event" is deliberately merged too — it is what tells the
+        # app and the push mapper which of the three folded event types this row
+        # came from.
+        if event_name in _GUARDIAN_LIKE_EVENTS:
+            extra = {k: v for k, v in message.items() if k not in _ENVELOPE_KEYS}
             data = {**data, **extra}
+            data.setdefault("event", event_name)
 
         # Lift dog_id to the row-level column and keep dog_name/id_method in payload.
         dog_id, data = _resolve_dog_fields(message, data)

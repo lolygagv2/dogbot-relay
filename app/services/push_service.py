@@ -38,6 +38,10 @@ _token_lock = asyncio.Lock()
 # intervention — never notify on these.
 _GUARDIAN_LIFECYCLE_ACTIONS = {"start", "stop", "reset"}
 
+# panic_alert severities that warrant a push (contract 2026-08-31). Lower
+# severities are forwarded live and rendered in-app without a notification.
+_PANIC_PUSH_SEVERITIES = {"warning", "high"}
+
 _BEHAVIOR_TO_TYPE = {
     "sit": "sit",
     "sitting": "sit",
@@ -144,7 +148,26 @@ def _build_notification(row_type: str, payload: dict) -> Optional[tuple[str, str
         return ("alert", title, "")
 
     if row_type == "guardian":
+        # sg_summary and panic_alert are folded into the guardian activity type
+        # (contract 2026-08-31); payload["event"] carries which one this row is.
+        source = str(payload.get("event") or "").lower()
         action = str(payload.get("action") or "").lower()
+
+        if source == "panic_alert":
+            # Only warning/high severities are push-worthy; anything lower is a
+            # live-UI signal the app renders without interrupting the user.
+            severity = str(payload.get("severity") or "").lower()
+            if severity not in _PANIC_PUSH_SEVERITIES:
+                return None
+            return ("panicAlert", "Panic alert", str(payload.get("headline") or ""))
+
+        if source == "sg_summary":
+            # A level-4 escalation is the only summary worth waking the phone for;
+            # status_pull never reaches here (it is not persisted at all).
+            if action != "level4_escalation":
+                return None
+            return ("alert", "Guardian: escalation", str(payload.get("headline") or ""))
+
         if action in _GUARDIAN_LIFECYCLE_ACTIONS:
             return None
         return ("alert", "Guardian Alert", "")

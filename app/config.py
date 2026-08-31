@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # Empty = <repo>/data/firebase-service-account.json; missing file disables push.
     fcm_credentials_path: str = ""
 
+    # Robot OTA release artifacts (updater contract 2026-08-31, robot c28ed1f).
+    # Empty = <repo>/data/releases (next to the SQLite DB). Must be a persistent
+    # path — /tmp is wiped on reboot and the manifest rows would outlive the files.
+    releases_storage_dir: str = ""
+
     # Rate limiting (app-to-robot commands)
     rate_limit_window_seconds: int = 60
     rate_limit_max_commands: int = 30

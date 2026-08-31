@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -168,3 +169,58 @@ def verify_device_signature_with_timestamp(
 def generate_pairing_code() -> str:
     """Generate a 6-character pairing code for device pairing."""
     return secrets.token_hex(3).upper()
+
+
+# Maximum clock skew accepted on a signed device HTTP request, in seconds.
+# The robot signs fresh per request (updater contract 2026-08-31), so this only
+# needs to cover clock drift and flight time, not a session lifetime.
+DEVICE_REQUEST_MAX_SKEW_SECONDS = 300
+
+
+def verify_device_request_signature(
+    device_id: str,
+    timestamp: str | None,
+    signature: str | None,
+    device_secret: str,
+) -> tuple[bool, str]:
+    """Strictly verify a signed device HTTP request.
+
+    Unlike verify_device_signature_with_timestamp (which tries five message
+    formats and falls back to signing device_id ALONE), this accepts exactly one
+    format — HMAC-SHA256("{device_id}:{timestamp}") — and requires a fresh
+    timestamp. The permissive verifier's device_id-only fallback makes a captured
+    signature valid forever, which is acceptable for the WS handshake it was
+    written for but not for release artifact downloads.
+
+    Returns (ok, reason). ``reason`` is a short code for logging on failure.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if not signature or not timestamp:
+        return False, "missing_headers"
+
+    try:
+        ts = int(timestamp)
+    except (TypeError, ValueError):
+        return False, "bad_timestamp"
+
+    skew = abs(time.time() - ts)
+    if skew > DEVICE_REQUEST_MAX_SKEW_SECONDS:
+        logger.warning(
+            f"[RELEASE-AUTH] Stale timestamp for {device_id}: skew={skew:.0f}s "
+            f"(max {DEVICE_REQUEST_MAX_SKEW_SECONDS}s)"
+        )
+        return False, "stale_timestamp"
+
+    expected = hmac.new(
+        device_secret.encode(),
+        f"{device_id}:{ts}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature.strip().lower(), expected):
+        logger.warning(f"[RELEASE-AUTH] Signature mismatch for {device_id}")
+        return False, "bad_signature"
+
+    return True, "ok"
