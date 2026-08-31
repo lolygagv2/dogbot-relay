@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     # path — /tmp is wiped on reboot and the manifest rows would outlive the files.
     releases_storage_dir: str = ""
 
+    # How many releases keep their artifact bytes on disk. Older releases keep
+    # their manifest row (so the robot gets a truthful answer instead of a
+    # never-existed 404) but lose the tarball. Artifacts run ~187MB, so the
+    # default holds ~560MB — enough for a robot a couple of versions behind,
+    # since the app only ever offers the current latest.
+    releases_keep_artifacts: int = 3
+
     # Rate limiting (app-to-robot commands)
     rate_limit_window_seconds: int = 60
     rate_limit_max_commands: int = 30

@@ -331,13 +331,20 @@ def init_db():
                 filename TEXT NOT NULL,
                 notes TEXT,
                 min_updater_version TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                pruned_at TEXT
             )
         """)
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_releases_created
             ON releases(created_at DESC)
         """)
+
+        # Migration: add pruned_at to releases created before retention landed.
+        release_columns = {r["name"] for r in cursor.execute("PRAGMA table_info(releases)")}
+        if "pruned_at" not in release_columns:
+            cursor.execute("ALTER TABLE releases ADD COLUMN pruned_at TEXT")
+            logger.info("[MIGRATION] Added pruned_at column to releases table")
 
         # Device event storage (for offline app retrieval)
         cursor.execute("""
@@ -2421,6 +2428,11 @@ def _release_row_to_manifest(row: sqlite3.Row) -> dict:
         "notes": row["notes"] or "",
         "created_at": row["created_at"],
         "min_updater_version": row["min_updater_version"],
+        # False once the artifact bytes have been pruned by retention. The
+        # manifest row survives so an old version reads as "existed, no longer
+        # downloadable" rather than "never existed".
+        "artifact_available": row["pruned_at"] is None,
+        "pruned_at": row["pruned_at"],
     }
 
 
@@ -2500,6 +2512,51 @@ def list_releases() -> list[dict]:
         rows = cursor.fetchall()
 
     return [_release_row_to_manifest(row) for row in rows]
+
+
+def select_releases_to_prune(keep: int) -> list[dict]:
+    """Return releases whose artifact bytes should be dropped: everything past
+    the newest ``keep``, that still has bytes.
+
+    ``keep`` is floored at 1 so the latest release can never be selected — a
+    misconfigured 0 would otherwise prune the version the app is actively
+    offering.
+    """
+    keep = max(1, keep)
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT version, filename FROM releases
+               WHERE pruned_at IS NULL
+               ORDER BY created_at DESC
+               LIMIT -1 OFFSET ?""",
+            (keep,),
+        )
+        rows = cursor.fetchall()
+
+    return [{"version": r["version"], "filename": r["filename"]} for r in rows]
+
+
+def mark_release_pruned(version: str) -> None:
+    """Record that a release's artifact bytes were removed. The row stays."""
+    pruned_at = datetime.now(timezone.utc).isoformat()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE releases SET pruned_at = ? WHERE version = ? AND pruned_at IS NULL",
+            (pruned_at, version),
+        )
+        conn.commit()
+
+
+def is_release_pruned(version: str) -> Optional[bool]:
+    """True/False for a known version, None if the version does not exist."""
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT pruned_at FROM releases WHERE version = ?", (version,))
+        row = cursor.fetchone()
+
+    return None if row is None else row["pruned_at"] is not None
 
 
 def delete_release(version: str) -> bool:

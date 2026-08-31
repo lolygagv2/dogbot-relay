@@ -33,7 +33,10 @@ from app.database import (
     get_release_filename,
     get_user_by_id,
     insert_release,
+    is_release_pruned,
     list_releases,
+    mark_release_pruned,
+    select_releases_to_prune,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +66,33 @@ def _resolve_storage_root() -> Path:
 # outlive /tmp across reboots, which would leave the robot downloading a 404.
 STORAGE_ROOT = _resolve_storage_root()
 STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _prune_old_artifacts() -> list[str]:
+    """Drop artifact bytes for releases past the retention window.
+
+    Manifest rows are kept — a robot asking about a version it once ran should
+    get a truthful "existed, no longer downloadable" rather than a 404 that
+    reads as "never existed". Called after a successful upload; failures are
+    logged and swallowed so a full disk can't block the upload that just landed.
+    """
+    keep = get_settings().releases_keep_artifacts
+    pruned = []
+
+    for candidate in select_releases_to_prune(keep):
+        path = STORAGE_ROOT / candidate["filename"]
+        try:
+            # Mark first: a row marked pruned whose file still exists degrades to
+            # a truthful 410, whereas a deleted file with an unmarked row would
+            # 404 and look like the release never existed.
+            mark_release_pruned(candidate["version"])
+            path.unlink(missing_ok=True)
+            pruned.append(candidate["version"])
+            logger.info(f"[RELEASE] Pruned artifact for {candidate['version']} (retention keep={keep})")
+        except Exception as e:
+            logger.error(f"[RELEASE] Failed to prune {candidate['version']}: {e}")
+
+    return pruned
 
 
 def _validate_version(version: str) -> str:
@@ -230,6 +260,13 @@ async def upload_release(
         f"[RELEASE] {admin.get('email')} uploaded {version} "
         f"({size} bytes, sha256={manifest['sha256'][:12]}…)"
     )
+
+    # Retention runs after the new release is recorded, so the upload itself is
+    # always inside the keep window and can never prune what just landed.
+    pruned = _prune_old_artifacts()
+    if pruned:
+        manifest = {**manifest, "pruned_versions": pruned}
+
     return manifest
 
 
@@ -271,11 +308,27 @@ async def download_release(
             detail=f"Unknown release {version}",
         )
 
+    # Deliberately pruned by retention: 410 Gone, not 404. The version really
+    # existed, so a robot mid-rollback gets a truthful answer and can tell this
+    # apart from a typo'd version. The detail names the current latest so the
+    # updater has somewhere to go.
+    if is_release_pruned(version):
+        latest = get_latest_release()
+        latest_version = latest["version"] if latest else "unknown"
+        logger.info(f"[RELEASE] Device {device_id} requested pruned version {version}")
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=(
+                f"Release {version} exists but its artifact has been pruned by "
+                f"retention; current latest is {latest_version}"
+            ),
+        )
+
     path = STORAGE_ROOT / filename
     if not path.is_file():
-        # Manifest row without bytes — the storage root was wiped or the upload
-        # was rolled back. 404 rather than 500: the updater's retry path treats
-        # it as "not available yet".
+        # Row is not marked pruned, yet the bytes are gone — the storage root was
+        # wiped or an upload was rolled back. 404 rather than 500: the updater's
+        # retry path treats it as "not available yet".
         logger.error(f"[RELEASE] Manifest exists but artifact missing: {path}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
