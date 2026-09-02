@@ -35,12 +35,25 @@ _access_token_expires_at: float = 0.0
 _token_lock = asyncio.Lock()
 
 # Guardian rows whose payload.action is a session lifecycle marker, not an
-# intervention — never notify on these.
-_GUARDIAN_LIFECYCLE_ACTIONS = {"start", "stop", "reset"}
+# intervention — never notify on these. The robot emits the PAST-TENSE forms
+# ("started"/"stopped"); the bare stems were a guess that never matched, so
+# every session start and stop pushed a "Guardian Alert". Both spellings are
+# listed so neither the robot nor a future rename can resurrect that.
+_GUARDIAN_LIFECYCLE_ACTIONS = {
+    "start", "started",
+    "stop", "stopped",
+    "reset",
+    "pause", "paused",
+    "resume", "resumed",
+}
 
-# panic_alert severities that warrant a push (contract 2026-08-31). Lower
-# severities are forwarded live and rendered in-app without a notification.
-_PANIC_PUSH_SEVERITIES = {"warning", "high"}
+# panic_alert severities that do NOT warrant a push. Inverted from an allow-list
+# of {"warning", "high"} on purpose: no panic_alert has ever reached this relay,
+# so the exact strings the robot stamps are unverified, and an allow-list fails
+# CLOSED — an unexpected value (or a missing field) would silently swallow the
+# alert. A panic alert is the most safety-critical push we send, so anything not
+# explicitly known-quiet notifies.
+_PANIC_QUIET_SEVERITIES = {"low", "info", "debug", "none", "ok", "normal"}
 
 # Dedicated app types that older builds have not registered in enabled_types yet.
 # A device that has not opted into the new type still gets the alert under the
@@ -49,7 +62,30 @@ _PANIC_PUSH_SEVERITIES = {"warning", "high"}
 # receives the dedicated type instead and the fallback stops being consulted.
 _APP_TYPE_FALLBACKS = {
     "panicAlert": "alert",
+    "sgSummary": "alert",
 }
+
+
+def _panic_text(payload: dict) -> str:
+    """The robot's own pre-phrased sentence for this event, if it sent one.
+
+    The robot phrases these for a lock screen (e.g. "Mostly barking, holding
+    steady"), so the relay never composes its own wording — it just carries
+    whichever field the robot used.
+    """
+    for key in ("headline", "message", "summary", "text"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _is_level4(payload: dict) -> bool:
+    """True if this guardian row sits at escalation level 4 or above."""
+    try:
+        return int(payload.get("escalation_level")) >= 4
+    except (TypeError, ValueError):
+        return False
 
 
 def _resolve_token_type(app_type: str, enabled_types: list) -> Optional[str]:
@@ -178,23 +214,31 @@ def _build_notification(row_type: str, payload: dict) -> Optional[tuple[str, str
         action = str(payload.get("action") or "").lower()
 
         if source == "panic_alert":
-            # Only warning/high severities are push-worthy; anything lower is a
-            # live-UI signal the app renders without interrupting the user.
+            # Push unless the severity is explicitly known-quiet — see
+            # _PANIC_QUIET_SEVERITIES for why this fails OPEN.
             severity = str(payload.get("severity") or "").lower()
-            if severity not in _PANIC_PUSH_SEVERITIES:
+            if severity in _PANIC_QUIET_SEVERITIES:
                 return None
-            return ("panicAlert", "Panic alert", str(payload.get("headline") or ""))
+            return ("panicAlert", "Panic alert", _panic_text(payload))
 
         if source == "sg_summary":
             # A level-4 escalation is the only summary worth waking the phone for;
             # status_pull never reaches here (it is not persisted at all).
-            if action != "level4_escalation":
+            if action != "level4_escalation" and not _is_level4(payload):
                 return None
-            return ("alert", "Guardian: escalation", str(payload.get("headline") or ""))
+            return ("sgSummary", "Guardian: escalation", _panic_text(payload))
 
         if action in _GUARDIAN_LIFECYCLE_ACTIONS:
             return None
-        return ("alert", "Guardian Alert", "")
+
+        # Plain guardian rows: the robot reports escalations as
+        # action="intervention" + escalation_level, NOT as a separate
+        # sg_summary/level4_escalation event (no such row has ever been
+        # written). Route a level-4 intervention to the escalation push so the
+        # ceiling case is not delivered as a generic "Guardian Alert".
+        if _is_level4(payload):
+            return ("sgSummary", "Guardian: escalation", _panic_text(payload))
+        return ("alert", "Guardian Alert", _panic_text(payload))
 
     if row_type == "mission_started":
         return ("missionStarted", "Mission Started", "")
