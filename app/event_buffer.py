@@ -38,9 +38,16 @@ FEED_WORTHY_EVENTS = {
 # above; this set documents that intent so a later edit does not "fix" the
 # omission by promoting them. controller_status and audio_state set the
 # precedent; update_status (robot updater, 2026-08-31) is the same class.
+#
+# dog_weekly_summary (app brief 2026-09-01) is the same class for a sharper
+# reason: it is only ever the live reply to a dog_weekly_summary_pull command,
+# and the app renders it as the current summary. Replaying a stale copy on
+# reconnect would overwrite freshly pulled data app-side, so it must stay out
+# of the replay buffer — and out of every push mapping — permanently.
 TRANSIENT_EVENTS = {
     "controller_status",
     "update_status",
+    "dog_weekly_summary",
 }
 
 assert not (FEED_WORTHY_EVENTS & TRANSIENT_EVENTS), \

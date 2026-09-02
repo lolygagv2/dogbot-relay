@@ -520,6 +520,63 @@ persisted — the same class as `controller_status` and `audio_state`.
 
 ---
 
+## Per-Dog Weekly Summary (added 2026-09-01)
+
+Robot contract `386aef0`/`7aa9231`. A pull/reply pair — the app asks, the robot
+answers once. Nothing about it is durable.
+
+### `dog_weekly_summary_pull` (App → Robot)
+
+```json
+{"command": "dog_weekly_summary_pull", "dog_id": "<uuid>", "dog_name": "..."}
+```
+
+Routes through the existing command channel with **no relay-side logic**. The
+relay does not allowlist command names — `forward_command_to_robot` checks only
+that the requesting user owns the target device, then forwards the message
+verbatim. Same pass-through as `sg_status_pull` and `audio_loop`.
+
+Two generic gates still apply, as they do to every command:
+
+- **Staleness** — a `timestamp` older than 2 s (`STALE_COMMAND_THRESHOLD_MS`)
+  is dropped with `STALE_COMMAND`. Stamp at send time.
+- **Rate limit** — counts against the shared per-user command budget
+  (`rate_limit_max_commands` per `rate_limit_window_seconds`). A pull is
+  user-initiated and infrequent, so this is not a practical concern.
+
+### `dog_weekly_summary` (Robot → App)
+
+**Transient**, the same class as `update_status` and `audio_state`:
+
+| Property | Behavior |
+|---|---|
+| Forwarded live | yes — verbatim, payload untouched |
+| `seq` assigned | yes (harmless; the app carves the whole type out of its watermark) |
+| Replay buffer | **no** — listed in `event_buffer.TRANSIENT_EVENTS` |
+| `device_events` / `/api/activity` | **no** — absent from `STORABLE_EVENT_TYPES` and `LEGACY_TO_ACTIVITY_TYPE` |
+| FCM push | **no** — push fires only off an `activity_events` insert, which never happens for this type |
+
+It is only ever the live reply to a pull, so a replayed stale copy would
+overwrite freshly pulled data app-side. It must never be promoted to
+`FEED_WORTHY_EVENTS` or given a push mapping.
+
+### Payload pass-through (robot `8068ef3`)
+
+Robot bark events now carry `bark_type` / `bark_label`. No relay change was
+needed: the relay stores and forwards event payloads **verbatim** and never
+normalizes or allowlists their fields. Guardian-family events are the one place
+fields are reshaped, and even there the rule is "merge everything outside the
+transport envelope" precisely so a field the robot adds later cannot be dropped.
+
+If payload normalization is ever introduced, it must stay additive — stripping
+unrecognized fields would silently break `bark_type`/`bark_label` and every
+future robot addition.
+
+`sg_summary.session_id` is forwarded as-is and never parsed relay-side, so the
+robot's planned int→string change needs no relay work.
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
@@ -529,3 +586,4 @@ persisted — the same class as `controller_status` and `audio_state`.
 | 1.2 | 2026-01-26 | Added take_photo, audio_message, audio_request, call_dog commands; documented LED patterns and modes |
 | 1.3 | 2026-02-22 | Always-on WebRTC audio track (robot→app), deprecated audio_request/audio_message for listening, mode/UX restructure with resolution constraints, mode transition rules with source context, adaptive audio quality |
 | 1.3.1 | 2026-08-31 | Added robot OTA release endpoints (`/api/releases/*`) with device-HMAC and admin-JWT auth; added `sg_summary`/`panic_alert` events folded into the `guardian` activity type; documented `sg_status_pull`/`audio_loop` commands and `update_status` transient routing |
+| 1.3.2 | 2026-09-01 | Added `dog_weekly_summary_pull` command and transient `dog_weekly_summary` event; noted that robot bark events now carry `bark_type`/`bark_label` and that payloads are forwarded verbatim |
