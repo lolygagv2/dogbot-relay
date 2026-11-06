@@ -889,6 +889,14 @@ async def websocket_device_endpoint(
         })
         logger.info(f"Broadcast robot_connected and robot_status online=true for {device_id} to user {owner_id}")
 
+        # Voice-agent boot hook (Dec 9 demo build, 2026-11-06): fire-and-forget, the
+        # agent debounces reconnect storms and speaks the greeting + yesterday's roll-up.
+        try:
+            from app.services.notify_service import notify_agent
+            notify_agent("robot_connected", device_id, owner_id, None, {}, None)
+        except Exception as e:
+            logger.debug(f"[AGENT-HOOK] robot_connected hook failed: {e}")
+
         # Initial dog-profile sync (dog-id contract 2026-07-12): give the robot the
         # canonical dog_id/aruco_id snapshot as soon as it connects, so it can key its
         # store on the app id before any events flow.

@@ -72,6 +72,42 @@ class Settings(BaseSettings):
     rate_limit_diversity_window: int = 10  # seconds
     rate_limit_diversity_threshold: int = 6  # distinct command types
 
+    # ---- Dec 9 demo build (2026-11-06): event store, settings, MCP, voice agent ----
+    # Public base URL of this relay (used to build absolute media/audio URLs).
+    public_base_url: str = "https://api.wimzai.com"
+    # Shared secret for same-box internal callers (wimz-mcp, wimz-agent). They send
+    # `Authorization: Bearer <token>` + `X-Actor` + `X-On-Behalf-Of`. Empty = internal
+    # callers get 503, so nothing is silently open.
+    internal_api_token: str = ""
+    # Default dog timezone for daily roll-ups (per-dog override via settings key
+    # `timezone`).
+    default_timezone: str = "America/New_York"
+    # Replayer defaults (admin-only demo tooling).
+    demo_dog_id: str = "demo_dog"
+    demo_device_id: str = "demo_robot"
+    seeds_dir: str = ""           # empty = <repo>/seeds
+    sounds_storage_dir: str = ""  # empty = <repo>/data/sounds
+    # Voice agent hook target (relay -> agent, fire-and-forget).
+    agent_base_url: str = "http://127.0.0.1:8002"
+
+    # MCP server (separate process, run_mcp.py)
+    mcp_port: int = 8001
+    mcp_access_token_ttl: int = 3600
+    mcp_refresh_token_ttl: int = 30 * 24 * 3600
+    mcp_allowed_hosts: str = "api.wimzai.com,api.wimzai.com:*,127.0.0.1:8001,localhost:8001"
+
+    # Voice agent (separate process, run_agent.py)
+    agent_port: int = 8002
+    agent_model: str = "claude-opus-5-5"
+    openai_api_key: str = ""
+    openai_stt_model: str = "gpt-4o-transcribe"
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice_id: str = ""
+    elevenlabs_model: str = "eleven_flash_v2_5"
+    agent_audio_dir: str = ""     # empty = <repo>/data/agent_audio
+    agent_audio_ttl_seconds: int = 900
+    agent_boot_greeting_delay_seconds: int = 20
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

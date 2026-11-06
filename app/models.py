@@ -477,3 +477,193 @@ class Schedule(BaseModel):
 class ScheduleListResponse(BaseModel):
     schedules: list[Schedule]
     scheduling_enabled: bool
+
+
+# ============== Dec 9 demo build (2026-11-06): event store ==============
+
+EVENT_TYPES = (
+    "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
+    "treat", "music", "mission_run", "status",
+)
+
+
+class EventIn(BaseModel):
+    event_id: str = Field(..., min_length=1, max_length=128)
+    type: Literal[
+        "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
+        "treat", "music", "mission_run", "status",
+    ]
+    dog_id: str = Field(..., min_length=1, max_length=128)
+    ts: str = Field(..., description="ISO-8601 timestamp; naive = UTC")
+    duration_s: Optional[float] = Field(default=None, ge=0, le=86400)
+    data: dict = Field(default_factory=dict)
+    device_id: Optional[str] = None   # ignored for robot callers (taken from HMAC identity)
+
+
+class EventBatchIn(BaseModel):
+    events: list[EventIn] = Field(..., min_length=1, max_length=200)
+
+
+class EventRejected(BaseModel):
+    event_id: str
+    reason: str
+
+
+class EventBatchResult(BaseModel):
+    accepted: list[str] = Field(default_factory=list)
+    duplicate: list[str] = Field(default_factory=list)
+    rejected: list[EventRejected] = Field(default_factory=list)
+
+
+# ============== Settings value schemas (one per key) ==============
+
+class QuietHours(BaseModel):
+    enabled: bool = True
+    start: str = Field(default="22:00", pattern=r"^\d{2}:\d{2}$")
+    end: str = Field(default="07:00", pattern=r"^\d{2}:\d{2}$")
+
+
+class TreatWindow(BaseModel):
+    start: str = Field(..., pattern=r"^\d{2}:\d{2}$")
+    end: str = Field(..., pattern=r"^\d{2}:\d{2}$")
+    multiplier: float = Field(default=1.0, ge=0, le=3)
+
+
+class TreatSchedule(BaseModel):
+    daily_cap: int = Field(default=10, ge=0, le=100)
+    default_multiplier: float = Field(default=1.0, ge=0, le=3)
+    max_per_hour: int = Field(default=3, ge=0, le=60)
+    windows: list[TreatWindow] = Field(default_factory=list)
+
+
+class SgSensitivity(BaseModel):
+    level: Literal["low", "medium", "high"] = "medium"
+    min_episode_s: int = Field(default=5, ge=1, le=600)
+    escalate_after_s: int = Field(default=60, ge=5, le=3600)
+
+
+class MusicOnDeparture(BaseModel):
+    track: str = "calm_01"
+    delay_s: int = Field(default=60, ge=0, le=3600)
+    duration_min: int = Field(default=30, ge=1, le=480)
+
+
+class MusicSlot(BaseModel):
+    time: str = Field(..., pattern=r"^\d{2}:\d{2}$")
+    track: str
+    duration_min: int = Field(default=20, ge=1, le=480)
+
+
+class MusicPlan(BaseModel):
+    enabled: bool = True
+    volume: int = Field(default=40, ge=0, le=100)
+    on_departure: Optional[MusicOnDeparture] = Field(default_factory=MusicOnDeparture)
+    schedule: list[MusicSlot] = Field(default_factory=list)
+
+
+NOTIFY_APP_TYPES = (
+    "bark", "treatDispensed", "coachReward", "alert", "missionStarted",
+    "missionCompleted", "missionFailed", "lowBattery",
+)
+
+
+class NotifyWhen(BaseModel):
+    min_duration_s: Optional[float] = None
+    max_duration_s: Optional[float] = None
+    severity_in: Optional[list[str]] = None
+    result_in: Optional[list[str]] = None
+    source_in: Optional[list[str]] = None
+    kind_in: Optional[list[str]] = None
+    data_eq: Optional[dict] = None
+
+
+class NotifyRule(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    enabled: bool = True
+    event_type: Literal[
+        "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
+        "treat", "music", "mission_run",
+    ]
+    when: NotifyWhen = Field(default_factory=NotifyWhen)
+    cooldown_s: int = Field(default=0, ge=0, le=86400)
+    attach: Literal["none", "still", "clip"] = "none"
+    app_type: Literal[
+        "bark", "treatDispensed", "coachReward", "alert", "missionStarted",
+        "missionCompleted", "missionFailed", "lowBattery",
+    ] = "alert"
+    title: str = Field(default="WIM-Z", max_length=120)
+    body: str = Field(default="", max_length=240)
+    override_quiet: bool = False
+
+
+class NotifyRules(BaseModel):
+    rules: list[NotifyRule] = Field(default_factory=list)
+
+
+class MissionTrigger(BaseModel):
+    kind: Literal["schedule", "departure", "manual"] = "manual"
+    time: Optional[str] = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    delay_s: int = Field(default=300, ge=0, le=7200)
+    cooldown_s: int = Field(default=7200, ge=0, le=86400)
+    days: Optional[list[str]] = None
+
+
+class MissionDef(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    type: str = Field(..., min_length=1, max_length=64)
+    name: str = Field(default="", max_length=120)
+    enabled: bool = True
+    trigger: MissionTrigger = Field(default_factory=MissionTrigger)
+    duration_s: int = Field(default=120, ge=10, le=3600)
+    reward_treats: int = Field(default=1, ge=0, le=3)
+    goal: str = Field(default="", max_length=240)
+
+
+class Missions(BaseModel):
+    missions: list[MissionDef] = Field(default_factory=list)
+
+
+class SoundDef(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    label: str = Field(default="", max_length=120)
+    builtin: bool = True
+    file: str = Field(..., max_length=160)
+    url: Optional[str] = None
+
+
+class Sounds(BaseModel):
+    sounds: list[SoundDef] = Field(default_factory=list)
+
+
+class SettingPut(BaseModel):
+    value: object
+    expected_version: Optional[int] = None
+
+
+# ============== Robot control ==============
+
+class CommandRequest(BaseModel):
+    command: Literal[
+        "dispense_treat", "set_mode", "play_sound", "start_mission", "go_to",
+        "take_photo", "standby", "run_trick",
+    ]
+    data: dict = Field(default_factory=dict)
+    device_id: Optional[str] = None
+
+
+# ============== Replayer ==============
+
+class ReplayLoad(BaseModel):
+    seed: str = Field(..., pattern=r"^[a-zA-Z0-9_.-]+\.json$")
+    dog_id: Optional[str] = None
+    device_id: Optional[str] = None
+    date: Optional[str] = None  # YYYY-MM-DD; default today in the seed timezone
+
+
+class ReplaySpeed(BaseModel):
+    speed: float = Field(default=60, ge=1, le=3600)
+
+
+class ReplayJump(BaseModel):
+    to: Optional[str] = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    offset_s: Optional[float] = Field(default=None, ge=0)

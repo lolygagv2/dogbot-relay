@@ -1,0 +1,399 @@
+"""Shared per-dog settings with guards (Dec 9 demo build, 2026-11-06).
+
+One JSON value per key in `dog_settings`. Read by the app, the MCP connector and the
+voice agent through the same HTTP routes, so every guard lives here:
+
+- treat daily cap (and hourly rate / closed windows) on relay-issued dispenses
+- connectors/agents may only *widen* quiet hours, never narrow or disable them
+- connectors/agents may only *lower* the treat daily cap
+- connectors/agents may not set `override_quiet` on notify rules, reset notify
+  rules, or edit the sound list (reset to builtins is allowed)
+
+Every write and every denial is recorded in `settings_audit`, and successful writes
+are pushed to the owner's robots as `{"type": "settings_updated", ...}`.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from fastapi import HTTPException
+from pydantic import BaseModel, ValidationError
+
+from app.auth import Actor
+from app.config import get_settings
+from app.database import (
+    count_events,
+    count_pending_treat_ledger,
+    delete_dog_setting,
+    get_all_dog_setting_rows,
+    get_dog_owner,
+    get_dog_setting_row,
+    get_user_paired_devices,
+    insert_settings_audit,
+    insert_treat_ledger,
+    put_dog_setting,
+)
+from app.models import (
+    Missions,
+    MusicPlan,
+    NotifyRules,
+    QuietHours,
+    SgSensitivity,
+    Sounds,
+    TreatSchedule,
+)
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Keys, schemas, defaults
+# ---------------------------------------------------------------------------
+
+BUILTIN_SOUNDS = [
+    {"id": "chime", "label": "Calm chime", "builtin": True, "file": "chime.wav"},
+    {"id": "whistle", "label": "Recall whistle", "builtin": True, "file": "whistle.wav"},
+    {"id": "shush", "label": "Soft shush", "builtin": True, "file": "shush.wav"},
+    {"id": "good_dog", "label": "Good dog", "builtin": True, "file": "good_dog.wav"},
+]
+
+DEFAULT_NOTIFY_RULES = {
+    "rules": [
+        {"id": "bark_long", "enabled": True, "event_type": "bark_episode",
+         "when": {"min_duration_s": 60, "severity_in": ["med", "high"]},
+         "cooldown_s": 900, "attach": "still", "app_type": "bark",
+         "title": "{dog_name} is barking", "body": "{duration_min} min, {bark_count} barks"},
+        {"id": "settled", "enabled": True, "event_type": "settle", "when": {},
+         "cooldown_s": 600, "attach": "none", "app_type": "alert",
+         "title": "{dog_name} settled", "body": "after {settle_min} min"},
+        {"id": "departure", "enabled": True, "event_type": "departure", "when": {},
+         "cooldown_s": 1800, "attach": "none", "app_type": "alert",
+         "title": "Guardian active", "body": "{dog_name} is home alone"},
+        {"id": "mission_fail", "enabled": True, "event_type": "mission_run",
+         "when": {"result_in": ["fail"]}, "cooldown_s": 0, "attach": "clip",
+         "app_type": "missionFailed", "title": "Mission failed", "body": "{mission_type}"},
+        {"id": "treat_remote", "enabled": True, "event_type": "treat",
+         "when": {"source_in": ["connector", "agent"]}, "cooldown_s": 0, "attach": "still",
+         "app_type": "treatDispensed", "title": "Treat given", "body": "by {source}"},
+    ]
+}
+
+
+def _default_sounds(dog_id: str) -> dict:
+    return {"sounds": [dict(s, url=sound_url(dog_id, s["id"])) for s in BUILTIN_SOUNDS]}
+
+
+def sound_url(dog_id: str, sound_id: str) -> str:
+    return f"/api/sounds/file/{dog_id}/{sound_id}"
+
+
+SETTING_MODELS: dict[str, Optional[type[BaseModel]]] = {
+    "timezone": None,  # plain IANA string
+    "quiet_hours": QuietHours,
+    "treat_schedule": TreatSchedule,
+    "sg_sensitivity": SgSensitivity,
+    "music_plan": MusicPlan,
+    "notify_rules": NotifyRules,
+    "missions": Missions,
+    "sounds": Sounds,
+}
+
+SETTING_KEYS = tuple(SETTING_MODELS.keys())
+
+
+def default_value(dog_id: str, key: str) -> Any:
+    if key == "timezone":
+        return get_settings().default_timezone
+    if key == "notify_rules":
+        return NotifyRules.model_validate(DEFAULT_NOTIFY_RULES).model_dump()
+    if key == "sounds":
+        return Sounds.model_validate(_default_sounds(dog_id)).model_dump()
+    model = SETTING_MODELS[key]
+    return model().model_dump()
+
+
+def validate_value(key: str, value: Any) -> Any:
+    """Normalise + validate a settings value; raises HTTP 422 on schema errors."""
+    if key not in SETTING_MODELS:
+        raise HTTPException(status_code=404, detail={"code": "unknown_setting", "key": key})
+    if key == "timezone":
+        if not isinstance(value, str) or not value:
+            raise HTTPException(status_code=422, detail={"code": "invalid_value", "reason": "timezone must be an IANA string"})
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise HTTPException(status_code=422, detail={"code": "invalid_value", "reason": f"unknown timezone {value!r}"})
+        return value
+    model = SETTING_MODELS[key]
+    try:
+        parsed = model.model_validate(value)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail={"code": "invalid_value", "errors": e.errors(include_url=False)})
+    if key == "quiet_hours":
+        _hm_to_minutes(parsed.start)
+        _hm_to_minutes(parsed.end)
+    if key == "treat_schedule":
+        for w in parsed.windows:
+            _hm_to_minutes(w.start)
+            _hm_to_minutes(w.end)
+    if key == "notify_rules":
+        ids = [r.id for r in parsed.rules]
+        if len(ids) != len(set(ids)):
+            raise HTTPException(status_code=422, detail={"code": "invalid_value", "reason": "duplicate rule id"})
+    if key == "missions":
+        ids = [m.id for m in parsed.missions]
+        if len(ids) != len(set(ids)):
+            raise HTTPException(status_code=422, detail={"code": "invalid_value", "reason": "duplicate mission id"})
+    return parsed.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Reads
+# ---------------------------------------------------------------------------
+
+def get_setting(dog_id: str, key: str) -> dict:
+    if key not in SETTING_MODELS:
+        raise HTTPException(status_code=404, detail={"code": "unknown_setting", "key": key})
+    row = get_dog_setting_row(dog_id, key)
+    if row:
+        return row
+    return {"key": key, "value": default_value(dog_id, key), "version": 0,
+            "updated_at": None, "updated_by": "default"}
+
+
+def get_value(dog_id: str, key: str) -> Any:
+    return get_setting(dog_id, key)["value"]
+
+
+def get_all_settings(dog_id: str) -> dict[str, dict]:
+    rows = get_all_dog_setting_rows(dog_id)
+    out = {}
+    for key in SETTING_KEYS:
+        out[key] = rows.get(key) or {"key": key, "value": default_value(dog_id, key), "version": 0,
+                                      "updated_at": None, "updated_by": "default"}
+    return out
+
+
+def get_timezone(dog_id: str) -> ZoneInfo:
+    name = get_value(dog_id, "timezone")
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo(get_settings().default_timezone)
+
+
+def local_now(dog_id: str) -> datetime:
+    return datetime.now(timezone.utc).astimezone(get_timezone(dog_id))
+
+
+# ---------------------------------------------------------------------------
+# Time helpers
+# ---------------------------------------------------------------------------
+
+def _hm_to_minutes(hm: str) -> int:
+    try:
+        h, m = hm.split(":")
+        h, m = int(h), int(m)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail={"code": "invalid_value", "reason": f"bad time {hm!r}"})
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise HTTPException(status_code=422, detail={"code": "invalid_value", "reason": f"bad time {hm!r}"})
+    return h * 60 + m
+
+
+def minute_set(start: str, end: str) -> set[int]:
+    """Minutes-of-day covered by [start, end); wraps past midnight when end <= start."""
+    s, e = _hm_to_minutes(start), _hm_to_minutes(end)
+    if s == e:
+        return set(range(0, 1440))
+    if s < e:
+        return set(range(s, e))
+    return set(range(s, 1440)) | set(range(0, e))
+
+
+def in_window(local_dt: datetime, start: str, end: str) -> bool:
+    return (local_dt.hour * 60 + local_dt.minute) in minute_set(start, end)
+
+
+def in_quiet_hours(dog_id: str, local_dt: Optional[datetime] = None) -> bool:
+    qh = QuietHours.model_validate(get_value(dog_id, "quiet_hours"))
+    if not qh.enabled:
+        return False
+    local_dt = local_dt or local_now(dog_id)
+    return in_window(local_dt, qh.start, qh.end)
+
+
+# ---------------------------------------------------------------------------
+# Guards
+# ---------------------------------------------------------------------------
+
+class GuardDenied(Exception):
+    def __init__(self, guard: str, reason: str):
+        super().__init__(reason)
+        self.guard = guard
+        self.reason = reason
+
+
+def _guard_put(actor: Actor, key: str, old: Any, new: Any) -> None:
+    """Raise GuardDenied if this actor may not make this change. App/admin are unrestricted."""
+    if not actor.is_internal:
+        return
+    if key == "quiet_hours":
+        o, n = QuietHours.model_validate(old), QuietHours.model_validate(new)
+        if o.enabled and not n.enabled:
+            raise GuardDenied("quiet_hours_widen_only", "connector cannot disable quiet hours")
+        if o.enabled and not minute_set(o.start, o.end) <= minute_set(n.start, n.end):
+            raise GuardDenied("quiet_hours_widen_only",
+                              f"connector may only widen quiet hours (current {o.start}-{o.end})")
+    elif key == "treat_schedule":
+        o, n = TreatSchedule.model_validate(old), TreatSchedule.model_validate(new)
+        if n.daily_cap > o.daily_cap:
+            raise GuardDenied("treat_cap_lower_only",
+                              f"connector may only lower the daily treat cap (current {o.daily_cap})")
+        if n.max_per_hour > o.max_per_hour:
+            raise GuardDenied("treat_cap_lower_only",
+                              f"connector may only lower the hourly treat limit (current {o.max_per_hour})")
+    elif key == "notify_rules":
+        n = NotifyRules.model_validate(new)
+        if any(r.override_quiet for r in n.rules):
+            raise GuardDenied("notify_no_override_quiet", "connector cannot set override_quiet on a rule")
+    elif key == "sounds":
+        raise GuardDenied("sounds_app_only", "connector cannot edit the sound list (reset is allowed)")
+    elif key == "timezone":
+        raise GuardDenied("timezone_app_only", "connector cannot change the dog's timezone")
+
+
+def _guard_reset(actor: Actor, key: str) -> None:
+    if actor.is_internal and key in ("notify_rules", "timezone"):
+        raise GuardDenied(f"{key}_reset_app_only", f"connector cannot reset {key}")
+
+
+# ---------------------------------------------------------------------------
+# Writes
+# ---------------------------------------------------------------------------
+
+async def put_setting(dog_id: str, key: str, value: Any, actor: Actor,
+                      expected_version: Optional[int] = None) -> dict:
+    new_value = validate_value(key, value)
+    current = get_setting(dog_id, key)
+    try:
+        _guard_put(actor, key, current["value"], new_value)
+    except GuardDenied as g:
+        insert_settings_audit(dog_id, key, actor.label, "denied", current["value"], new_value, g.reason)
+        raise HTTPException(status_code=403, detail={"code": "guard_denied", "guard": g.guard, "reason": g.reason})
+    row = put_dog_setting(dog_id, key, new_value, actor.label, expected_version)
+    if row is None:
+        raise HTTPException(status_code=409, detail={"code": "version_mismatch", "current_version": current["version"]})
+    insert_settings_audit(dog_id, key, actor.label, "put", current["value"], new_value, None)
+    await push_settings_to_robot(dog_id, key, row)
+    return row
+
+
+async def reset_setting(dog_id: str, key: str, actor: Actor) -> dict:
+    if key not in SETTING_MODELS:
+        raise HTTPException(status_code=404, detail={"code": "unknown_setting", "key": key})
+    current = get_setting(dog_id, key)
+    try:
+        _guard_reset(actor, key)
+    except GuardDenied as g:
+        insert_settings_audit(dog_id, key, actor.label, "denied", current["value"], None, g.reason)
+        raise HTTPException(status_code=403, detail={"code": "guard_denied", "guard": g.guard, "reason": g.reason})
+    default = default_value(dog_id, key)
+    row = put_dog_setting(dog_id, key, default, actor.label)
+    insert_settings_audit(dog_id, key, actor.label, "reset", current["value"], default, None)
+    await push_settings_to_robot(dog_id, key, row)
+    return row
+
+
+def delete_all_settings(dog_id: str) -> None:
+    for key in SETTING_KEYS:
+        delete_dog_setting(dog_id, key)
+
+
+async def push_settings_to_robot(dog_id: str, key: str, row: dict) -> int:
+    """Send settings_updated to every robot paired with the dog's owner. Never raises."""
+    try:
+        from app.connection_manager import get_connection_manager
+        owner = get_dog_owner(dog_id)
+        if not owner:
+            return 0
+        manager = get_connection_manager()
+        msg = {
+            "type": "settings_updated",
+            "dog_id": dog_id,
+            "key": key,
+            "value": row["value"],
+            "version": row["version"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        sent = 0
+        for device_id in get_user_paired_devices(owner):
+            if manager.is_robot_online(device_id) and await manager.send_to_robot(device_id, msg):
+                sent += 1
+        return sent
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[SETTINGS] push_settings_to_robot failed for {dog_id}/{key}: {e}")
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Treat cap (relay-issued dispenses)
+# ---------------------------------------------------------------------------
+
+def treats_used_today(dog_id: str) -> tuple[int, str]:
+    """(count, local_date) of treats today: robot treat events + in-flight ledger rows."""
+    now_local = local_now(dog_id)
+    today = now_local.date().isoformat()
+    used = count_events(dog_id, "treat", local_date=today)
+    used += count_pending_treat_ledger(dog_id, today, within_seconds=120)
+    return used, today
+
+
+def _next_local_midnight_utc(now_local: datetime) -> str:
+    nxt = (now_local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return nxt.astimezone(timezone.utc).isoformat()
+
+
+def check_treat_cap(dog_id: str, actor: Actor, n: int = 1) -> dict:
+    """Enforce daily cap, hourly rate and windows; reserve a ledger row on success.
+
+    Raises HTTP 429 (cap / rate) or 403 (window closed). Returns the guard summary,
+    including the reserved `command_id` the robot should echo on its treat event.
+    """
+    schedule = TreatSchedule.model_validate(get_value(dog_id, "treat_schedule"))
+    now_local = local_now(dog_id)
+    used, today = treats_used_today(dog_id)
+
+    if used + n > schedule.daily_cap:
+        raise HTTPException(status_code=429, detail={
+            "code": "treat_cap_reached", "used": used, "cap": schedule.daily_cap,
+            "resets_at": _next_local_midnight_utc(now_local),
+        })
+
+    hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    hour_used = count_events(dog_id, "treat", since_ts=hour_ago)
+    if schedule.max_per_hour and hour_used + n > schedule.max_per_hour:
+        raise HTTPException(status_code=429, detail={
+            "code": "treat_rate", "used_last_hour": hour_used, "max_per_hour": schedule.max_per_hour,
+        })
+
+    multiplier = schedule.default_multiplier
+    for w in schedule.windows:
+        if in_window(now_local, w.start, w.end):
+            multiplier = w.multiplier
+            break
+    if multiplier == 0:
+        raise HTTPException(status_code=403, detail={"code": "treat_window_closed"})
+
+    command_id = str(uuid.uuid4())
+    insert_treat_ledger(command_id, dog_id, actor.label, today)
+    return {
+        "treats_used": used + n,
+        "treat_cap": schedule.daily_cap,
+        "multiplier": multiplier,
+        "command_id": command_id,
+    }

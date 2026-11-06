@@ -224,3 +224,139 @@ def verify_device_request_signature(
         return False, "bad_signature"
 
     return True, "ok"
+# ============================================================================
+# Dec 9 demo build (2026-11-06): one actor resolver for app / admin / internal
+# callers (MCP connector, voice agent) / robot. Used by the event store,
+# settings, sounds and robot-control routes so guards live in one place.
+# ============================================================================
+
+from dataclasses import dataclass, field
+from fastapi import Header, Request
+
+
+@dataclass
+class Actor:
+    kind: str                      # app | admin | connector | agent | robot
+    id: str                        # user_id, client_id, "agent", or device_id
+    user_id: Optional[str] = None  # the WIM-Z user this call acts for
+    email: Optional[str] = None
+    device_id: Optional[str] = None
+    extra: dict = field(default_factory=dict)
+
+    @property
+    def label(self) -> str:
+        """Audit string, e.g. 'app:user_000003', 'connector:abc123', 'agent', 'robot:wimz_robot_01'."""
+        return self.kind if self.kind == "agent" else f"{self.kind}:{self.id}"
+
+    @property
+    def is_internal(self) -> bool:
+        return self.kind in ("connector", "agent")
+
+
+def _is_admin_email(email: Optional[str], settings: Settings) -> bool:
+    if not email:
+        return False
+    admins = {e.strip().lower() for e in settings.admin_emails.split(",") if e.strip()}
+    return email.lower() in admins
+
+
+async def resolve_actor(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    x_actor: Optional[str] = Header(default=None, alias="X-Actor"),
+    x_on_behalf_of: Optional[str] = Header(default=None, alias="X-On-Behalf-Of"),
+    x_device_id: Optional[str] = Header(default=None, alias="X-Device-ID"),
+    x_timestamp: Optional[str] = Header(default=None, alias="X-Timestamp"),
+    x_signature: Optional[str] = Header(default=None, alias="X-Signature"),
+    settings: Settings = Depends(get_settings),
+) -> Actor:
+    """Resolve who is calling.
+
+    - `Authorization: Bearer <jwt>`                      -> app (admin if email is in admin_emails)
+    - `Authorization: Bearer <internal_api_token>`
+      + `X-Actor: connector:<client_id>|agent`
+      + `X-On-Behalf-Of: <user_id>`                      -> connector / agent
+    - `Authorization: HMAC-SHA256 <sig>` + `X-Device-ID`
+      (+ `X-Timestamp`), or `X-Signature` header         -> robot
+    """
+    from app.database import get_device_owner, get_device_secret, get_user_by_id
+
+    unauthorized = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                                 detail={"code": "unauthorized"},
+                                 headers={"WWW-Authenticate": "Bearer"})
+
+    scheme, _, credential = (authorization or "").partition(" ")
+    scheme = scheme.lower()
+    credential = credential.strip()
+
+    # --- robot HMAC ---
+    if scheme in ("hmac-sha256", "hmac") or (x_signature and x_device_id):
+        signature = credential if scheme.startswith("hmac") else (x_signature or "")
+        device_id = x_device_id or request.query_params.get("device_id")
+        if not device_id or not signature:
+            raise unauthorized
+        secret = get_device_secret(device_id) or settings.device_secret
+        if not verify_device_signature_with_timestamp(device_id, x_timestamp, signature, secret):
+            raise unauthorized
+        owner = get_device_owner(device_id)
+        if not owner:
+            raise HTTPException(status_code=403, detail={"code": "device_not_paired"})
+        return Actor(kind="robot", id=device_id, user_id=owner, device_id=device_id)
+
+    if scheme != "bearer" or not credential:
+        raise unauthorized
+
+    # --- internal callers (same box) ---
+    if x_actor:
+        if not settings.internal_api_token:
+            raise HTTPException(status_code=503, detail={"code": "internal_api_disabled"})
+        if not secrets.compare_digest(credential, settings.internal_api_token):
+            raise unauthorized
+        if x_actor == "agent":
+            kind, actor_id = "agent", "agent"
+        elif x_actor.startswith("connector:") and len(x_actor) > len("connector:"):
+            kind, actor_id = "connector", x_actor.split(":", 1)[1][:128]
+        else:
+            raise HTTPException(status_code=401, detail={"code": "bad_actor_header"})
+        if not x_on_behalf_of:
+            raise HTTPException(status_code=401, detail={"code": "missing_on_behalf_of"})
+        if not get_user_by_id(x_on_behalf_of):
+            raise HTTPException(status_code=401, detail={"code": "unknown_user"})
+        return Actor(kind=kind, id=actor_id, user_id=x_on_behalf_of)
+
+    # --- app JWT ---
+    payload = decode_token(credential, settings)
+    if not payload or not payload.get("sub"):
+        raise unauthorized
+    email = payload.get("email")
+    kind = "admin" if _is_admin_email(email, settings) else "app"
+    return Actor(kind=kind, id=payload["sub"], user_id=payload["sub"], email=email,
+                 extra={"imp": payload.get("imp")})
+
+
+async def require_admin(actor: Actor = Depends(resolve_actor)) -> Actor:
+    if actor.kind != "admin":
+        raise HTTPException(status_code=403, detail={"code": "admin_only"})
+    return actor
+
+
+def check_dog_access(actor: Actor, dog_id: str, write: bool = False) -> str:
+    """Raise 403/404 unless the actor may touch this dog. Returns the dog's owner user_id."""
+    from app.database import get_dog_by_id, get_dog_owner, get_user_dog_role
+
+    dog = get_dog_by_id(dog_id)
+    if not dog:
+        raise HTTPException(status_code=404, detail={"code": "dog_not_found"})
+    owner = get_dog_owner(dog_id)
+    if actor.kind == "admin":
+        return owner or actor.user_id
+    if actor.kind == "robot":
+        if owner and owner == actor.user_id:
+            return owner
+        raise HTTPException(status_code=403, detail={"code": "dog_not_owned_by_device_owner"})
+    role = get_user_dog_role(actor.user_id, dog_id) if actor.user_id else None
+    if not role:
+        raise HTTPException(status_code=403, detail={"code": "dog_access_denied"})
+    if write and role == "viewer":
+        raise HTTPException(status_code=403, detail={"code": "viewer_read_only"})
+    return owner or actor.user_id

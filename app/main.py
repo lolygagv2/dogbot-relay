@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.connection_manager import get_connection_manager
 from app.models import HealthResponse
 from app.routers import activity, auth, device, dogs, events, media, metrics, music, push, releases, schedule, sync, turn, user, voice_commands, websocket
+from app.routers import dog_settings, event_store, replay, robot_control  # Dec 9 demo build (2026-11-06)
 
 # Configure logging
 logging.basicConfig(
@@ -52,6 +53,11 @@ app.include_router(turn.router)
 app.include_router(user.router)
 app.include_router(voice_commands.router)
 app.include_router(websocket.router)
+# Dec 9 demo build (2026-11-06)
+app.include_router(event_store.router)
+app.include_router(dog_settings.router)
+app.include_router(robot_control.router)
+app.include_router(replay.router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
@@ -124,6 +130,13 @@ def _run_retention_cleanup():
         logger.info(f"Retention cleanup: removed {pruned} old activity events")
 
     delete_old_processed_events(days=30)
+
+    # Dec 9 demo build (2026-11-06): event store 365d, notify log 30d
+    from app.database import delete_old_notify_log, delete_old_store_events
+    pruned_events = delete_old_store_events(days=365)
+    if pruned_events:
+        logger.info(f"Retention cleanup: removed {pruned_events} old store events")
+    delete_old_notify_log(days=30)
 
 
 async def _daily_cleanup_loop():

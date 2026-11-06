@@ -30,8 +30,21 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 # Max file size: 100MB (video files can be large)
 MAX_FILE_SIZE = 100 * 1024 * 1024
 
-# File expiry: 1 hour
+# File expiry: 1 hour for video; stills live 24h so a push image opened later still loads
+# (Dec 9 demo build, 2026-11-06).
 FILE_EXPIRY_SECONDS = 3600
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+IMAGE_EXPIRY_SECONDS = 24 * 3600
+MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+               ".mp4": "video/mp4", ".mov": "video/quicktime"}
+
+# Seed stills for the replayer (checked in under <repo>/seeds/media, served read-only
+# under the same download path so notify rules and the app need no special case).
+SEEDS_MEDIA_DIR = Path(__file__).parent.parent.parent / "seeds" / "media"
+
+
+def _expiry_for(path: Path) -> int:
+    return IMAGE_EXPIRY_SECONDS if path.suffix.lower() in IMAGE_EXTS else FILE_EXPIRY_SECONDS
 
 
 def cleanup_old_files():
@@ -40,7 +53,7 @@ def cleanup_old_files():
         now = time.time()
         count = 0
         for filepath in MEDIA_DIR.iterdir():
-            if filepath.is_file() and (now - filepath.stat().st_mtime) > FILE_EXPIRY_SECONDS:
+            if filepath.is_file() and (now - filepath.stat().st_mtime) > _expiry_for(filepath):
                 filepath.unlink()
                 count += 1
                 logger.info(f"[MEDIA-CLEANUP] Deleted expired: {filepath.name}")
@@ -112,6 +125,8 @@ async def download_media(filename: str):
     # Sanitize: prevent path traversal
     safe_name = os.path.basename(filename)
     filepath = MEDIA_DIR / safe_name
+    if safe_name.startswith("seed_") and not filepath.exists():
+        filepath = SEEDS_MEDIA_DIR / safe_name
 
     if not filepath.exists() or not filepath.is_file():
         raise HTTPException(status_code=404, detail="File not found or expired")
@@ -120,6 +135,6 @@ async def download_media(filename: str):
 
     return FileResponse(
         path=str(filepath),
-        media_type="video/mp4",
+        media_type=MEDIA_TYPES.get(filepath.suffix.lower(), "application/octet-stream"),
         filename=safe_name,
     )

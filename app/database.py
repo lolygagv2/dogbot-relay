@@ -450,6 +450,102 @@ def init_db():
             )
         """)
 
+        # ---- Dec 9 demo build (2026-11-06): per-dog event store + roll-ups ----
+        # Robot posts typed events to POST /events; the replayer writes the same
+        # table with source='replay'. local_date is the dog-timezone day bucket.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                event_id    TEXT PRIMARY KEY,
+                dog_id      TEXT NOT NULL,
+                device_id   TEXT NOT NULL,
+                user_id     TEXT,
+                type        TEXT NOT NULL,
+                ts          TEXT NOT NULL,
+                duration_s  REAL,
+                data        TEXT NOT NULL DEFAULT '{}',
+                source      TEXT NOT NULL DEFAULT 'robot',
+                local_date  TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_dog_ts ON events(dog_id, ts DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_dog_date_type ON events(dog_id, local_date, type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_source ON events(source, dog_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS daily_summary (
+                dog_id        TEXT NOT NULL,
+                date          TEXT NOT NULL,
+                tz            TEXT NOT NULL,
+                summary       TEXT NOT NULL,
+                event_count   INTEGER NOT NULL,
+                last_event_ts TEXT,
+                dirty         INTEGER NOT NULL DEFAULT 0,
+                computed_at   TEXT NOT NULL,
+                PRIMARY KEY (dog_id, date)
+            )
+        """)
+
+        # Shared settings (app, MCP connector, voice agent). One JSON value per key.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dog_settings (
+                dog_id      TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                version     INTEGER NOT NULL DEFAULT 1,
+                updated_at  TEXT NOT NULL,
+                updated_by  TEXT NOT NULL,
+                PRIMARY KEY (dog_id, key)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings_audit (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                dog_id      TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                actor       TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                old_value   TEXT,
+                new_value   TEXT,
+                reason      TEXT,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_settings_audit_dog ON settings_audit(dog_id, created_at DESC)")
+
+        # Notify-rule evaluation log (cooldowns + debugging).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS notify_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                dog_id      TEXT NOT NULL,
+                user_id     TEXT,
+                rule_id     TEXT NOT NULL,
+                event_id    TEXT NOT NULL,
+                event_type  TEXT NOT NULL,
+                outcome     TEXT NOT NULL,
+                title       TEXT,
+                body        TEXT,
+                image_url   TEXT,
+                clip_url    TEXT,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_notify_log_rule ON notify_log(dog_id, rule_id, outcome, created_at DESC)")
+
+        # Relay-issued treat dispenses (daily-cap accounting until the robot's
+        # treat event echoes data.command_id).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS treat_ledger (
+                command_id  TEXT PRIMARY KEY,
+                dog_id      TEXT NOT NULL,
+                actor       TEXT NOT NULL,
+                local_date  TEXT NOT NULL,
+                issued_at   TEXT NOT NULL,
+                event_id    TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_treat_ledger_dog_date ON treat_ledger(dog_id, local_date)")
+
         conn.commit()
 
 
@@ -2411,7 +2507,6 @@ def advance_sync_state(
 
 
 # ============== Robot OTA Releases ==============
-
 def _release_row_to_manifest(row: sqlite3.Row) -> dict:
     """Shape a releases row into the flat manifest the robot and app expect.
 
@@ -2569,6 +2664,427 @@ def delete_release(version: str) -> bool:
 
     return deleted
 
+
+# ============================================================================
+# Dec 9 demo build (2026-11-06): event store, settings, notify, treat ledger
+# ============================================================================
+
+def get_dog_owner(dog_id: str) -> Optional[str]:
+    """Owner user_id for a dog: user_dogs role=owner first, then dogs.user_id."""
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM user_dogs WHERE dog_id = ? AND role = 'owner' ORDER BY user_id LIMIT 1",
+            (dog_id,),
+        ).fetchone()
+        if row:
+            return row["user_id"]
+        row = conn.execute("SELECT user_id FROM dogs WHERE id = ?", (dog_id,)).fetchone()
+    return row["user_id"] if row else None
+
+
+# ---- events ----
+
+def insert_event(
+    event_id: str,
+    dog_id: str,
+    device_id: str,
+    user_id: Optional[str],
+    type: str,
+    ts: str,
+    duration_s: Optional[float],
+    data: dict,
+    source: str,
+    local_date: str,
+) -> bool:
+    """INSERT OR IGNORE one event row. Returns True if inserted, False if duplicate."""
+    with db_connection() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO events
+               (event_id, dog_id, device_id, user_id, type, ts, duration_s, data, source, local_date, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (event_id, dog_id, device_id, user_id, type, ts, duration_s, json.dumps(data), source,
+             local_date, datetime.now(timezone.utc).isoformat()),
+        )
+        inserted = cur.rowcount > 0
+        conn.commit()
+    return inserted
+
+
+def _row_to_event(row) -> dict:
+    try:
+        data = json.loads(row["data"]) if row["data"] else {}
+    except (TypeError, ValueError):
+        data = {}
+    return {
+        "event_id": row["event_id"],
+        "dog_id": row["dog_id"],
+        "device_id": row["device_id"],
+        "user_id": row["user_id"],
+        "type": row["type"],
+        "ts": row["ts"],
+        "duration_s": row["duration_s"],
+        "data": data,
+        "source": row["source"],
+        "local_date": row["local_date"],
+    }
+
+
+def list_events(
+    dog_id: str,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    types: Optional[list[str]] = None,
+    limit: int = 100,
+    order: str = "desc",
+    local_date: Optional[str] = None,
+) -> list[dict]:
+    """Query events for a dog (ts is ISO-8601 UTC so string comparison is chronological)."""
+    sql = "SELECT * FROM events WHERE dog_id = ?"
+    params: list = [dog_id]
+    if local_date:
+        sql += " AND local_date = ?"
+        params.append(local_date)
+    if since:
+        sql += " AND ts >= ?"
+        params.append(since)
+    if until:
+        sql += " AND ts <= ?"
+        params.append(until)
+    if types:
+        sql += f" AND type IN ({','.join('?' for _ in types)})"
+        params.extend(types)
+    sql += f" ORDER BY ts {'ASC' if order == 'asc' else 'DESC'} LIMIT ?"
+    params.append(int(limit))
+    with db_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_event(r) for r in rows]
+
+
+def get_latest_event(dog_id: str, type: str) -> Optional[dict]:
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM events WHERE dog_id = ? AND type = ? ORDER BY ts DESC LIMIT 1",
+            (dog_id, type),
+        ).fetchone()
+    return _row_to_event(row) if row else None
+
+
+def count_events(dog_id: str, type: str, local_date: Optional[str] = None, since_ts: Optional[str] = None) -> int:
+    sql = "SELECT COALESCE(SUM(COALESCE(json_extract(data, '$.count'), 1)), 0) AS n FROM events WHERE dog_id = ? AND type = ?"
+    params: list = [dog_id, type]
+    if local_date:
+        sql += " AND local_date = ?"
+        params.append(local_date)
+    if since_ts:
+        sql += " AND ts >= ?"
+        params.append(since_ts)
+    with db_connection() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return int(row["n"] or 0)
+
+
+def delete_events_by_source(dog_id: str, source: str) -> list[str]:
+    """Delete a dog's events of one source; returns the deleted event_ids."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            "SELECT event_id FROM events WHERE dog_id = ? AND source = ?", (dog_id, source)
+        ).fetchall()
+        ids = [r["event_id"] for r in rows]
+        conn.execute("DELETE FROM events WHERE dog_id = ? AND source = ?", (dog_id, source))
+        conn.commit()
+    return ids
+
+
+def delete_old_store_events(days: int = 365) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with db_connection() as conn:
+        cur = conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+        conn.commit()
+        return cur.rowcount
+
+
+def delete_activity_events_by_ids(event_ids: list[str]) -> int:
+    if not event_ids:
+        return 0
+    deleted = 0
+    with db_connection() as conn:
+        for i in range(0, len(event_ids), 500):
+            chunk = event_ids[i:i + 500]
+            cur = conn.execute(
+                f"DELETE FROM activity_events WHERE id IN ({','.join('?' for _ in chunk)})", chunk
+            )
+            deleted += cur.rowcount
+        conn.commit()
+    return deleted
+
+
+# ---- daily_summary cache ----
+
+def get_daily_summary_row(dog_id: str, date_str: str) -> Optional[dict]:
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM daily_summary WHERE dog_id = ? AND date = ?", (dog_id, date_str)
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "dog_id": row["dog_id"],
+        "date": row["date"],
+        "tz": row["tz"],
+        "summary": json.loads(row["summary"]),
+        "event_count": row["event_count"],
+        "last_event_ts": row["last_event_ts"],
+        "dirty": bool(row["dirty"]),
+        "computed_at": row["computed_at"],
+    }
+
+
+def upsert_daily_summary(dog_id: str, date_str: str, tz: str, summary: dict,
+                         event_count: int, last_event_ts: Optional[str]) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO daily_summary (dog_id, date, tz, summary, event_count, last_event_ts, dirty, computed_at)
+               VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+               ON CONFLICT(dog_id, date) DO UPDATE SET
+                 tz = excluded.tz, summary = excluded.summary, event_count = excluded.event_count,
+                 last_event_ts = excluded.last_event_ts, dirty = 0, computed_at = excluded.computed_at""",
+            (dog_id, date_str, tz, json.dumps(summary), event_count, last_event_ts,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def mark_summary_dirty(dog_id: str, date_str: str) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            "UPDATE daily_summary SET dirty = 1 WHERE dog_id = ? AND date = ?", (dog_id, date_str)
+        )
+        conn.commit()
+
+
+def delete_daily_summaries(dog_id: str) -> int:
+    with db_connection() as conn:
+        cur = conn.execute("DELETE FROM daily_summary WHERE dog_id = ?", (dog_id,))
+        conn.commit()
+        return cur.rowcount
+
+
+# ---- dog_settings ----
+
+def get_dog_setting_row(dog_id: str, key: str) -> Optional[dict]:
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM dog_settings WHERE dog_id = ? AND key = ?", (dog_id, key)
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "key": row["key"],
+        "value": json.loads(row["value"]),
+        "version": row["version"],
+        "updated_at": row["updated_at"],
+        "updated_by": row["updated_by"],
+    }
+
+
+def get_all_dog_setting_rows(dog_id: str) -> dict[str, dict]:
+    with db_connection() as conn:
+        rows = conn.execute("SELECT * FROM dog_settings WHERE dog_id = ?", (dog_id,)).fetchall()
+    out = {}
+    for row in rows:
+        out[row["key"]] = {
+            "key": row["key"],
+            "value": json.loads(row["value"]),
+            "version": row["version"],
+            "updated_at": row["updated_at"],
+            "updated_by": row["updated_by"],
+        }
+    return out
+
+
+def put_dog_setting(dog_id: str, key: str, value, updated_by: str,
+                    expected_version: Optional[int] = None) -> Optional[dict]:
+    """Upsert a setting. Returns the new row, or None on an expected_version mismatch."""
+    now = datetime.now(timezone.utc).isoformat()
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT version FROM dog_settings WHERE dog_id = ? AND key = ?", (dog_id, key)
+        ).fetchone()
+        current = row["version"] if row else 0
+        if expected_version is not None and expected_version != current:
+            return None
+        new_version = current + 1
+        conn.execute(
+            """INSERT INTO dog_settings (dog_id, key, value, version, updated_at, updated_by)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(dog_id, key) DO UPDATE SET
+                 value = excluded.value, version = excluded.version,
+                 updated_at = excluded.updated_at, updated_by = excluded.updated_by""",
+            (dog_id, key, json.dumps(value), new_version, now, updated_by),
+        )
+        conn.commit()
+    return {"key": key, "value": value, "version": new_version, "updated_at": now, "updated_by": updated_by}
+
+
+def delete_dog_setting(dog_id: str, key: str) -> bool:
+    with db_connection() as conn:
+        cur = conn.execute("DELETE FROM dog_settings WHERE dog_id = ? AND key = ?", (dog_id, key))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def insert_settings_audit(dog_id: str, key: str, actor: str, action: str,
+                          old_value=None, new_value=None, reason: Optional[str] = None) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO settings_audit (dog_id, key, actor, action, old_value, new_value, reason, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (dog_id, key, actor, action,
+             json.dumps(old_value) if old_value is not None else None,
+             json.dumps(new_value) if new_value is not None else None,
+             reason, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def list_settings_audit(dog_id: str, limit: int = 50) -> list[dict]:
+    with db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM settings_audit WHERE dog_id = ? ORDER BY id DESC LIMIT ?", (dog_id, int(limit))
+        ).fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"], "key": r["key"], "actor": r["actor"], "action": r["action"],
+            "old_value": json.loads(r["old_value"]) if r["old_value"] else None,
+            "new_value": json.loads(r["new_value"]) if r["new_value"] else None,
+            "reason": r["reason"], "created_at": r["created_at"],
+        })
+    return out
+
+
+# ---- notify_log ----
+
+def insert_notify_log(dog_id: str, user_id: Optional[str], rule_id: str, event_id: str, event_type: str,
+                      outcome: str, title: Optional[str] = None, body: Optional[str] = None,
+                      image_url: Optional[str] = None, clip_url: Optional[str] = None) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO notify_log (dog_id, user_id, rule_id, event_id, event_type, outcome, title, body,
+                                       image_url, clip_url, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (dog_id, user_id, rule_id, event_id, event_type, outcome, title, body, image_url, clip_url,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def last_notify_sent(dog_id: str, rule_id: str) -> Optional[str]:
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT created_at FROM notify_log WHERE dog_id = ? AND rule_id = ? AND outcome = 'sent' "
+            "ORDER BY id DESC LIMIT 1",
+            (dog_id, rule_id),
+        ).fetchone()
+    return row["created_at"] if row else None
+
+
+def list_notify_log(dog_id: str, limit: int = 50) -> list[dict]:
+    with db_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM notify_log WHERE dog_id = ? ORDER BY id DESC LIMIT ?", (dog_id, int(limit))
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_notify_log_for_dog(dog_id: str) -> int:
+    with db_connection() as conn:
+        cur = conn.execute("DELETE FROM notify_log WHERE dog_id = ?", (dog_id,))
+        conn.commit()
+        return cur.rowcount
+
+
+def delete_old_notify_log(days: int = 30) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with db_connection() as conn:
+        cur = conn.execute("DELETE FROM notify_log WHERE created_at < ?", (cutoff,))
+        conn.commit()
+        return cur.rowcount
+
+
+# ---- treat_ledger ----
+
+def insert_treat_ledger(command_id: str, dog_id: str, actor: str, local_date: str) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO treat_ledger (command_id, dog_id, actor, local_date, issued_at) VALUES (?, ?, ?, ?, ?)",
+            (command_id, dog_id, actor, local_date, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def link_treat_ledger(command_id: str, event_id: str) -> bool:
+    with db_connection() as conn:
+        cur = conn.execute(
+            "UPDATE treat_ledger SET event_id = ? WHERE command_id = ? AND event_id IS NULL",
+            (event_id, command_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def count_pending_treat_ledger(dog_id: str, local_date: str, within_seconds: int = 120) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=within_seconds)).isoformat()
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM treat_ledger WHERE dog_id = ? AND local_date = ? "
+            "AND event_id IS NULL AND issued_at > ?",
+            (dog_id, local_date, cutoff),
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def delete_treat_ledger_for_dog(dog_id: str) -> int:
+    with db_connection() as conn:
+        cur = conn.execute("DELETE FROM treat_ledger WHERE dog_id = ?", (dog_id,))
+        conn.commit()
+        return cur.rowcount
+
+
+def delete_notify_log_by_event_ids(event_ids: list[str]) -> int:
+    if not event_ids:
+        return 0
+    deleted = 0
+    with db_connection() as conn:
+        for i in range(0, len(event_ids), 500):
+            chunk = event_ids[i:i + 500]
+            cur = conn.execute(
+                f"DELETE FROM notify_log WHERE event_id IN ({','.join('?' for _ in chunk)})", chunk
+            )
+            deleted += cur.rowcount
+        conn.commit()
+    return deleted
+
+
+def delete_events_by_ids(event_ids: list[str]) -> int:
+    if not event_ids:
+        return 0
+    deleted = 0
+    with db_connection() as conn:
+        for i in range(0, len(event_ids), 500):
+            chunk = event_ids[i:i + 500]
+            cur = conn.execute(
+                f"DELETE FROM events WHERE event_id IN ({','.join('?' for _ in chunk)})", chunk
+            )
+            deleted += cur.rowcount
+        conn.commit()
+    return deleted
+
+
+def get_event(event_id: str) -> Optional[dict]:
+    with db_connection() as conn:
+        row = conn.execute("SELECT * FROM events WHERE event_id = ?", (event_id,)).fetchone()
+    return _row_to_event(row) if row else None
 
 # Initialize database on module import
 init_db()

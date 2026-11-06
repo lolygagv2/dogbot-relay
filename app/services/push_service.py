@@ -296,6 +296,66 @@ async def _send_fcm(token: str, project_id: str, access_token: str, message: dic
         logger.warning(f"[PUSH] FCM send failed: {resp.status_code} {resp.text[:200]}")
 
 
+async def send_push(
+    user_id: str,
+    app_type: str,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    image_url: Optional[str] = None,
+) -> str:
+    """Generic FCM send to every registered device of a user that enabled `app_type`.
+
+    Returns an outcome string: sent | no_tokens | push_disabled | error. Never raises.
+    `image_url` (absolute) attaches a still: Android renders it natively; iOS needs the
+    app's Notification Service Extension (mutable-content) to display it.
+    """
+    try:
+        if not is_configured():
+            return "push_disabled"
+        # Resolve the type per device: a build that has not registered the dedicated
+        # type still gets the alert under a fallback type it understands.
+        by_type: dict[str, list[dict]] = {}
+        for t in list_push_tokens_for_user(user_id):
+            resolved = _resolve_token_type(app_type, t["enabled_types"])
+            if resolved:
+                by_type.setdefault(resolved, []).append(t)
+        if not by_type:
+            return "no_tokens"
+        access_token = await _get_access_token()
+        if not access_token:
+            return "error"
+        project_id = _load_credentials()["project_id"]
+
+        base_data = {k: str(v) for k, v in (data or {}).items()}
+        notification = {"title": title, "body": body}
+        aps = {"sound": "default"}
+        apns: dict = {"payload": {"aps": aps}}
+        android: dict = {"priority": "high"}
+        if image_url:
+            notification["image"] = image_url
+            android["notification"] = {"image": image_url}
+            aps["mutable-content"] = 1
+            apns["fcm_options"] = {"image": image_url}
+
+        sends = []
+        for resolved_type, tokens in by_type.items():
+            # data.type is the type this device registered for, so the app can always dispatch on it
+            message = {"notification": notification, "android": android, "apns": apns,
+                       "data": {**base_data, "type": resolved_type}}
+            if resolved_type != app_type:
+                logger.info(f"[PUSH] {app_type} delivered as '{resolved_type}' for {len(tokens)} device(s) of user {user_id}")
+            sends.extend(_send_fcm(t["device_token"], project_id, access_token, message) for t in tokens)
+
+        results = await asyncio.gather(*sends, return_exceptions=True)
+        errors = sum(1 for r in results if isinstance(r, Exception))
+        logger.info(f"[PUSH] {app_type} sent to {len(results) - errors}/{len(results)} device(s) for user {user_id}")
+        return "sent" if errors < len(results) else "error"
+    except Exception as e:
+        logger.error(f"[PUSH] send_push failed: {e}")
+        return "error"
+
+
 async def notify_activity_event(
     user_id: str,
     row_type: str,
@@ -307,7 +367,7 @@ async def notify_activity_event(
 
     Fire-and-forget (asyncio.create_task at the ingest sites) — must never raise
     into WS forwarding. Only devices whose enabled_types contains the mapped
-    app type get a message.
+    app type get a message. Thin wrapper over send_push since 2026-11-06.
     """
     try:
         if not is_configured():
@@ -318,54 +378,13 @@ async def notify_activity_event(
             return
         app_type, title, body = mapped
 
-        # Resolve the type per device: a build that has not registered the
-        # dedicated type still gets the alert under a type it understands.
-        by_type: dict[str, list[dict]] = {}
-        for t in list_push_tokens_for_user(user_id):
-            resolved = _resolve_token_type(app_type, t["enabled_types"])
-            if resolved:
-                by_type.setdefault(resolved, []).append(t)
-        if not by_type:
-            return
-
         dog_name = _resolve_dog_name(dog_id, payload)
         if dog_name:
             body = f"{dog_name}: {body}" if body else dog_name
 
-        access_token = await _get_access_token()
-        if not access_token:
-            return
-        project_id = _load_credentials()["project_id"]
-
-        sends = []
-        for resolved_type, tokens in by_type.items():
-            message = {
-                "notification": {"title": title, "body": body},
-                "apns": {"payload": {"aps": {"sound": "default"}}},
-                "data": {
-                    # The type this device registered for — not necessarily the
-                    # dedicated one — so the app can always dispatch on it.
-                    "type": resolved_type,
-                    "dog_id": dog_id or "",
-                    "event_id": str(event_id),
-                },
-            }
-            if resolved_type != app_type:
-                logger.info(
-                    f"[PUSH] {app_type} delivered as '{resolved_type}' for "
-                    f"{len(tokens)} device(s) of user {user_id} — device has not "
-                    f"registered '{app_type}' in enabled_types"
-                )
-            sends.extend(
-                _send_fcm(t["device_token"], project_id, access_token, message)
-                for t in tokens
-            )
-
-        results = await asyncio.gather(*sends, return_exceptions=True)
-        errors = sum(1 for r in results if isinstance(r, Exception))
-        logger.info(
-            f"[PUSH] {row_type}->{app_type} sent to {len(results) - errors}/{len(results)} "
-            f"device(s) for user {user_id}"
+        await send_push(
+            user_id=user_id, app_type=app_type, title=title, body=body,
+            data={"type": app_type, "dog_id": dog_id or "", "event_id": str(event_id)},
         )
     except Exception as e:
         logger.error(f"[PUSH] notify_activity_event failed: {e}")
