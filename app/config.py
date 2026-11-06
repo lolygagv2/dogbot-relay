@@ -105,7 +105,7 @@ class Settings(BaseSettings):
 
     # Voice agent (separate process, run_agent.py)
     agent_port: int = 8002
-    agent_model: str = "claude-opus-5-5"
+    agent_model: str = "claude-opus-5"
     openai_api_key: str = ""
     openai_stt_model: str = "gpt-4o-transcribe"
     elevenlabs_api_key: str = ""

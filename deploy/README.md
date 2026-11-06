@@ -30,7 +30,7 @@ ELEVENLABS_VOICE_ID=...                       # the Australian voice picked in t
 ```
 
 Optional: `MCP_ALLOWED_HOSTS` (default `api.wimzai.com,api.wimzai.com:*,127.0.0.1:8001,localhost:8001`),
-`AGENT_MODEL` (default `claude-opus-5-5`), `DEMO_DEVICE_ID` (stage robot id for the replayer).
+`AGENT_MODEL` (default `claude-opus-5`), `DEMO_DEVICE_ID` (stage robot id for the replayer).
 
 ## 3. systemd
 

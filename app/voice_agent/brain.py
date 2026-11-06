@@ -1,6 +1,6 @@
 """Claude reasoning loop for the voice agent (Dec 9 demo build, 2026-11-06).
 
-Manual tool loop on `claude-opus-5-5` (adaptive thinking left on, effort low for voice
+Manual tool loop on `claude-opus-5` (adaptive thinking left on, effort low for voice
 latency, server-side refusal fallbacks enabled). Guards that live in code, not only in
 the prompt:
 
