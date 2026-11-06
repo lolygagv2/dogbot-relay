@@ -90,8 +90,14 @@ class Settings(BaseSettings):
     # Voice agent hook target (relay -> agent, fire-and-forget).
     agent_base_url: str = "http://127.0.0.1:8002"
 
+    # Where the MCP server and voice agent reach the relay's HTTP API (same box).
+    relay_base_url: str = "http://127.0.0.1:8000"
+
     # MCP server (separate process, run_mcp.py)
     mcp_port: int = 8001
+    # OAuth issuer / resource base. Empty = public_base_url. For local testing set
+    # MCP_PUBLIC_BASE_URL=http://127.0.0.1:8001 (the SDK only allows http on loopback).
+    mcp_public_base_url: str = ""
     mcp_access_token_ttl: int = 3600
     mcp_refresh_token_ttl: int = 30 * 24 * 3600
     mcp_allowed_hosts: str = "api.wimzai.com,api.wimzai.com:*,127.0.0.1:8001,localhost:8001"

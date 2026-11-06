@@ -8,4 +8,6 @@ pydantic-settings>=2.1.0
 python-multipart>=0.0.6
 httpx>=0.25.0
 boto3>=1.28.0
-anthropic>=0.40.0  # L-REPORT session-report LLM layer (Workstream B); lazy-imported
+anthropic>=2.6.0  # session reports (lazy-imported) + voice agent (app/voice_agent)
+mcp>=2.3.0  # MCP server + OAuth 2.1 AS (app/mcp_server, run_mcp.py)
+# dev only: pytest>=8
