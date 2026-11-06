@@ -61,3 +61,14 @@ def test_rollup_time_to_settle_and_top_episodes(temp_db):
     assert get_event("s1")["data"]["settle_s"] == 75
     # cache: second read served from daily_summary, refresh recomputes
     assert event_store.get_summary("dog_t1", "2026-11-06")["event_count"] == 9
+
+
+def test_treat_still_is_pinned_for_seven_days(temp_db, tmp_path, monkeypatch):
+    from app.services import media_files
+    monkeypatch.setattr(media_files, "media_dir", lambda: tmp_path)
+    (tmp_path / "robot_t_ab12.jpg").write_bytes(b"x")
+    ev = _ev("tr1", "treat", "2026-11-06T15:00:00Z", source="auto", image_url="/api/media/download/robot_t_ab12.jpg")
+    asyncio.run(event_store.ingest_events([ev], device_id="robot_t", user_id="user_t1", source="robot", notify=False, forward=False))
+    assert (tmp_path / "robot_t_ab12.jpg.ttl").read_text() == str(7 * 24 * 3600)
+    assert media_files.resolve("robot_t_ab12.jpg") is not None
+    assert media_files.resolve("../etc/passwd") is None

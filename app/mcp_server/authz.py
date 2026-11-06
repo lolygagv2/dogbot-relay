@@ -25,19 +25,24 @@ from app.mcp_server import oauth_db
 
 logger = logging.getLogger(__name__)
 
-ALL_SCOPES = ["read", "settings", "missions", "physical"]
+ALL_SCOPES = ["read", "settings", "missions", "physical", "photos", "camera"]
 SCOPE_LABELS = {
     "read": "Read summaries, events and robot status",
     "settings": "Change quiet hours, music and sensitivity",
     "missions": "Draft and schedule missions",
     "physical": "Give a treat or move the robot",
+    "photos": "See snapshots WIM-Z already took",
+    "camera": "Ask WIM-Z to take a new snapshot (never live video)",
 }
+# Off by default on the consent screen even when requested (PHOTO ACCESS 2026-11-06).
+OPT_IN_SCOPES = {"photos", "camera"}
 TOOL_SCOPES = {
     "get_dogs": "read", "get_day_summary": "read", "get_events": "read", "get_trend": "read",
     "get_missions": "read", "get_robot_status": "read",
     "set_quiet_hours": "settings", "set_music": "settings",
     "draft_mission": "missions", "schedule_mission": "missions",
     "give_treat": "physical", "go_to": "physical",
+    "get_event_photo": "photos", "take_photo": "camera",
 }
 
 
@@ -100,7 +105,9 @@ def audited(tool_name: str) -> Callable:
                     outcome = "refused"
                     relay_status = result.get("_status")
                     result.pop("_status", None)
-                summary = _summarize(result)
+                elif isinstance(result, list) and any(isinstance(b, str) and '"refused": true' in b for b in result):
+                    outcome = "refused"
+                summary = _summarize(result) if not isinstance(result, list) else f"{len(result)} content block(s)"
                 return result
             except ToolError as e:
                 outcome = "denied_scope" if "permission" in str(e) else "error"

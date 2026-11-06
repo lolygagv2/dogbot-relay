@@ -8,6 +8,7 @@ with actor `agent`. Results are small dicts; refusals come back as
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import json
 import logging
@@ -20,7 +21,7 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 
 logger = logging.getLogger(__name__)
 
-PHYSICAL_TOOLS = {"give_treat", "go_to", "capture_photo", "run_trick", "standby"}
+PHYSICAL_TOOLS = {"give_treat", "go_to", "take_photo", "run_trick", "standby"}
 MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
 GO_TO_TARGETS = ["dock", "bed", "kitchen", "door", "crate", "living_room", "owner"]
 TRICKS = ["sit", "down", "stay", "spin", "place", "paw", "speak"]
@@ -81,8 +82,10 @@ TOOLS: list[dict] = [
     {"name": "go_to", "description": "Send the robot to a named spot.",
      "input_schema": _schema({"dog_id": _str("dog id"), "target": _str("target", GO_TO_TARGETS)}, ["dog_id", "target"]),
      "strict": True},
-    {"name": "capture_photo", "description": "Take one still photo with the robot camera and save it to the owner's timeline. Returns only a confirmation.",
+    {"name": "take_photo", "description": "Take one new snapshot with the robot camera (no HUD) and look at it; it is also saved to the owner's timeline. Never live video.",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
+    {"name": "get_event_photo", "description": "Look at the snapshot WIM-Z already took for an event (use an event_id from get_events where has_photo is true).",
+     "input_schema": _schema({"dog_id": _str("dog id"), "event_id": _str("event id")}, ["dog_id", "event_id"]), "strict": True},
     {"name": "run_trick", "description": "Ask the robot to cue a trick.",
      "input_schema": _schema({"dog_id": _str("dog id"), "trick": _str("trick", TRICKS)}, ["dog_id", "trick"]),
      "strict": True},
@@ -165,7 +168,8 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             t = str(a.get("type") or "")
             limit = max(1, min(int(a.get("limit") or 10), 50))
             res = await c.list_events(dog_id, types=[t] if t else None, limit=limit)
-            return {"events": [{"type": e["type"], "ts": e["ts"], "duration_s": e.get("duration_s"),
+            return {"events": [{"event_id": e["event_id"], "type": e["type"], "ts": e["ts"], "duration_s": e.get("duration_s"),
+                                "has_photo": bool((e.get("data") or {}).get("image_url")),
                                 "data": _scalar(e.get("data") or {})} for e in res.get("events", [])]}
         if name == "get_robot_status":
             st = await c.get_status(dog_id)
@@ -216,13 +220,28 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
         if name == "go_to":
             res = await c.command(dog_id, "go_to", {"target": a["target"]})
             return {"ok": True, "target": a["target"], "simulated": res.get("simulated")}
-        if name == "capture_photo":
+        if name == "take_photo":
             res = await c.command(dog_id, "take_photo", {"with_hud": False}, wait_s=10)
             r = res.get("result") or {}
+            if res.get("simulated"):
+                return {"ok": False, "reason": "robot_offline_demo"}
             if res.get("timed_out"):
                 return {"ok": False, "reason": "photo_timed_out", "photo_request_id": res.get("command_id")}
-            return {"ok": bool(r.get("ok", True)), "saved": bool(r.get("ok", True)), "error": r.get("error"),
-                    "photo_request_id": res.get("command_id"), "simulated": res.get("simulated")}
+            inner = r.get("result") if isinstance(r.get("result"), dict) else {}
+            image_url = inner.get("image_url") or inner.get("url")
+            out = {"ok": bool(r.get("ok", True)), "saved": bool(r.get("ok", True)), "error": r.get("error"),
+                   "photo_request_id": res.get("command_id")}
+            if image_url and out["ok"]:
+                try:
+                    raw, ctype = await c.still(dog_id, image_url)
+                    out["_image_b64"], out["_media_type"] = base64.b64encode(raw).decode(), ctype.split(";")[0].strip()
+                except (RelayRefusal, RelayError) as e:
+                    out["image_error"] = str(e)[:80]
+            return out
+        if name == "get_event_photo":
+            raw, ctype = await c.event_photo(dog_id, str(a.get("event_id") or ""))
+            return {"ok": True, "event_id": a.get("event_id"), "_image_b64": base64.b64encode(raw).decode(),
+                    "_media_type": ctype.split(";")[0].strip()}
         if name == "run_trick":
             res = await c.command(dog_id, "run_trick", {"trick": a["trick"]}, wait_s=60)
             r = res.get("result") or {}

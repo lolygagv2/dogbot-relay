@@ -244,6 +244,10 @@ async def ingest_events(
 
         if ev["type"] == "treat" and ev["data"].get("command_id"):
             link_treat_ledger(str(ev["data"]["command_id"]), ev["event_id"])
+        if ev["type"] == "treat" and ev["data"].get("image_url"):
+            # PHOTO ACCESS: treat stills are kept 7 days (other stills 24h)
+            from app.services import media_files
+            media_files.pin_media(ev["data"]["image_url"], media_files.TREAT_STILL_TTL_S)
 
         mark_summary_dirty(dog_id, local_date)
 

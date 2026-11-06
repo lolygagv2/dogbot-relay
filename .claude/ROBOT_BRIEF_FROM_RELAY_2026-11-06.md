@@ -162,3 +162,19 @@ go to it for real; the replayer's seed events still fill the day. Keep the demo 
   `whistle.wav`, `shush.wav`, `good_dog.wav`, `song_calm_01`, `song_calm_02`.
 - Does the robot already emit a departure/arrival signal (door, schedule)? If not, the
   app can send `departure` via the relay (it will count the same).
+
+---
+
+## 7. PHOTO ACCESS (added 2026-11-06, later the same day)
+
+- Attach a still to **every `treat` event** (taken about 2 s after the dispense) and to bark
+  alerts (`bark_episode`, optionally `intervention`): upload via `POST /api/media/upload`
+  first, then put the returned `download_url` in `data.image_url`. The relay keeps treat
+  stills 7 days and other stills 24 h (video 1 h). Uploads now land in a persistent
+  directory on the relay, so links survive a relay reboot.
+- `take_photo` from the relay now also comes from assistants (connector `camera` scope):
+  always `with_hud: false`, at most one per 30 s per assistant, never during quiet hours
+  (the relay enforces all three). Reply with `command_result` whose `result` includes the
+  uploaded still, e.g. `{"ok": true, "result": {"image_url": "/api/media/download/<device>_<hex>.jpg"}}`
+  within 10 s; the relay hands the image to the assistant or the voice agent. Live video
+  is never reachable this way.

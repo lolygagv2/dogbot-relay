@@ -135,6 +135,25 @@ class RelayClient:
     async def get_draft(self, dog_id: str, draft_id: str) -> dict:
         return await self.request("GET", f"/api/dogs/{dog_id}/missions/drafts/{draft_id}")
 
+    async def get_bytes(self, path: str) -> tuple[bytes, str]:
+        """Fetch a still (event photo / fresh snapshot). Returns (bytes, content_type)."""
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(self.base + path, headers=self.headers)
+        except httpx.HTTPError as e:
+            raise RelayError(f"relay unreachable: {e}") from e
+        if resp.status_code == 200:
+            return resp.content, resp.headers.get("content-type", "application/octet-stream")
+        self._handle(resp)  # raises RelayRefusal / RelayError
+        raise RelayError("unexpected")  # pragma: no cover
+
+    async def event_photo(self, dog_id: str, event_id: str) -> tuple[bytes, str]:
+        return await self.get_bytes(f"/api/dogs/{dog_id}/events/{event_id}/photo")
+
+    async def still(self, dog_id: str, image_url: str) -> tuple[bytes, str]:
+        name = image_url.rsplit("/", 1)[-1]
+        return await self.get_bytes(f"/api/dogs/{dog_id}/media/{name}")
+
     async def transcript(self, dog_id: str, role: str, text: str) -> None:
         try:
             await self.request("POST", f"/api/dogs/{dog_id}/agent/transcript", json={"role": role, "text": text[:2000]})

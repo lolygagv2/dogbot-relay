@@ -88,6 +88,19 @@ def health_hit(reply: str) -> Optional[str]:
     return None
 
 
+def _tool_result_content(res: dict) -> Any:
+    """JSON text, plus an image block when a tool fetched a still (take_photo / get_event_photo)."""
+    b64 = res.pop("_image_b64", None)
+    mt = res.pop("_media_type", None) or "image/jpeg"
+    text = json.dumps(res, default=str)
+    if not b64:
+        return text
+    if mt not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+        mt = "image/jpeg"
+    return [{"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}},
+            {"type": "text", "text": text}]
+
+
 class Memory:
     def __init__(self) -> None:
         self._turns: dict[str, deque] = {}
@@ -183,7 +196,7 @@ class Brain:
                     refused.append(str(res.get("reason")))
                 if tu.name in ("set_quiet_hours", "set_music", "draft_mission") and res.get("ok"):
                     settings_changes.append({"tool": tu.name, "result": res})
-                blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": json.dumps(res, default=str)})
+                blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": _tool_result_content(res)})
             messages.append({"role": "user", "content": blocks})
         else:
             reply = reply or "I've done what I can for now."

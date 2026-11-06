@@ -12,6 +12,7 @@ whitelisted to scalar fields.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.utilities.types import Image
 from mcp.types import ToolAnnotations
 
 from app.database import get_dog_by_id, get_user_dog_role, get_user_dogs
@@ -130,9 +132,11 @@ def register_tools(mcp: MCPServer) -> None:
             return e.as_result(_status=e.status)
         events = []
         for ev in res.get("events", []):
+            data = ev.get("data") or {}
             events.append({"event_id": ev["event_id"], "type": ev["type"], "ts": ev["ts"],
                            "duration_s": ev.get("duration_s"), "source": ev.get("source"),
-                           "data": _scalar(ev.get("data") or {})})
+                           "has_photo": bool(data.get("image_url")),   # fetch with get_event_photo (photos scope)
+                           "data": _scalar(data)})
         return {"dog_id": dog_id, "events": events, "count": len(events)}
 
     @mcp.tool(name="get_trend", annotations=READ)
@@ -374,6 +378,49 @@ def register_tools(mcp: MCPServer) -> None:
         return {"ok": True, "treats_today": guard.get("treats_used"), "treat_daily_cap": guard.get("treat_cap"),
                 "delivered": res.get("delivered"), "simulated": res.get("simulated"),
                 "command_id": res.get("command_id")}
+
+    def _image(raw: bytes, content_type: str) -> Image:
+        fmt = {"image/jpeg": "jpeg", "image/png": "png", "image/webp": "webp"}.get(content_type.split(";")[0].strip(), "jpeg")
+        return Image(data=raw, format=fmt)
+
+    @mcp.tool(name="get_event_photo", annotations=READ)
+    @audited("get_event_photo")
+    async def get_event_photo(dog_id: str, event_id: str) -> list:
+        """The still WIM-Z already took for an event (treat, bark_episode, intervention). Use the
+        event_id from get_events where has_photo is true. Returns the image; stills expire after
+        24 hours (treat snapshots after 7 days). Requires the photos permission."""
+        client, user_id = _client("get_event_photo")
+        _check_dog(user_id, dog_id)
+        try:
+            raw, ctype = await client.event_photo(dog_id, event_id)
+        except RelayRefusal as e:
+            return [json.dumps(e.as_result(event_id=event_id))]
+        return [_image(raw, ctype), json.dumps({"ok": True, "event_id": event_id, "bytes": len(raw)})]
+
+    @mcp.tool(name="take_photo", annotations=CONTROL)
+    @audited("take_photo")
+    async def take_photo(dog_id: str) -> list:
+        """Ask WIM-Z to take a new snapshot now (no HUD) and return it. At most one every 30 seconds
+        per assistant, refused during quiet hours, and never live video. Requires the camera permission."""
+        client, user_id = _client("take_photo")
+        _check_dog(user_id, dog_id)
+        try:
+            res = await client.command(dog_id, "take_photo", {"with_hud": False}, wait_s=12)
+        except RelayRefusal as e:
+            return [json.dumps(e.as_result())]
+        result = (res.get("result") or {})
+        inner = result.get("result") if isinstance(result.get("result"), dict) else {}
+        image_url = inner.get("image_url") or inner.get("url")
+        if res.get("simulated"):
+            return [json.dumps({"ok": False, "reason": "robot_offline_demo", "simulated": True})]
+        if res.get("timed_out") or not image_url:
+            return [json.dumps({"ok": False, "reason": "photo_timed_out" if res.get("timed_out") else "no_image_returned",
+                                "command_id": res.get("command_id"), "error": result.get("error")})]
+        try:
+            raw, ctype = await client.still(dog_id, image_url)
+        except RelayRefusal as e:
+            return [json.dumps(e.as_result())]
+        return [_image(raw, ctype), json.dumps({"ok": True, "command_id": res.get("command_id"), "bytes": len(raw)})]
 
     @mcp.tool(name="go_to", annotations=CONTROL)
     @audited("go_to")

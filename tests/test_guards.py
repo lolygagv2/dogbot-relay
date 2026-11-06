@@ -58,9 +58,6 @@ def test_command_allowlist(temp_db):
     with pytest.raises(HTTPException) as e:
         robot_control.build_robot_message("webrtc_request", {}, CONN, "dog_t1")
     assert e.value.detail["code"] == "command_not_allowed"
-    with pytest.raises(HTTPException) as e:
-        robot_control.build_robot_message("take_photo", {}, CONN, "dog_t1")
-    assert e.value.detail["code"] == "command_not_allowed"
     msg, _ = robot_control.build_robot_message("take_photo", {"with_hud": True}, AGENT, "dog_t1")
     assert msg["command"] == "take_photo" and msg["data"]["with_hud"] is True and msg["command_id"]
     with pytest.raises(HTTPException) as e:
@@ -74,3 +71,24 @@ def test_command_allowlist(temp_db):
     assert msg["data"]["url"].endswith("/song_calm_01")
     for name in robot_control.NEVER_EMIT:
         assert name not in {"dispense_treat", "set_mode", "audio", "play_music", "play_sound", "start_mission", "take_photo", "go_to", "run_trick"}
+
+
+def test_connector_take_photo_guards(temp_db, monkeypatch):
+    """PHOTO ACCESS: connector snapshots are HUD-less, rate limited per assistant, refused in quiet hours."""
+    robot_control._last_photo.clear()
+    monkeypatch.setattr(settings_service, "in_quiet_hours", lambda dog_id, local_dt=None: False)
+    msg, _ = robot_control.build_robot_message("take_photo", {"with_hud": True}, CONN, "dog_t1")
+    assert msg["command"] == "take_photo" and msg["data"]["with_hud"] is False
+    with pytest.raises(HTTPException) as e:
+        robot_control.build_robot_message("take_photo", {}, CONN, "dog_t1")
+    assert e.value.status_code == 429 and e.value.detail["code"] == "camera_rate"
+    other = Actor(kind="connector", id="chatgpt", user_id="user_t1")
+    robot_control.build_robot_message("take_photo", {}, other, "dog_t1")      # per-assistant limit
+    monkeypatch.setattr(settings_service, "in_quiet_hours", lambda dog_id, local_dt=None: True)
+    robot_control._last_photo.clear()
+    with pytest.raises(HTTPException) as e:
+        robot_control.build_robot_message("take_photo", {}, CONN, "dog_t1")
+    assert e.value.detail["guard"] == "camera_quiet_hours"
+    # the agent is not subject to the connector rule
+    msg, _ = robot_control.build_robot_message("take_photo", {"with_hud": True}, AGENT, "dog_t1")
+    assert msg["data"]["with_hud"] is True

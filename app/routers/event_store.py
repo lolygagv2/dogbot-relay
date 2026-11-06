@@ -11,9 +11,11 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from app.auth import Actor, check_dog_access, resolve_actor
-from app.database import get_latest_event, get_user_paired_devices, list_events
+from app.database import get_event, get_latest_event, get_user_paired_devices, list_events
+from app.services import media_files
 from app.models import EVENT_TYPES, EventBatchIn, EventBatchResult, QuietHours
 from app.services import event_store, settings_service
 
@@ -120,3 +122,42 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         "timezone": settings_service.get_value(dog_id, "timezone"),
         "replay_active": replay_active,
     }
+
+
+# ---- PHOTO ACCESS (amendment 2026-11-06): stills attached to events, never video ----
+
+@router.get("/api/dogs/{dog_id}/events/{event_id}/photo")
+async def get_event_photo(dog_id: str, event_id: str, actor: Actor = Depends(resolve_actor)):
+    """The still attached to an event (treat, bark_episode, intervention). App, connector, agent, admin."""
+    if actor.kind == "robot":
+        raise HTTPException(status_code=403, detail={"code": "robot_not_allowed"})
+    check_dog_access(actor, dog_id)
+    ev = get_event(event_id)
+    if not ev or ev["dog_id"] != dog_id:
+        raise HTTPException(status_code=404, detail={"code": "event_not_found"})
+    name = media_files.filename_from_url(ev["data"].get("image_url"))
+    if not name:
+        raise HTTPException(status_code=404, detail={"code": "no_photo_for_event"})
+    path = media_files.resolve(name)
+    if not path:
+        raise HTTPException(status_code=410, detail={"code": "photo_expired"})
+    return FileResponse(str(path), media_type=media_files.media_type_for(path),
+                        headers={"Cache-Control": "private, max-age=300", "X-Event-Id": event_id})
+
+
+@router.get("/api/dogs/{dog_id}/media/{filename}")
+async def get_dog_media_still(dog_id: str, filename: str, actor: Actor = Depends(resolve_actor)):
+    """A still by download name (used right after take_photo). Images only; the name must come
+    from a robot paired to the dog's owner (upload names are <device_id>_<hex>.<ext>) or a seed."""
+    if actor.kind == "robot":
+        raise HTTPException(status_code=403, detail={"code": "robot_not_allowed"})
+    owner = check_dog_access(actor, dog_id)
+    safe = filename.split("/")[-1]
+    path = media_files.resolve(safe)
+    if not path or path.suffix.lower() not in media_files.IMAGE_EXTS:
+        raise HTTPException(status_code=404, detail={"code": "still_not_found"})
+    devices = get_user_paired_devices(owner) if owner else []
+    if not safe.startswith("seed_") and not any(safe.startswith(f"{d}_") for d in devices):
+        raise HTTPException(status_code=403, detail={"code": "still_not_owned"})
+    return FileResponse(str(path), media_type=media_files.media_type_for(path),
+                        headers={"Cache-Control": "private, max-age=300"})

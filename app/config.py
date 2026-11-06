@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     demo_device_id: str = "demo_robot"
     seeds_dir: str = ""           # empty = <repo>/seeds
     sounds_storage_dir: str = ""  # empty = <repo>/data/sounds
+    media_storage_dir: str = ""   # empty = <repo>/data/media (robot uploads: stills 24h, treat stills 7d, video 1h)
     # Voice agent hook target (relay -> agent, fire-and-forget).
     agent_base_url: str = "http://127.0.0.1:8002"
 

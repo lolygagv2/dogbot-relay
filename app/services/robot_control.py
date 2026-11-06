@@ -8,6 +8,7 @@ the allowlist (webrtc/live view, motor, download_song, ...) can ever be emitted.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -31,9 +32,14 @@ ACTOR_ALLOWED: dict[str, set[str]] = {
     "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "take_photo", "standby", "run_trick"},
     "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "take_photo", "standby", "run_trick"},
     "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "take_photo", "standby", "run_trick", "play_tts"},
-    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "standby", "run_trick"},
+    # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
+    # server) — never with HUD, max one per 30 s per assistant, refused during quiet hours.
+    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "standby", "run_trick", "take_photo"},
     "relay":     {"start_mission", "play_music"},
 }
+
+PHOTO_MIN_INTERVAL_S = 30.0
+_last_photo: dict[str, float] = {}   # actor label -> monotonic time of last connector snapshot
 
 # Belt and braces: these can never be the outgoing command name.
 NEVER_EMIT = {
@@ -109,8 +115,19 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
                                      "duration_s": m.duration_s if m else None,
                                      "reward_treats": m.reward_treats if m else None})
         case "take_photo":
-            out = ("take_photo", {"with_hud": bool(data.get("with_hud", False)), "source": source,
-                                  "command_id": command_id})
+            with_hud = bool(data.get("with_hud", False))
+            if actor.kind == "connector":
+                with_hud = False
+                if settings_service.in_quiet_hours(dog_id):
+                    raise HTTPException(status_code=403, detail={"code": "guard_denied", "guard": "camera_quiet_hours",
+                                                                 "reason": "no new snapshots during quiet hours"})
+                last = _last_photo.get(actor.label, 0.0)
+                now_m = time.monotonic()
+                if now_m - last < PHOTO_MIN_INTERVAL_S:
+                    raise HTTPException(status_code=429, detail={"code": "camera_rate",
+                                                                 "retry_after_s": int(PHOTO_MIN_INTERVAL_S - (now_m - last)) + 1})
+                _last_photo[actor.label] = now_m
+            out = ("take_photo", {"with_hud": with_hud, "source": source, "command_id": command_id})
         case "go_to":
             target = str(data.get("target") or "")[:64]
             if target not in KNOWN_TARGETS:

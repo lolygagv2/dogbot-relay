@@ -26,7 +26,7 @@ from app.auth import verify_password
 from app.config import get_settings
 from app.database import get_user_by_email
 from app.mcp_server import oauth_db
-from app.mcp_server.authz import ALL_SCOPES, SCOPE_LABELS, normalize_scopes
+from app.mcp_server.authz import ALL_SCOPES, OPT_IN_SCOPES, SCOPE_LABELS, normalize_scopes
 
 logger = logging.getLogger(__name__)
 
@@ -132,11 +132,14 @@ async def login_post(request: Request) -> Response:
 def _consent_form(sid: str, sess: dict) -> HTMLResponse:
     p = sess["params"]
     requested = set(normalize_scopes(p.get("scopes") or []))
+    if requested == {"read"}:
+        # client asked for nothing specific (most connector hosts): offer the standard set
+        requested = set(ALL_SCOPES) - OPT_IN_SCOPES
     rows = []
     for sc in ALL_SCOPES:
         if sc == "read":
             continue
-        checked = "checked" if sc in requested else ""
+        checked = "checked" if (sc in requested and sc not in OPT_IN_SCOPES) else ""
         rows.append(f"<label class='row'><input type='checkbox' name='scope' value='{sc}' {checked}>"
                     f"<div><b>{html.escape(sc)}</b><span>{html.escape(SCOPE_LABELS[sc])}</span></div></label>")
     return _page("Allow access", f"""
@@ -147,8 +150,8 @@ def _consent_form(sid: str, sess: dict) -> HTMLResponse:
         <input type='hidden' name='csrf' value='{html.escape(sess['csrf'])}'>
         {''.join(rows)}
         <p class='note'>Read access to summaries, events and status is always included.
-        This assistant can never turn on the camera or live view, and it can only widen quiet hours, never narrow them.
-        Treat requests are limited by your daily cap.</p>
+        Photos: see snapshots WIM-Z already took. Camera: ask WIM-Z to take a new snapshot. Never live video.
+        This assistant can only widen quiet hours, never narrow them. Treat requests are limited by your daily cap.</p>
         <div class='btns'>
           <button class='deny' type='submit' name='action' value='deny'>Deny</button>
           <button class='allow' type='submit' name='action' value='allow'>Allow</button>

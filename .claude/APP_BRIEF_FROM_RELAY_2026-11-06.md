@@ -155,3 +155,18 @@ owner/caretaker JWTs only.
 `/admin/replay` load/start/pause/speed/jump/reset replays `seeds/demo_day.json` for
 `demo_dog` through the same pipeline, so the app sees `event`, `activity_event`, pushes,
 and roll-ups exactly as from a robot. Expect `replay_jump` / `replay_reset` frames.
+
+---
+
+## 7. PHOTO ACCESS (added 2026-11-06, later the same day)
+
+- Two more connector scopes appear on the consent screen and in `GET …/ai/connectors`
+  `scopes`: `photos` (see snapshots WIM-Z already took) and `camera` (ask WIM-Z for one new
+  snapshot, no HUD, max one per 30 s per assistant, refused in quiet hours). Both are
+  unticked by default. Consent text: "Photos: see snapshots WIM-Z already took. Camera:
+  ask WIM-Z to take a new snapshot. Never live video."
+- Stills: `GET /api/dogs/{dog_id}/events/{event_id}/photo` (JWT) returns the image attached
+  to an event (404 no photo, 410 expired); `GET /api/dogs/{dog_id}/media/{filename}` serves
+  a fresh `take_photo` still by its download name. Treat stills live 7 days, other stills
+  24 h. Robots now attach a still to every treat event and to bark alerts.
+- `mcp_audit` (…/ai/audit) will show `get_event_photo` and `take_photo` calls per assistant.
