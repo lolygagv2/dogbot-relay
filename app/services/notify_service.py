@@ -22,6 +22,7 @@ import httpx
 from app.config import get_settings
 from app.database import (
     get_dog_by_id,
+    get_dog_owner,
     get_latest_event,
     insert_notify_log,
     last_notify_sent,
@@ -33,6 +34,10 @@ logger = logging.getLogger(__name__)
 
 # dog_id -> list of pending departure-trigger tasks
 _departure_tasks: dict[str, list[asyncio.Task]] = {}
+# (dog_id, mission_id) -> fallback task: start a departure mission 15 min after it was set
+# even if no departure event arrives (amendment 2026-11-06, item 3)
+_fallback_tasks: dict[tuple[str, str], asyncio.Task] = {}
+DEPARTURE_FALLBACK_S = 15 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +147,7 @@ async def handle_triggers(ev: dict, user_id: Optional[str]) -> None:
     if ev["type"] != "departure":
         return
     cancel_departure_triggers(dog_id)
+    cancel_departure_fallbacks(dog_id)  # the real departure path takes over
     tasks: list[asyncio.Task] = []
 
     missions = Missions.model_validate(settings_service.get_value(dog_id, "missions"))
@@ -168,6 +174,40 @@ async def handle_triggers(ev: dict, user_id: Optional[str]) -> None:
         )))
     if tasks:
         _departure_tasks[dog_id] = tasks
+
+
+def arm_departure_fallbacks(dog_id: str, old_value: Optional[dict], new_value: dict,
+                            user_id: Optional[str]) -> int:
+    """Arm a 15-minute fallback start for every departure mission that is new or changed."""
+    old = {m["id"]: m for m in (old_value or {}).get("missions", []) if isinstance(m, dict)}
+    armed = 0
+    for m in new_value.get("missions", []):
+        if not m.get("enabled") or (m.get("trigger") or {}).get("kind") != "departure":
+            continue
+        if old.get(m["id"]) == m:
+            continue  # unchanged
+        key = (dog_id, m["id"])
+        prev = _fallback_tasks.pop(key, None)
+        if prev:
+            prev.cancel()
+        try:
+            _fallback_tasks[key] = asyncio.get_running_loop().create_task(_delayed_command(
+                dog_id, user_id or get_dog_owner(dog_id), DEPARTURE_FALLBACK_S, "start_mission",
+                {"mission_id": m["id"], "mission_type": m.get("type"), "trigger": "departure_fallback"},
+            ))
+            armed += 1
+        except RuntimeError:  # pragma: no cover - no loop (tests)
+            pass
+    if armed:
+        logger.info(f"[TRIGGER] armed {armed} departure fallback(s) for {dog_id} ({DEPARTURE_FALLBACK_S}s)")
+    return armed
+
+
+def cancel_departure_fallbacks(dog_id: str) -> int:
+    keys = [k for k in _fallback_tasks if k[0] == dog_id]
+    for k in keys:
+        _fallback_tasks.pop(k).cancel()
+    return len(keys)
 
 
 def cancel_departure_triggers(dog_id: str) -> int:

@@ -546,6 +546,26 @@ def init_db():
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_treat_ledger_dog_date ON treat_ledger(dog_id, local_date)")
 
+        # Mission drafts proposed by assistants / the voice agent, approved in the app
+        # (amendment 2026-11-06, item 5).
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mission_drafts (
+                draft_id    TEXT PRIMARY KEY,
+                dog_id      TEXT NOT NULL,
+                user_id     TEXT,
+                actor       TEXT NOT NULL,
+                draft       TEXT NOT NULL,
+                warnings    TEXT,
+                note        TEXT,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                mission_id  TEXT,
+                created_at  TEXT NOT NULL,
+                decided_at  TEXT,
+                decided_by  TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_mission_drafts_dog ON mission_drafts(dog_id, status, created_at DESC)")
+
         conn.commit()
 
 
@@ -3085,6 +3105,68 @@ def get_event(event_id: str) -> Optional[dict]:
     with db_connection() as conn:
         row = conn.execute("SELECT * FROM events WHERE event_id = ?", (event_id,)).fetchone()
     return _row_to_event(row) if row else None
+
+
+# ---- mission_drafts ----
+
+def _row_to_draft(row) -> dict:
+    return {
+        "draft_id": row["draft_id"], "dog_id": row["dog_id"], "user_id": row["user_id"], "actor": row["actor"],
+        "draft": json.loads(row["draft"]), "warnings": json.loads(row["warnings"]) if row["warnings"] else [],
+        "note": row["note"], "status": row["status"], "mission_id": row["mission_id"],
+        "created_at": row["created_at"], "decided_at": row["decided_at"], "decided_by": row["decided_by"],
+    }
+
+
+def insert_mission_draft(draft_id: str, dog_id: str, user_id: Optional[str], actor: str, draft: dict,
+                         warnings: list[str], note: str) -> dict:
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO mission_drafts (draft_id, dog_id, user_id, actor, draft, warnings, note, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+            (draft_id, dog_id, user_id, actor, json.dumps(draft), json.dumps(warnings), note,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM mission_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+    return _row_to_draft(row)
+
+
+def get_mission_draft(draft_id: str) -> Optional[dict]:
+    with db_connection() as conn:
+        row = conn.execute("SELECT * FROM mission_drafts WHERE draft_id = ?", (draft_id,)).fetchone()
+    return _row_to_draft(row) if row else None
+
+
+def list_mission_drafts(dog_id: str, status: Optional[str] = None, limit: int = 50) -> list[dict]:
+    with db_connection() as conn:
+        if status and status != "all":
+            rows = conn.execute(
+                "SELECT * FROM mission_drafts WHERE dog_id = ? AND status = ? ORDER BY created_at DESC LIMIT ?",
+                (dog_id, status, int(limit))).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM mission_drafts WHERE dog_id = ? ORDER BY created_at DESC LIMIT ?",
+                (dog_id, int(limit))).fetchall()
+    return [_row_to_draft(r) for r in rows]
+
+
+def decide_mission_draft(draft_id: str, status: str, decided_by: str, mission_id: Optional[str] = None) -> bool:
+    with db_connection() as conn:
+        cur = conn.execute(
+            "UPDATE mission_drafts SET status = ?, decided_at = ?, decided_by = ?, mission_id = COALESCE(?, mission_id) "
+            "WHERE draft_id = ? AND status = 'pending'",
+            (status, datetime.now(timezone.utc).isoformat(), decided_by, mission_id, draft_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_mission_drafts_for_dog(dog_id: str) -> int:
+    with db_connection() as conn:
+        cur = conn.execute("DELETE FROM mission_drafts WHERE dog_id = ?", (dog_id,))
+        conn.commit()
+        return cur.rowcount
 
 # Initialize database on module import
 init_db()

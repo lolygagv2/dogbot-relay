@@ -543,7 +543,7 @@ class SgSensitivity(BaseModel):
 
 
 class MusicOnDeparture(BaseModel):
-    track: str = "calm_01"
+    track: str = "song_calm_01"
     delay_s: int = Field(default=60, ge=0, le=3600)
     duration_min: int = Field(default=30, ge=1, le=480)
 
@@ -625,6 +625,7 @@ class Missions(BaseModel):
 
 class SoundDef(BaseModel):
     id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    kind: Literal["sound", "song"] = "sound"   # songs are sounds too (amendment 2026-11-06)
     label: str = Field(default="", max_length=120)
     builtin: bool = True
     file: str = Field(..., max_length=160)
@@ -645,10 +646,28 @@ class SettingPut(BaseModel):
 class CommandRequest(BaseModel):
     command: Literal[
         "dispense_treat", "set_mode", "play_sound", "start_mission", "go_to",
-        "take_photo", "standby", "run_trick",
+        "take_photo", "standby", "run_trick", "play_tts",  # play_tts: voice agent only (allowlist)
     ]
     data: dict = Field(default_factory=dict)
     device_id: Optional[str] = None
+    # Wait up to N seconds for the robot's command_result (amendment 2026-11-06).
+    wait_s: Optional[float] = Field(default=None, ge=0, le=90)
+
+
+class MissionDraftCreate(BaseModel):
+    draft: MissionDef
+    warnings: list[str] = Field(default_factory=list)
+    note: str = Field(default="", max_length=240)
+
+
+class MissionDraftDecision(BaseModel):
+    decision: Literal["approve", "decline"]
+
+
+class AgentTranscriptIn(BaseModel):
+    role: Literal["user", "agent"]
+    text: str = Field(..., max_length=2000)
+    ts: Optional[str] = None
 
 
 # ============== Replayer ==============

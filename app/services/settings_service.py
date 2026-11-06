@@ -55,10 +55,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 BUILTIN_SOUNDS = [
-    {"id": "chime", "label": "Calm chime", "builtin": True, "file": "chime.wav"},
-    {"id": "whistle", "label": "Recall whistle", "builtin": True, "file": "whistle.wav"},
-    {"id": "shush", "label": "Soft shush", "builtin": True, "file": "shush.wav"},
-    {"id": "good_dog", "label": "Good dog", "builtin": True, "file": "good_dog.wav"},
+    {"id": "chime", "kind": "sound", "label": "Calm chime", "builtin": True, "file": "chime.wav"},
+    {"id": "whistle", "kind": "sound", "label": "Recall whistle", "builtin": True, "file": "whistle.wav"},
+    {"id": "shush", "kind": "sound", "label": "Soft shush", "builtin": True, "file": "shush.wav"},
+    {"id": "good_dog", "kind": "sound", "label": "Good dog", "builtin": True, "file": "good_dog.wav"},
+    # songs are sounds with kind=song; music_plan.track references these ids
+    {"id": "song_calm_01", "kind": "song", "label": "Calm piano", "builtin": True, "file": "song_calm_01.mp3"},
+    {"id": "song_calm_02", "kind": "song", "label": "Soft rain", "builtin": True, "file": "song_calm_02.mp3"},
 ]
 
 DEFAULT_NOTIFY_RULES = {
@@ -290,6 +293,14 @@ async def put_setting(dog_id: str, key: str, value: Any, actor: Actor,
         raise HTTPException(status_code=409, detail={"code": "version_mismatch", "current_version": current["version"]})
     insert_settings_audit(dog_id, key, actor.label, "put", current["value"], new_value, None)
     await push_settings_to_robot(dog_id, key, row)
+    if key == "missions":
+        # amendment 2026-11-06 (3): a new/changed departure mission starts within 15 min
+        # even if no departure event arrives
+        try:
+            from app.services import notify_service
+            notify_service.arm_departure_fallbacks(dog_id, current["value"], new_value, actor.user_id)
+        except Exception as e:  # pragma: no cover
+            logger.warning(f"[SETTINGS] arming departure fallbacks failed: {e}")
     return row
 
 

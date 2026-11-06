@@ -35,6 +35,7 @@ from app.database import (
     delete_daily_summaries,
     delete_events_by_ids,
     delete_events_by_source,
+    delete_mission_drafts_for_dog,
     delete_notify_log_by_event_ids,
     delete_notify_log_for_dog,
     delete_treat_ledger_for_dog,
@@ -278,6 +279,7 @@ class Replayer:
             delete_notify_log_for_dog(self.dog_id)
             delete_treat_ledger_for_dog(self.dog_id)
             delete_daily_summaries(self.dog_id)
+            delete_mission_drafts_for_dog(self.dog_id)
             await self._send_apps({"type": "replay_reset", "dog_id": self.dog_id})
             logger.info(f"[REPLAY] reset: removed {len(ids)} events for {self.dog_id}")
         self.status = "idle"

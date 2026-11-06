@@ -88,7 +88,11 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
             out = ("play_sound", {"url": url, "clip_id": str(data.get("clip_id") or "")[:64], "kind": "tts",
                                   "source": source})
         case "play_music":
-            out = ("play_music", {"track": str(data.get("track") or "")[:64],
+            track = str(data.get("track") or "")[:64]
+            sounds = Sounds.model_validate(settings_service.get_value(dog_id, "sounds"))
+            song = next((s for s in sounds.sounds if s.id == track), None)
+            out = ("play_music", {"track": track, "file": song.file if song else None,
+                                  "url": (song.url or settings_service.sound_url(dog_id, song.id)) if song else None,
                                   "duration_min": int(data.get("duration_min") or 30),
                                   "volume": int(data.get("volume") or 40), "trigger": data.get("trigger"),
                                   "source": source})
@@ -153,8 +157,14 @@ def _pick_device(owner: Optional[str], requested: Optional[str]) -> tuple[Option
 
 
 async def dispatch(dog_id: str, command: str, data: dict, actor: Actor,
-                   device_id: Optional[str] = None, allow_relay: bool = False) -> dict:
-    """Guard, build and deliver one robot command. Returns the 202 body."""
+                   device_id: Optional[str] = None, allow_relay: bool = False,
+                   wait_s: Optional[float] = None) -> dict:
+    """Guard, build and deliver one robot command. Returns the 202 body.
+
+    With `wait_s`, waits for the robot's `command_result` (amendment 2026-11-06) and adds
+    `result` (or `timed_out: true`)."""
+    from app.services import command_results
+
     if actor.kind == "relay" and not allow_relay:
         raise HTTPException(status_code=403, detail={"code": "command_not_allowed"})
     message, guard = build_robot_message(command, data, actor, dog_id)
@@ -179,9 +189,18 @@ async def dispatch(dog_id: str, command: str, data: dict, actor: Actor,
 
     from app.connection_manager import get_connection_manager
     message["device_id"] = target
+    command_results.register(message["command_id"], dog_id=dog_id, device_id=target, command=message["command"])
     delivered = await get_connection_manager().send_to_robot(target, message)
     if not delivered:
         raise HTTPException(status_code=409, detail={"code": "robot_offline", "device_id": target})
     logger.info(f"[CONTROL] {actor.label} -> {target}: {message['command']} ({message['command_id']})")
-    return {"command_id": message["command_id"], "device_id": target, "command_sent": message["command"],
-            "delivered": True, "simulated": False, "guard": guard}
+    out = {"command_id": message["command_id"], "device_id": target, "command_sent": message["command"],
+           "delivered": True, "simulated": False, "guard": guard}
+    if wait_s:
+        res = await command_results.wait(message["command_id"], float(wait_s))
+        if res is None:
+            out["timed_out"] = True
+            out["result"] = None
+        else:
+            out["result"] = {k: res.get(k) for k in ("ok", "result", "error", "timestamp")}
+    return out

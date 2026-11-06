@@ -12,8 +12,6 @@ whitelisted to scalar fields.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -221,7 +219,8 @@ def register_tools(mcp: MCPServer) -> None:
             return e.as_result(_status=e.status)
         last = st.get("last_status") or {}
         return {"dog_id": dog_id, "online": st.get("robot_online"), "mode": st.get("mode"),
-                "battery_pct": st.get("battery"), "treats_remaining_in_hopper": last.get("treats_remaining"),
+                "battery_pct": st.get("battery"), "docked": last.get("docked"), "light_level": last.get("light_level"),
+                "treats_remaining_in_hopper": last.get("treats_remaining"),
                 "treats_today": st.get("treats_today"), "treat_daily_cap": st.get("treat_cap"),
                 "quiet_hours": st.get("quiet_hours"), "timezone": st.get("timezone"),
                 "last_seen": st.get("last_status_ts"), "demo_replay_active": st.get("replay_active")}
@@ -305,19 +304,17 @@ def register_tools(mcp: MCPServer) -> None:
             "reward_treats": reward_treats,
             "goal": (goal or "")[:240],
         }
-        canonical = json.dumps({k: v for k, v in draft.items() if k != "id"}, sort_keys=True)
-        draft["draft_hash"] = hashlib.sha256((dog_id + canonical).encode()).hexdigest()[:16]
         return draft, warnings
 
-    @mcp.tool(name="draft_mission", annotations=READ)
+    @mcp.tool(name="draft_mission", annotations=CONTROL)
     @audited("draft_mission")
     async def draft_mission(dog_id: str, goal: str, type: str, times: Optional[list[str]] = None,
                             days: Optional[list[str]] = None, trigger: str = "schedule",
                             duration_s: int = 120, reward_treats: int = 1, name: Optional[str] = None) -> dict:
-        """Draft (but do not save) a training mission for review. type: recall, sit_stay, down_stay,
-        place, quiet, find_treat, sit, down, stay, spin. trigger: schedule (needs times ["HH:MM"]),
-        departure (runs after the owner leaves) or manual. Returns a normalised draft with warnings;
-        pass the draft object unchanged to schedule_mission to save it."""
+        """Propose a training mission. It is saved as a PENDING draft and shown to the owner in the
+        WIM-Z app, who approves or declines it there; nothing runs until approved. type: recall,
+        sit_stay, down_stay, place, quiet, find_treat, sit, down, stay, spin. trigger: schedule
+        (needs times ["HH:MM"]), departure (runs after the owner leaves) or manual. Returns draft_id."""
         client, user_id = _client("draft_mission")
         _check_dog(user_id, dog_id)
         draft, warnings = _normalise_draft(dog_id, goal, type, times or [], days or [], trigger,
@@ -325,39 +322,38 @@ def register_tools(mcp: MCPServer) -> None:
         try:
             existing = ((await client.get_setting(dog_id, "missions")).get("value") or {}).get("missions", [])
             cap = ((await client.get_setting(dog_id, "treat_schedule")).get("value") or {}).get("daily_cap")
+            for m in existing:
+                if m.get("trigger", {}).get("kind") == "schedule" and draft["trigger"]["kind"] == "schedule" \
+                        and m["trigger"].get("time") == draft["trigger"]["time"]:
+                    warnings.append(f"Another mission ({m.get('name') or m['id']}) already runs at {draft['trigger']['time']}.")
+            if cap is not None and draft["reward_treats"] and len(existing) * draft["reward_treats"] >= cap:
+                warnings.append(f"Mission rewards may hit the daily treat cap ({cap}).")
+            row = await client.create_draft(dog_id, draft, warnings)
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
-        for m in existing:
-            if m.get("trigger", {}).get("kind") == "schedule" and draft["trigger"]["kind"] == "schedule" \
-                    and m["trigger"].get("time") == draft["trigger"]["time"]:
-                warnings.append(f"Another mission ({m.get('name') or m['id']}) already runs at {draft['trigger']['time']}.")
-        if cap is not None and draft["reward_treats"] and len(existing) * draft["reward_treats"] >= cap:
-            warnings.append(f"Mission rewards may hit the daily treat cap ({cap}).")
-        return {"draft": draft, "warnings": warnings, "ready_to_schedule": True}
+        return {"ok": True, "draft_id": row["draft_id"], "status": row["status"], "draft": row["draft"],
+                "warnings": warnings,
+                "message": "Sent to the owner's WIM-Z app for approval. Call schedule_mission with this draft_id to check."}
 
     @mcp.tool(name="schedule_mission", annotations=CONTROL)
     @audited("schedule_mission")
-    async def schedule_mission(dog_id: str, draft: dict) -> dict:
-        """Save a mission previously returned by draft_mission (pass the draft object unchanged)."""
+    async def schedule_mission(dog_id: str, draft_id: str) -> dict:
+        """Confirm a drafted mission. Only a draft the owner has APPROVED in the WIM-Z app can be
+        scheduled (approval itself schedules it). Pending drafts return refused=true with
+        reason awaiting_owner_approval; declined drafts cannot be scheduled."""
         client, user_id = _client("schedule_mission")
         _check_dog(user_id, dog_id)
-        if not isinstance(draft, dict) or "draft_hash" not in draft:
-            raise ToolError("Pass the exact draft object returned by draft_mission.")
-        check, _ = _normalise_draft(dog_id, draft.get("goal", ""), draft.get("type", ""),
-                                    [draft.get("trigger", {}).get("time")] if draft.get("trigger", {}).get("time") else [],
-                                    draft.get("trigger", {}).get("days") or [], draft.get("trigger", {}).get("kind", "schedule"),
-                                    draft.get("duration_s", 120), draft.get("reward_treats", 1), draft.get("name"))
-        if check["draft_hash"] != draft["draft_hash"]:
-            raise ToolError("The draft was modified after drafting; call draft_mission again.")
-        mission = {k: v for k, v in draft.items() if k != "draft_hash"}
         try:
-            setting = await client.get_setting(dog_id, "missions")
-            value = setting.get("value") or {"missions": []}
-            value["missions"] = [m for m in value.get("missions", []) if m.get("id") != mission["id"]] + [mission]
-            row = await client.put_setting(dog_id, "missions", value, expected_version=setting.get("version"))
+            d = await client.get_draft(dog_id, draft_id)
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
-        return {"ok": True, "mission_id": mission["id"], "trigger": mission["trigger"], "version": row["version"]}
+        if d["status"] == "approved":
+            return {"ok": True, "scheduled": True, "mission_id": d.get("mission_id"), "draft_id": draft_id,
+                    "trigger": (d.get("draft") or {}).get("trigger")}
+        if d["status"] == "pending":
+            return {"ok": False, "refused": True, "reason": "awaiting_owner_approval", "draft_id": draft_id,
+                    "hint": "The owner approves mission drafts in the WIM-Z app."}
+        return {"ok": False, "refused": True, "reason": f"draft_{d['status']}", "draft_id": draft_id}
 
     @mcp.tool(name="give_treat", annotations=CONTROL)
     @audited("give_treat")

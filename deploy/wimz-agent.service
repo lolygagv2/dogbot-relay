@@ -1,0 +1,18 @@
+[Unit]
+Description=WIM-Z voice agent (STT -> Claude -> TTS)
+After=network-online.target wimz-relay.service
+Wants=network-online.target
+
+[Service]
+# Match the user, WorkingDirectory and venv path used by wimz-relay.service.
+User=ubuntu
+WorkingDirectory=/home/ubuntu/wimzrelay
+ExecStart=/home/ubuntu/wimzrelay/venv/bin/python run_agent.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

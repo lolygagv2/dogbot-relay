@@ -134,6 +134,14 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
             return None, "status requires data.battery"
         if not data.get("mode"):
             return None, "status requires data.mode"
+        # amendment 2026-11-06 (6): docked (bool) and light_level (0-255) ride along; never rolled up
+        if "docked" in data:
+            data["docked"] = bool(data["docked"])
+        if "light_level" in data:
+            try:
+                data["light_level"] = max(0, min(255, int(data["light_level"])))
+            except (TypeError, ValueError):
+                data.pop("light_level", None)
 
     return {
         "event_id": event_id,

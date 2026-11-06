@@ -113,7 +113,8 @@ async def reset_sounds(dog_id: str, actor: Actor = Depends(resolve_actor)):
 
 @router.post("/api/dogs/{dog_id}/sounds/{sound_id}")
 async def replace_sound(dog_id: str, sound_id: str, file: UploadFile = File(...),
-                        label: str = Query(default=""), actor: Actor = Depends(resolve_actor)):
+                        label: str = Query(default=""), kind: str = Query(default="sound", pattern="^(sound|song)$"),
+                        actor: Actor = Depends(resolve_actor)):
     if actor.kind not in ("app", "admin"):
         raise HTTPException(status_code=403, detail={"code": "app_only", "reason": "sound upload is an owner action"})
     check_dog_access(actor, dog_id, write=True)
@@ -135,12 +136,12 @@ async def replace_sound(dog_id: str, sound_id: str, file: UploadFile = File(...)
     url = settings_service.sound_url(dog_id, sound_id)
     entry = next((s for s in sounds.sounds if s.id == sound_id), None)
     if entry:
-        entry.builtin, entry.file, entry.url = False, f"{sound_id}{ext}", url
+        entry.builtin, entry.file, entry.url, entry.kind = False, f"{sound_id}{ext}", url, kind
         if label:
             entry.label = label
     else:
         sounds.sounds.append(SoundDef(
-            id=sound_id, label=label or sound_id, builtin=False, file=f"{sound_id}{ext}", url=url))
+            id=sound_id, kind=kind, label=label or sound_id, builtin=False, file=f"{sound_id}{ext}", url=url))
     row = await settings_service.put_setting(dog_id, "sounds", sounds.model_dump(), actor)
 
     # robot prefetch hint (like voice_command_updated)

@@ -1051,6 +1051,31 @@ async def websocket_device_endpoint(
                 continue
 
             # Phase 3 / A3 — Activity event ingest (persist + forward to user's apps)
+            # Robot reply to a relay-issued command (amendment 2026-11-06): resolve the
+            # awaitable, forward to the owner's apps.
+            if msg_type == "command_result":
+                from app.services import command_results
+                cid = str(message.get("command_id") or "")
+                if not cid:
+                    logger.warning(f"[CMD-RESULT] {device_id}: missing command_id")
+                    continue
+                meta = command_results.resolve(cid, message) or {}
+                owner_id = manager.get_device_owner(device_id)
+                logger.info(f"[CMD-RESULT] {device_id}: {meta.get('command') or '?'} {cid} ok={message.get('ok')}")
+                if owner_id:
+                    await manager.send_to_user_apps(owner_id, {
+                        "type": "command_result",
+                        "command_id": cid,
+                        "command": meta.get("command"),
+                        "dog_id": meta.get("dog_id") or message.get("dog_id"),
+                        "device_id": device_id,
+                        "ok": bool(message.get("ok", True)),
+                        "result": message.get("result"),
+                        "error": message.get("error"),
+                        "timestamp": message.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                    })
+                continue
+
             if msg_type == "activity_event":
                 owner_id = manager.get_device_owner(device_id)
                 if not owner_id:

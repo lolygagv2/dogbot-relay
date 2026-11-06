@@ -349,3 +349,70 @@ def sweep(audit_days: int = 180) -> dict:
         ).rowcount
         conn.commit()
     return {"codes": a, "sessions": b, "tokens": c, "audit": d, "clients": e}
+
+
+# ---- per-user views for the app's AI connectors screen (amendment 2026-11-06) ----
+
+def list_connectors_for_user(user_id: str) -> list[dict]:
+    """Clients that hold (or held) tokens for this user, with current scopes and last use."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            """SELECT c.client_id, c.client_name, c.created_at AS connected_at, c.last_used_at,
+                      MAX(CASE WHEN t.revoked_at IS NULL AND t.expires_at > ? THEN 1 ELSE 0 END) AS has_active,
+                      SUM(CASE WHEN t.revoked_at IS NULL AND t.expires_at > ? THEN 1 ELSE 0 END) AS active_tokens,
+                      (SELECT scopes FROM oauth_tokens t2 WHERE t2.client_id = c.client_id AND t2.user_id = t.user_id
+                         ORDER BY t2.created_at DESC LIMIT 1) AS scopes,
+                      MIN(t.created_at) AS first_token_at
+               FROM oauth_tokens t JOIN oauth_clients c ON c.client_id = t.client_id
+               WHERE t.user_id = ?
+               GROUP BY c.client_id""",
+            (time.time(), time.time(), user_id),
+        ).fetchall()
+    out = []
+    for r in rows:
+        if not r["has_active"]:
+            continue
+        out.append({
+            "client_id": r["client_id"], "client_name": r["client_name"],
+            "scopes": (r["scopes"] or "").split(), "connected_at": r["first_token_at"] or r["connected_at"],
+            "last_used_at": r["last_used_at"], "active_tokens": int(r["active_tokens"] or 0),
+        })
+    return out
+
+
+def revoke_client_for_user(client_id: str, user_id: str) -> int:
+    with db_connection() as conn:
+        cur = conn.execute(
+            "UPDATE oauth_tokens SET revoked_at = ? WHERE client_id = ? AND user_id = ? AND revoked_at IS NULL",
+            (time.time(), client_id, user_id))
+        conn.commit()
+        return cur.rowcount
+
+
+def revoke_all_for_user(user_id: str) -> int:
+    with db_connection() as conn:
+        cur = conn.execute("UPDATE oauth_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+                           (time.time(), user_id))
+        conn.commit()
+        return cur.rowcount
+
+
+def list_audit_for_user(user_id: str, dog_id: Optional[str] = None, limit: int = 50) -> list[dict]:
+    with db_connection() as conn:
+        if dog_id:
+            rows = conn.execute(
+                "SELECT * FROM mcp_audit WHERE user_id = ? AND (dog_id = ? OR dog_id IS NULL) ORDER BY id DESC LIMIT ?",
+                (user_id, dog_id, int(limit))).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM mcp_audit WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                                (user_id, int(limit))).fetchall()
+    out = []
+    for r in rows:
+        try:
+            inp = json.loads(r["input_json"]) if r["input_json"] else None
+        except ValueError:
+            inp = None
+        out.append({"id": r["id"], "ts": r["ts"], "actor": r["actor"], "client_name": r["client_name"],
+                    "tool": r["tool"], "dog_id": r["dog_id"], "outcome": r["outcome"], "input": inp,
+                    "result_summary": r["result_summary"], "duration_ms": r["duration_ms"]})
+    return out

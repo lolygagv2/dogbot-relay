@@ -62,6 +62,9 @@ class RelayClient:
                 resp = await client.request(method, self.base + path, json=json, params=params, headers=self.headers)
         except httpx.HTTPError as e:
             raise RelayError(f"relay unreachable: {e}") from e
+        return self._handle(resp)
+
+    def _handle(self, resp: httpx.Response) -> Any:
         if resp.status_code in (200, 201, 202):
             return resp.json() if resp.content else {}
         try:
@@ -111,8 +114,29 @@ class RelayClient:
         return await self.request("POST", f"/api/dogs/{dog_id}/settings/{key}/reset")
 
     async def command(self, dog_id: str, command: str, data: Optional[dict] = None,
-                      device_id: Optional[str] = None) -> dict:
+                      device_id: Optional[str] = None, wait_s: Optional[float] = None) -> dict:
         body: dict[str, Any] = {"command": command, "data": data or {}}
         if device_id:
             body["device_id"] = device_id
-        return await self.request("POST", f"/api/dogs/{dog_id}/command", json=body)
+        if wait_s:
+            body["wait_s"] = wait_s
+        timeout = self.timeout + (wait_s or 0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(self.base + f"/api/dogs/{dog_id}/command", json=body, headers=self.headers)
+        except httpx.HTTPError as e:
+            raise RelayError(f"relay unreachable: {e}") from e
+        return self._handle(resp)
+
+    async def create_draft(self, dog_id: str, draft: dict, warnings: Optional[list[str]] = None, note: str = "") -> dict:
+        return await self.request("POST", f"/api/dogs/{dog_id}/missions/drafts",
+                                  json={"draft": draft, "warnings": warnings or [], "note": note})
+
+    async def get_draft(self, dog_id: str, draft_id: str) -> dict:
+        return await self.request("GET", f"/api/dogs/{dog_id}/missions/drafts/{draft_id}")
+
+    async def transcript(self, dog_id: str, role: str, text: str) -> None:
+        try:
+            await self.request("POST", f"/api/dogs/{dog_id}/agent/transcript", json={"role": role, "text": text[:2000]})
+        except (RelayRefusal, RelayError) as e:
+            logger.debug(f"[RELAY] transcript not forwarded: {e}")

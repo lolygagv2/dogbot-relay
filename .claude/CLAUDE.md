@@ -99,6 +99,21 @@ CLOUDFLARE_TURN_API_TOKEN=your_turn_api_token
 | POST /api/turn/credentials | Generate TURN credentials |
 | WS /ws/app | Mobile app WebSocket (JWT auth) |
 | WS /ws/device | Robot WebSocket (signature auth) |
+| POST /events | Robot (HMAC) typed event ingest → `events` table (Dec 9 build) |
+| GET /summary/{dog}/{date} | Daily roll-up per dog (today / yesterday / YYYY-MM-DD) |
+| GET /api/dogs/{dog}/events, /status | Raw events; latest robot status + treat/quiet-hours context |
+| GET/PUT /api/dogs/{dog}/settings/{key} | Shared settings with guards (app, connector, agent, robot read) |
+| POST /api/dogs/{dog}/command | Allowlisted robot control (+ `wait_s` for command_result) |
+| /api/dogs/{dog}/missions/drafts | Assistant-proposed missions, owner approves in app |
+| /api/dogs/{dog}/ai/* | Connector list / revoke / audit for the app |
+| /admin/replay/* | Demo replayer (admin JWT) |
+| :8001 /mcp + OAuth routes | MCP server process (`run_mcp.py`, app/mcp_server/) |
+| :8002 /agent/* | Voice agent process (`run_agent.py`, app/voice_agent/) |
+
+Dec 9 demo build (2026-11-06): three processes share `data/wimz.db`; internal callers use
+`INTERNAL_API_TOKEN` + `X-Actor` + `X-On-Behalf-Of`; see `deploy/README.md`, the briefs
+`.claude/ROBOT_BRIEF_FROM_RELAY_2026-11-06.md` / `APP_BRIEF_FROM_RELAY_2026-11-06.md`, and
+`tests/` (`venv/bin/pytest tests/`).
 
 ## Testing
 
