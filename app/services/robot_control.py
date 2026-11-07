@@ -36,7 +36,8 @@ ACTOR_ALLOWED: dict[str, set[str]] = {
     # server) — never with HUD, max one per 30 s per assistant. (Quiet hours no longer apply:
     # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
     "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "standby", "run_trick", "take_photo"},
-    "relay":     {"start_mission", "play_music"},
+    # play_tts for "relay" = speak(): the URL is always a relay-made WIM-Z voice clip.
+    "relay":     {"start_mission", "play_music", "play_tts"},
 }
 
 PHOTO_MIN_INTERVAL_S = 30.0
@@ -224,3 +225,49 @@ async def dispatch(dog_id: str, command: str, data: dict, actor: Actor,
         else:
             out["result"] = {k: res.get(k) for k in ("ok", "result", "error", "timestamp")}
     return out
+
+
+# ---------------------------------------------------------------------------
+# speak (2026-11-07): an assistant makes the robot say a short line in the WIM-Z voice
+# ---------------------------------------------------------------------------
+
+SPEAK_MAX_CHARS = 280
+SPEAK_PER_MINUTE = 6
+SPEAK_ACTORS = {"connector", "agent"}
+_speak_log: dict[str, list[float]] = {}   # actor label -> monotonic times of accepted speaks (last 60 s)
+
+
+async def speak(dog_id: str, text: str, actor: Actor) -> dict:
+    """Guard, synthesize with the WIM-Z ElevenLabs voice (the only voice; callers can't pick one),
+    and send play_sound{url, kind: "tts"} to one of the owner's robots.
+
+    Refusals: 403 speak_not_allowed (caller kind), 422 speak_text_invalid (empty / > 280 chars),
+    403 speak_quiet_hours, 429 speak_rate (6 per minute per assistant)."""
+    from app.voice_agent import tts
+
+    if actor.kind not in SPEAK_ACTORS:
+        raise HTTPException(status_code=403, detail={"code": "speak_not_allowed", "actor": actor.kind})
+    text = " ".join((text or "").split())
+    if not text or len(text) > SPEAK_MAX_CHARS:
+        raise HTTPException(status_code=422, detail={"code": "speak_text_invalid", "max_chars": SPEAK_MAX_CHARS,
+                                                     "chars": len(text)})
+    if settings_service.in_quiet_hours(dog_id):
+        raise HTTPException(status_code=403, detail={"code": "guard_denied", "guard": "speak_quiet_hours",
+                                                     "reason": "the robot does not speak for assistants during quiet hours"})
+    now = time.monotonic()
+    recent = [t for t in _speak_log.get(actor.label, []) if now - t < 60.0]
+    if len(recent) >= SPEAK_PER_MINUTE:
+        raise HTTPException(status_code=429, detail={"code": "speak_rate", "per_minute": SPEAK_PER_MINUTE,
+                                                     "retry_after_s": int(60 - (now - recent[0])) + 1})
+    try:
+        clip_id, url = await tts.synthesize(text)
+    except tts.TTSError as e:
+        raise HTTPException(status_code=503, detail={"code": "speak_tts_failed", "reason": str(e)[:160]})
+    relay = Actor(kind="relay", id=f"speak:{actor.label}", user_id=actor.user_id)
+    res = await dispatch(dog_id, "play_tts", {"url": url, "clip_id": clip_id}, relay, allow_relay=True)
+    recent.append(now)
+    _speak_log[actor.label] = recent
+    logger.info(f"[SPEAK] {actor.label} -> {dog_id}: {len(text)} chars, clip {clip_id}, delivered={res.get('delivered')}")
+    return {"ok": True, "command_id": res["command_id"], "device_id": res["device_id"], "clip_id": clip_id,
+            "chars": len(text), "delivered": res["delivered"], "simulated": res["simulated"],
+            "speaks_left_this_minute": SPEAK_PER_MINUTE - len(recent)}

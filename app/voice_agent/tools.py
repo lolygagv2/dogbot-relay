@@ -21,7 +21,7 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 
 logger = logging.getLogger(__name__)
 
-PHYSICAL_TOOLS = {"give_treat", "go_to", "take_photo", "run_trick", "standby"}
+PHYSICAL_TOOLS = {"give_treat", "go_to", "take_photo", "run_trick", "standby", "speak"}
 MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
 GO_TO_TARGETS = ["dock", "bed", "kitchen", "door", "crate", "living_room", "owner"]
 TRICKS = ["sit", "down", "stay", "spin", "place", "paw", "speak"]
@@ -89,6 +89,9 @@ TOOLS: list[dict] = [
     {"name": "run_trick", "description": "Ask the robot to cue a trick.",
      "input_schema": _schema({"dog_id": _str("dog id"), "trick": _str("trick", TRICKS)}, ["dog_id", "trick"]),
      "strict": True},
+    {"name": "speak", "description": "Make the robot say a short line out loud through its speaker, in the WIM-Z voice (at most 280 characters). Refused during quiet hours; at most 6 per minute.",
+     "input_schema": _schema({"dog_id": _str("dog id"), "text": _str("what the robot should say, <= 280 characters")},
+                             ["dog_id", "text"]), "strict": True},
     {"name": "standby", "description": "Put the robot into standby (idle mode).",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
 ]
@@ -216,6 +219,10 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             res = await c.command(dog_id, "dispense_treat", {})
             g = res.get("guard") or {}
             return {"ok": True, "treats_today": g.get("treats_used"), "treat_daily_cap": g.get("treat_cap"),
+                    "simulated": res.get("simulated")}
+        if name == "speak":
+            res = await c.speak(dog_id, str(a.get("text") or ""))
+            return {"ok": True, "chars": res.get("chars"), "delivered": res.get("delivered"),
                     "simulated": res.get("simulated")}
         if name == "go_to":
             res = await c.command(dog_id, "go_to", {"target": a["target"]})

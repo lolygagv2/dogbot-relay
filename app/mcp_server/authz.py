@@ -4,7 +4,7 @@ Scope model (per-assistant tokens):
   read      summaries, events, trend, missions list, robot status (always granted)
   settings  quiet hours, music plan
   missions  draft + schedule missions
-  physical  give a treat, send the robot somewhere
+  physical  give a treat, send the robot somewhere, speak through it
 
 Scopes are enforced per tool (not at the transport) so a read-only token can still
 list and call read tools; a missing scope surfaces as an actionable ToolError.
@@ -30,7 +30,7 @@ SCOPE_LABELS = {
     "read": "Read summaries, events and robot status",
     "settings": "Change quiet hours, music and sensitivity",
     "missions": "Draft and schedule missions",
-    "physical": "Give a treat or move the robot",
+    "physical": "Give a treat, move the robot or speak through it",
     "photos": "See snapshots WIM-Z already took",
     "camera": "Ask WIM-Z to take a new snapshot (never live video)",
 }
@@ -41,7 +41,7 @@ TOOL_SCOPES = {
     "get_missions": "read", "get_robot_status": "read",
     "set_quiet_hours": "settings", "set_music": "settings",
     "draft_mission": "missions", "schedule_mission": "missions",
-    "give_treat": "physical", "go_to": "physical",
+    "give_treat": "physical", "go_to": "physical", "speak": "physical",
     "get_event_photo": "photos", "take_photo": "camera",
 }
 

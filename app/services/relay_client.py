@@ -128,6 +128,10 @@ class RelayClient:
             raise RelayError(f"relay unreachable: {e}") from e
         return self._handle(resp)
 
+    async def speak(self, dog_id: str, text: str) -> dict:
+        """Robot says `text` in the WIM-Z voice. The relay picks the voice; there is no voice parameter."""
+        return await self.request("POST", f"/api/dogs/{dog_id}/speak", json={"text": text})
+
     async def create_draft(self, dog_id: str, draft: dict, warnings: Optional[list[str]] = None, note: str = "") -> dict:
         return await self.request("POST", f"/api/dogs/{dog_id}/missions/drafts",
                                   json={"draft": draft, "warnings": warnings or [], "note": note})

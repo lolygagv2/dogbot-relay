@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status
-Control tools: set_quiet_hours, set_music, draft_mission, schedule_mission, give_treat, go_to
+Control tools: set_quiet_hours, set_music, draft_mission, schedule_mission, give_treat, go_to, speak
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
 calls the relay through RelayClient (actor `connector:<client_id>`). Relay refusals come
@@ -360,6 +360,23 @@ def register_tools(mcp: MCPServer) -> None:
             return {"ok": False, "refused": True, "reason": "awaiting_owner_approval", "draft_id": draft_id,
                     "hint": "The owner approves mission drafts in the WIM-Z app."}
         return {"ok": False, "refused": True, "reason": f"draft_{d['status']}", "draft_id": draft_id}
+
+    @mcp.tool(name="speak", annotations=CONTROL)
+    @audited("speak")
+    async def speak(dog_id: str, text: str) -> dict:
+        """Make the robot say a short line out loud, in the WIM-Z voice (the only voice it has).
+        text: up to 280 characters. Refused during quiet hours, and limited to 6 per minute."""
+        client, user_id = _client("speak")
+        _check_dog(user_id, dog_id)
+        text = (text or "").strip()
+        if not text or len(text) > 280:
+            return {"ok": False, "refused": True, "reason": "speak_text_invalid", "max_chars": 280, "chars": len(text)}
+        try:
+            res = await client.speak(dog_id, text)
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return {"ok": True, "chars": res.get("chars"), "delivered": res.get("delivered"),
+                "simulated": res.get("simulated"), "speaks_left_this_minute": res.get("speaks_left_this_minute")}
 
     @mcp.tool(name="give_treat", annotations=CONTROL)
     @audited("give_treat")
