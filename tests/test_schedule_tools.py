@@ -267,3 +267,18 @@ def test_real_robot_reply_shape():
     r = run(st.get_schedule(c, "dog_t1"))
     assert r["scheduler_enabled"] is False and "will not fire" in r["warning"]
     assert r["active"] == {"id": "m_x", "type": "coach"}
+
+
+def test_unsupported_type_reason_passed_through():
+    c = FakeRelay()
+
+    async def robot(*a, **k):
+        return {"delivered": True, "result": {"ok": True, "result": {"missions": [
+            {"id": m["id"], "enabled": True, "next_fire_at": None, "reason": "unsupported: no mission program"}
+            for m in c.missions]}}}
+    c.command = robot
+    r = run(st.schedule_mission(c, "dog_t1", "spin", "09:00"))
+    assert r["confirmed_by_robot"] and r["next_fire_at"] is None
+    assert r["robot_note"] == "unsupported: no mission program" and "will not run" in r["message"]
+    g = run(st.get_schedule(c, "dog_t1"))
+    assert g["missions"][0]["robot_note"] == "unsupported: no mission program"

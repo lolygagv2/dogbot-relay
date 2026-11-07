@@ -70,8 +70,12 @@ async def robot_schedule(client: RelayClient, dog_id: str) -> dict:
     out: dict[str, dict] = {}
     for m in raw[:100]:
         if isinstance(m, dict) and isinstance(m.get("id"), str):
-            out[m["id"][:64]] = {"enabled": bool(m.get("enabled", True)),
-                                 "next_fire_at": _str_or_none(m.get("next_fire_at"))}
+            entry = {"enabled": bool(m.get("enabled", True)), "next_fire_at": _str_or_none(m.get("next_fire_at"))}
+            # e.g. find_treat / spin: kept by the robot but next_fire_at null with a reason
+            reason = next((m[k] for k in ("reason", "unsupported_reason", "status") if _str_or_none(m.get(k))), None)
+            if reason:
+                entry["reason"] = reason[:120]
+            out[m["id"][:64]] = entry
     sched = inner.get("scheduler") if isinstance(inner.get("scheduler"), dict) else {}
     active = inner.get("active")
     extra: dict[str, Any] = {}
@@ -104,6 +108,8 @@ def _attach(summary: dict, robot: dict) -> dict:
         r = robot["missions"].get(summary["id"])
         summary["on_robot"] = r is not None
         summary["next_fire_at"] = r["next_fire_at"] if r else None
+        if r and r.get("reason"):
+            summary["robot_note"] = r["reason"]
     return summary
 
 
@@ -196,8 +202,14 @@ async def schedule_mission(client: RelayClient, dog_id: str, type: str, time: st
             out.update(confirmed_by_robot=False, robot_reason="robot_has_not_loaded_mission")
         else:
             out["next_fire_at"] = r["next_fire_at"]
-    out["message"] = (f"Scheduled on the robot; next run {out['next_fire_at']}." if out.get("next_fire_at")
-                      else f"Saved, but the robot has not confirmed it ({out.get('robot_reason') or 'no next run'}).")
+            if r.get("reason"):
+                out["robot_note"] = r["reason"]
+    if out.get("next_fire_at"):
+        out["message"] = f"Scheduled on the robot; next run {out['next_fire_at']}."
+    elif out["confirmed_by_robot"]:
+        out["message"] = f"The robot has it but will not run it ({out.get('robot_note') or 'no next run'})."
+    else:
+        out["message"] = f"Saved, but the robot has not confirmed it ({out.get('robot_reason')})."
     return out
 
 
