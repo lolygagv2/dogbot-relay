@@ -38,8 +38,8 @@ def test_listen_result():
         "labels": ["bark", "whine"], "db": 62.5, "peak_db": 81, "seconds": 10,
         "clip_url": "/api/media/download/wimz_robot_t_ab12.wav"}}})
     assert clip == "/api/media/download/wimz_robot_t_ab12.wav"
-    assert fields == {"ok": True, "command_id": "c", "labels": ["bark", "whine"], "db": 62.5, "peak_db": 81,
-                      "seconds": 10, "clip_expires_in_s": 3600}
+    assert fields == {"ok": True, "command_id": "c", "labels": [{"label": "bark"}, {"label": "whine"}], "db": 62.5,
+                      "peak_db": 81, "seconds": 10, "clip_expires_in_s": 3600}
     assert robot_control.listen_tool_result({"timed_out": True, "command_id": "c"})[0]["reason"] == "listen_timed_out"
     f, c = robot_control.listen_tool_result({"command_id": "c", "result": {"ok": False, "error": "mic_busy"}})
     assert c is None and f["ok"] is False and f["error"] == "mic_busy"
@@ -65,3 +65,15 @@ def test_listen_descriptions():
     import inspect
     from app.mcp_server import tools as mt
     assert f'"""{DESC}"""' in inspect.getsource(mt)
+
+
+def test_listen_result_robot_shape():
+    """Exact shape from wimz_robot_05 on 2026-11-07 (labels as objects, mean_db, absolute audio_url)."""
+    fields, clip = robot_control.listen_tool_result({"command_id": "c", "result": {"ok": True, "result": {
+        "seconds": 3.0, "bytes": 96044, "filepath": "/data/media/_unassigned/x.wav",
+        "labels": [{"label": "Speech", "confidence": 0.97}, {"label": "Silence", "confidence": 0.005}],
+        "mean_db": -39.8, "audio_url": "https://api.wimzai.com/api/media/download/wimz_robot_05_e1810ea8.wav"}}})
+    assert clip == "https://api.wimzai.com/api/media/download/wimz_robot_05_e1810ea8.wav"
+    assert fields == {"ok": True, "command_id": "c", "seconds": 3.0, "db": -39.8, "clip_expires_in_s": 3600,
+                      "labels": [{"label": "Speech", "confidence": 0.97}, {"label": "Silence", "confidence": 0.005}]}
+    assert "filepath" not in fields   # robot-local paths never reach the assistant

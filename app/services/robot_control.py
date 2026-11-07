@@ -78,9 +78,26 @@ def listen_tool_result(res: dict) -> tuple[dict, Optional[str]]:
     out: dict[str, Any] = {"ok": bool(r.get("ok", True)), "command_id": res.get("command_id")}
     labels = inner.get("labels")
     if isinstance(labels, list):
-        out["labels"] = [str(x)[:64] for x in labels if isinstance(x, (str, int, float))][:20]
-    for k in ("db", "peak_db", "seconds"):
-        if isinstance(inner.get(k), (int, float)) and not isinstance(inner.get(k), bool):
+        # The robot sends [{"label": "Speech", "confidence": 0.97}, ...]; plain strings are accepted too.
+        clean: list = []
+        for x in labels[:20]:
+            if isinstance(x, dict) and isinstance(x.get("label"), str):
+                item: dict[str, Any] = {"label": x["label"][:64]}
+                if isinstance(x.get("confidence"), (int, float)) and not isinstance(x.get("confidence"), bool):
+                    item["confidence"] = round(float(x["confidence"]), 3)
+                clean.append(item)
+            elif isinstance(x, str):
+                clean.append({"label": x[:64]})
+        out["labels"] = clean
+    def _num(v):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    db = _num(inner.get("db"))
+    if db is None:
+        db = _num(inner.get("mean_db"))   # the robot's field name
+    if db is not None:
+        out["db"] = db
+    for k in ("peak_db", "seconds"):
+        if _num(inner.get(k)) is not None:
             out[k] = inner[k]
     if r.get("error"):
         out["error"] = str(r["error"])[:120]
