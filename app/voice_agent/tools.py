@@ -20,6 +20,7 @@ from app.mcp_server import oauth_db
 from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, move_tool_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
+from app.services.robot_control import sg_mode_command, sg_mode_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,10 @@ TOOLS: list[dict] = [
                               "min_episode_s": {"type": "integer", "description": "1-600, or -1 to keep"},
                               "escalate_after_s": {"type": "integer", "description": "5-3600, or -1 to keep"}},
                              ["dog_id", "level", "min_episode_s", "escalate_after_s"]), "strict": True},
+    {"name": "set_silent_guardian",
+     "description": "Turn Silent Guardian (bark watch and intervention) on or off right now. on=true starts Silent Guardian mode; on=false puts the robot in standby. Missions cannot start SG mode; use this. The robot does not confirm the change, so say it was sent.",
+     "input_schema": _schema({"dog_id": _str("dog id"), "on": {"type": "boolean", "description": "true = on, false = off"}},
+                             ["dog_id", "on"]), "strict": True},
     {"name": "draft_mission",
      "description": "Propose a training mission as a draft the owner approves in the WIM-Z app (nothing runs until approved). type: recall, sit_stay, down_stay, place, quiet, find_treat, sit, down, stay, spin. trigger: schedule (needs time HH:MM), departure, or manual.",
      "input_schema": _schema({"dog_id": _str("dog id"), "type": _str("mission type", MISSION_TYPES),
@@ -227,6 +232,10 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             v = row["value"]
             return {"ok": True, "level": v["level"], "min_episode_s": v["min_episode_s"],
                     "escalate_after_s": v["escalate_after_s"]}
+        if name == "set_silent_guardian":
+            on = bool(a.get("on"))
+            res = await c.command(dog_id, "set_mode", sg_mode_command(on))
+            return sg_mode_tool_result(on, res)
         if name == "draft_mission":
             trig = a.get("trigger") or "manual"
             tm = (a.get("time") or "").strip() or None

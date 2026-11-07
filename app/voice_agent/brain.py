@@ -186,7 +186,7 @@ class Brain:
                 tool_results_data.append(res)
                 if res.get("refused"):
                     refused.append(str(res.get("reason")))
-                if tu.name in ("set_quiet_hours", "set_music", "set_sg_sensitivity", "draft_mission") and res.get("ok"):
+                if tu.name in ("set_quiet_hours", "set_music", "set_sg_sensitivity", "set_silent_guardian", "draft_mission") and res.get("ok"):
                     settings_changes.append({"tool": tu.name, "result": res})
                 blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": _tool_result_content(res)})
             messages.append({"role": "user", "content": blocks})
@@ -270,6 +270,11 @@ class Brain:
             return [str(r.get("volume"))] if r.get("volume") is not None else []
         if change["tool"] == "set_sg_sensitivity":
             return [str(r.get("level") or "")]
+        if change["tool"] == "set_silent_guardian":
+            state = "on" if r.get("silent_guardian") == "on" else "off"
+            # "turned Silent Guardian on" / "turned on Silent Guardian" / "Silent Guardian is now on"
+            return [f"Silent Guardian {state}", f"{state} Silent Guardian", f"Silent Guardian is {state}",
+                    f"Silent Guardian is now {state}", f"Silent Guardian mode {state}"]
         if change["tool"] == "draft_mission":
             return [str(r.get("type") or "").replace("_", " "), str(r.get("type") or "")]
         return []
@@ -285,6 +290,10 @@ class Brain:
         if change["tool"] == "set_sg_sensitivity":
             return (f"Silent Guardian sensitivity is now {r.get('level')}: an episode starts after "
                     f"{r.get('min_episode_s')} seconds and escalates after {r.get('escalate_after_s')} seconds.")
+        if change["tool"] == "set_silent_guardian":
+            if r.get("simulated"):
+                return f"Silent Guardian {r.get('silent_guardian')} was simulated, because no live robot is connected."
+            return f"I've told the robot to turn Silent Guardian {r.get('silent_guardian')}."
         if change["tool"] == "draft_mission":
             t = f" at {r.get('time')}" if r.get("time") else ""
             return f"I've sent a {str(r.get('type')).replace('_', ' ')} mission{t} to your app for approval."

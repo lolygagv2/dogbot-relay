@@ -66,6 +66,21 @@ def move_tool_result(action: str, res: dict) -> dict:
         out["error"] = str(r["error"])[:120]
     return out
 
+def sg_mode_command(on: bool) -> dict:
+    """set_silent_guardian: on -> silent_guardian, off -> idle. Nothing else is reachable."""
+    return {"mode": "silent_guardian" if on else "idle"}
+
+
+def sg_mode_tool_result(on: bool, res: dict) -> dict:
+    """Shape a dispatch() result for the set_silent_guardian tools. The robot does not confirm
+    mode changes, so this reports what the relay knows: sent to the robot, or simulated."""
+    out = {"ok": True, "silent_guardian": "on" if on else "off", "mode": sg_mode_command(on)["mode"],
+           "delivered": bool(res.get("delivered")), "simulated": bool(res.get("simulated")),
+           "command_id": res.get("command_id")}
+    out["message"] = ("Simulated (demo dog, no live robot)." if out["simulated"] else
+                      f"Sent to the robot: Silent Guardian {out['silent_guardian']}.")
+    return out
+
 def listen_tool_result(res: dict) -> tuple[dict, Optional[str]]:
     """Shape a dispatch() result for the listen tools: (fields, clip_url or None).
     fields: ok, labels (list of str), db (number), plus seconds/peak_db/clip_expires_in_s when given."""

@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status
-Control tools: set_quiet_hours, set_music, set_sg_sensitivity, draft_mission, schedule_mission, give_treat, go_to, move, speak
+Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, draft_mission, schedule_mission, give_treat, go_to, move, speak
 Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
@@ -30,6 +30,7 @@ from app.mcp_server.authz import audited, require_scope
 from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
+from app.services.robot_control import sg_mode_command, sg_mode_tool_result
 
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
@@ -311,6 +312,21 @@ def register_tools(mcp: MCPServer) -> None:
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return {"ok": True, "sg_sensitivity": row["value"], "version": row["version"]}
+
+    @mcp.tool(name="set_silent_guardian", annotations=CONTROL)
+    @audited("set_silent_guardian")
+    async def set_silent_guardian(dog_id: str, on: bool) -> dict:
+        """Turn Silent Guardian (bark watch and intervention) on or off right now. on=true puts the
+        robot into Silent Guardian mode; on=false puts it in standby (idle). This is the way to run
+        SG now. Missions cannot start SG mode. The robot does not confirm the change, so report it as
+        sent, and use get_robot_status to check the mode."""
+        client, user_id = _client("set_silent_guardian")
+        _check_dog(user_id, dog_id)
+        try:
+            res = await client.command(dog_id, "set_mode", sg_mode_command(bool(on)))
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return sg_mode_tool_result(bool(on), res)
 
     def _normalise_draft(dog_id: str, goal: str, type: str, times: list[str], days: list[str],
                          trigger: str, duration_s: int, reward_treats: int, name: Optional[str]) -> tuple[dict, list[str]]:
