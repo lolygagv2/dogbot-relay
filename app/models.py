@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from typing import Optional, Literal
 from datetime import datetime
 from enum import Enum
@@ -615,15 +615,27 @@ class MissionTrigger(BaseModel):
     days: Optional[list[str]] = None
 
 
+# Mode missions (2026-11-07): when one fires, the robot enters that mode for duration_s, then idle.
+MODE_MISSION_TYPES = ("silent_guardian", "coach")
+TRAINING_MAX_DURATION_S = 3600
+MODE_MAX_DURATION_S = 12 * 3600
+
+
 class MissionDef(BaseModel):
     id: str = Field(..., min_length=1, max_length=64)
     type: str = Field(..., min_length=1, max_length=64)
     name: str = Field(default="", max_length=120)
     enabled: bool = True
     trigger: MissionTrigger = Field(default_factory=MissionTrigger)
-    duration_s: int = Field(default=120, ge=10, le=3600)
+    duration_s: int = Field(default=120, ge=10, le=MODE_MAX_DURATION_S)
     reward_treats: int = Field(default=1, ge=0, le=3)
     goal: str = Field(default="", max_length=240)
+
+    @model_validator(mode="after")
+    def _training_duration_cap(self):
+        if self.type not in MODE_MISSION_TYPES and self.duration_s > TRAINING_MAX_DURATION_S:
+            raise ValueError(f"duration_s may be at most {TRAINING_MAX_DURATION_S} for a {self.type} mission")
+        return self
 
 
 class Missions(BaseModel):
@@ -660,6 +672,7 @@ class CommandRequest(BaseModel):
     command: Literal[
         "dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move",
         "take_photo", "standby", "run_trick", "listen", "play_tts",  # play_tts: voice agent only (allowlist)
+        "schedule_sync",
     ]
     data: dict = Field(default_factory=dict)
     device_id: Optional[str] = None

@@ -21,11 +21,11 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, move_tool_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import sg_mode_command, sg_mode_tool_result
+from app.services import schedule_tools
 
 logger = logging.getLogger(__name__)
 
 PHYSICAL_TOOLS = {"give_treat", "go_to", "move", "take_photo", "listen", "run_trick", "standby", "speak"}
-MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
 GO_TO_TARGETS = ["dog", "dock"]
 MOVE_ACTIONS = list(MOVE_SPEC)
 TRICKS = ["sit", "down", "stay", "spin", "place", "paw", "speak"]
@@ -76,20 +76,24 @@ TOOLS: list[dict] = [
                               "escalate_after_s": {"type": "integer", "description": "5-3600, or -1 to keep"}},
                              ["dog_id", "level", "min_episode_s", "escalate_after_s"]), "strict": True},
     {"name": "set_silent_guardian",
-     "description": "Turn Silent Guardian (bark watch and intervention) on or off right now. on=true starts Silent Guardian mode; on=false puts the robot in standby. Missions cannot start SG mode; use this. The robot does not confirm the change, so say it was sent.",
+     "description": "Turn Silent Guardian (bark watch and intervention) on or off right now. on=true starts Silent Guardian mode; on=false puts the robot in standby. To run it at a set time use schedule_mission with type silent_guardian. The robot does not confirm the change, so say it was sent.",
      "input_schema": _schema({"dog_id": _str("dog id"), "on": {"type": "boolean", "description": "true = on, false = off"}},
                              ["dog_id", "on"]), "strict": True},
-    {"name": "draft_mission",
-     "description": "Propose a training mission as a draft the owner approves in the WIM-Z app (nothing runs until approved). type: recall, sit_stay, down_stay, place, quiet, find_treat, sit, down, stay, spin. trigger: schedule (needs time HH:MM), departure, or manual.",
-     "input_schema": _schema({"dog_id": _str("dog id"), "type": _str("mission type", MISSION_TYPES),
-                              "trigger": _str("schedule | departure | manual", ["schedule", "departure", "manual"]),
-                              "time": _str("HH:MM for schedule, else empty string"),
-                              "name": _str("short name"), "goal": _str("one-line goal")},
-                             ["dog_id", "type", "trigger", "time", "name", "goal"]),
-     "strict": True},
+    {"name": "get_schedule",
+     "description": "List scheduled missions and ask the robot what it has loaded: each has id, name, type, time (local HH:MM), days, duration_min and, when the robot confirms, next_fire_at. confirmed_by_robot false means it is the relay's copy only.",
+     "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
     {"name": "schedule_mission",
-     "description": "Check/confirm a drafted mission by draft_id. Only drafts the owner approved in the app are scheduled; pending ones are refused with awaiting_owner_approval.",
-     "input_schema": _schema({"dog_id": _str("dog id"), "draft_id": _str("draft id from draft_mission")}, ["dog_id", "draft_id"]),
+     "description": "Schedule a mission now (no approval step). type: a training mission (1-60 min) or silent_guardian / coach (the robot enters that mode at the time for duration_min, 5-720, then goes idle). time HH:MM 24h local. Only say it is on the robot when confirmed_by_robot is true; say the next run in words (e.g. 'tomorrow at 6 pm'), never the raw timestamp.",
+     "input_schema": _schema({"dog_id": _str("dog id"), "type": _str("mission type", schedule_tools.ALL_TYPES),
+                              "time": _str("HH:MM, 24h local time"),
+                              "days": {"type": "array", "items": {"type": "string", "enum": schedule_tools.DAYS},
+                                       "description": "days to run; empty array = every day"},
+                              "duration_min": {"type": "integer", "description": "minutes; -1 for the default (2 for training, 120 for a mode)"},
+                              "name": _str("short name, or empty string")},
+                             ["dog_id", "type", "time", "days", "duration_min", "name"]), "strict": True},
+    {"name": "cancel_mission",
+     "description": "Delete a scheduled mission by mission_id (from get_schedule). The robot is asked to confirm it is gone.",
+     "input_schema": _schema({"dog_id": _str("dog id"), "mission_id": _str("mission id")}, ["dog_id", "mission_id"]),
      "strict": True},
     {"name": "give_treat", "description": "Dispense one treat now (subject to the owner's daily cap).",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
@@ -236,25 +240,13 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             on = bool(a.get("on"))
             res = await c.command(dog_id, "set_mode", sg_mode_command(on))
             return sg_mode_tool_result(on, res)
-        if name == "draft_mission":
-            trig = a.get("trigger") or "manual"
-            tm = (a.get("time") or "").strip() or None
-            if trig == "schedule" and not tm:
-                return {"ok": False, "refused": True, "reason": "scheduled_mission_needs_time"}
-            mid = f"m_{a['type']}_{int(time.time()) % 10000}"
-            mission = {"id": mid, "type": a["type"], "name": (a.get("name") or a["type"])[:120], "enabled": True,
-                       "trigger": {"kind": trig, "time": tm, "delay_s": 300, "cooldown_s": 7200},
-                       "duration_s": 120, "reward_treats": 1, "goal": (a.get("goal") or "")[:240]}
-            row = await c.create_draft(dog_id, mission, [], "proposed by voice")
-            return {"ok": True, "draft_id": row["draft_id"], "status": "pending", "type": a["type"], "trigger": trig,
-                    "time": tm, "message": "sent to the owner's app for approval"}
+        if name == "get_schedule":
+            return await schedule_tools.get_schedule(c, dog_id)
         if name == "schedule_mission":
-            d = await c.get_draft(dog_id, str(a.get("draft_id") or ""))
-            if d["status"] == "approved":
-                return {"ok": True, "scheduled": True, "mission_id": d.get("mission_id")}
-            if d["status"] == "pending":
-                return {"ok": False, "refused": True, "reason": "awaiting_owner_approval"}
-            return {"ok": False, "refused": True, "reason": f"draft_{d['status']}"}
+            return await schedule_tools.schedule_mission(c, dog_id, a["type"], a["time"], a.get("days") or [],
+                                                         a.get("duration_min"), a.get("name") or None)
+        if name == "cancel_mission":
+            return await schedule_tools.cancel_mission(c, dog_id, str(a.get("mission_id") or ""))
         if name == "give_treat":
             res = await c.command(dog_id, "dispense_treat", {})
             g = res.get("guard") or {}

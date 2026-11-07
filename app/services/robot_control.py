@@ -34,13 +34,13 @@ MOVE_ACTIONS: dict[str, tuple[str, int, int, int]] = {
 
 # What each actor kind may ask for. "relay" = departure triggers (not reachable over HTTP).
 ACTOR_ALLOWED: dict[str, set[str]] = {
-    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen"},
-    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen"},
-    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen"},
+    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync"},
+    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync"},
+    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen", "schedule_sync"},
     # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
     # server) — never with HUD, max one per 0.5 s per assistant. (Quiet hours no longer apply:
     # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
-    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen"},
+    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen", "schedule_sync"},
     # play_tts for "relay" = speak(): the URL is always a relay-made WIM-Z voice clip.
     "relay":     {"start_mission", "play_music", "play_tts"},
 }
@@ -157,6 +157,9 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
                                       "multiplier": guard["multiplier"], "dog_id": dog_id})
         case "standby":
             out = ("set_mode", {"mode": "idle", "source": source, "timestamp": _iso()})
+        case "schedule_sync":
+            # The robot answers with command_result {result: {missions: [{id, enabled, next_fire_at}]}}
+            out = ("schedule_sync", {"dog_id": dog_id, "source": source})
         case "set_mode":
             mode = str(data.get("mode") or "")
             if mode not in SAFE_MODES:

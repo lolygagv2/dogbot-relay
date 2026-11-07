@@ -29,7 +29,7 @@ ALL_SCOPES = ["read", "settings", "missions", "physical", "photos", "camera", "l
 SCOPE_LABELS = {
     "read": "Read summaries, events and robot status",
     "settings": "Change quiet hours, music and Silent Guardian (on/off and sensitivity)",
-    "missions": "Draft and schedule missions",
+    "missions": "See, schedule and cancel missions (training, Silent Guardian, Coach)",
     "physical": "Give a treat, move the robot or speak through it",
     "photos": "See snapshots WIM-Z already took",
     "camera": "Ask WIM-Z to take a new snapshot (never live video)",
@@ -41,7 +41,7 @@ TOOL_SCOPES = {
     "get_dogs": "read", "get_day_summary": "read", "get_events": "read", "get_trend": "read",
     "get_missions": "read", "get_robot_status": "read",
     "set_quiet_hours": "settings", "set_music": "settings", "set_sg_sensitivity": "settings", "set_silent_guardian": "settings",
-    "draft_mission": "missions", "schedule_mission": "missions",
+    "get_schedule": "missions", "schedule_mission": "missions", "cancel_mission": "missions",
     "give_treat": "physical", "go_to": "physical", "move": "physical", "speak": "physical",
     "get_event_photo": "photos", "take_photo": "camera", "listen": "listen",
 }

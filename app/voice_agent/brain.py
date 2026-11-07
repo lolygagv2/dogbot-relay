@@ -186,7 +186,7 @@ class Brain:
                 tool_results_data.append(res)
                 if res.get("refused"):
                     refused.append(str(res.get("reason")))
-                if tu.name in ("set_quiet_hours", "set_music", "set_sg_sensitivity", "set_silent_guardian", "draft_mission") and res.get("ok"):
+                if tu.name in ("set_quiet_hours", "set_music", "set_sg_sensitivity", "set_silent_guardian", "schedule_mission", "cancel_mission") and res.get("ok"):
                     settings_changes.append({"tool": tu.name, "result": res})
                 blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": _tool_result_content(res)})
             messages.append({"role": "user", "content": blocks})
@@ -275,8 +275,14 @@ class Brain:
             # "turned Silent Guardian on" / "turned on Silent Guardian" / "Silent Guardian is now on"
             return [f"Silent Guardian {state}", f"{state} Silent Guardian", f"Silent Guardian is {state}",
                     f"Silent Guardian is now {state}", f"Silent Guardian mode {state}"]
-        if change["tool"] == "draft_mission":
-            return [str(r.get("type") or "").replace("_", " "), str(r.get("type") or "")]
+        if change["tool"] == "schedule_mission":
+            v = r.get("time") or ""
+            if not v:
+                return []
+            h = int(v[:2])
+            return [v, f"{h}:{v[3:]}", f"{h % 12 or 12}:{v[3:]}"] + ([str(h % 12 or 12)] if v[3:] == "00" else [])
+        if change["tool"] == "cancel_mission":
+            return [t for t in (r.get("name"), "cancel", "Cancel", "removed", "deleted") if t]
         return []
 
     @staticmethod
@@ -294,9 +300,15 @@ class Brain:
             if r.get("simulated"):
                 return f"Silent Guardian {r.get('silent_guardian')} was simulated, because no live robot is connected."
             return f"I've told the robot to turn Silent Guardian {r.get('silent_guardian')}."
-        if change["tool"] == "draft_mission":
-            t = f" at {r.get('time')}" if r.get("time") else ""
-            return f"I've sent a {str(r.get('type')).replace('_', ' ')} mission{t} to your app for approval."
+        if change["tool"] == "schedule_mission":
+            from app.services.schedule_tools import type_label
+            what = f"{type_label(str(r.get('type')))} at {r.get('time')} for {r.get('duration_min'):g} minutes"
+            if r.get("confirmed_by_robot") and r.get("next_fire_at"):
+                return f"{what[0].upper()}{what[1:]} is scheduled, and the robot has confirmed it."
+            return f"I've saved {what}, but the robot hasn't confirmed it yet."
+        if change["tool"] == "cancel_mission":
+            tail = "" if r.get("confirmed_by_robot") else ", but the robot hasn't confirmed yet"
+            return f"I've cancelled {r.get('name') or r.get('mission_id')}{tail}."
         return ""
 
     def _template(self, changes: list[dict], results: list[Any], refused: list[str]) -> str:

@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
-Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status
-Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, draft_mission, schedule_mission, give_treat, go_to, move, speak
+Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status, get_schedule
+Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, schedule_mission, cancel_mission, give_treat, go_to, move, speak
 Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -31,17 +30,16 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import sg_mode_command, sg_mode_tool_result
+from app.services import schedule_tools
 
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 
 EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", "arrival", "treat", "music",
                "mission_run", "status"]
-MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
 GO_TO_TARGETS = ["dog", "dock"]
 SG_LEVELS = ["low", "medium", "high"]
 MOVE_ACTIONS = list(_MOVE_SPEC)
-DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
 _HM = re.compile(r"^\d{2}:\d{2}$")
 
@@ -317,9 +315,9 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("set_silent_guardian")
     async def set_silent_guardian(dog_id: str, on: bool) -> dict:
         """Turn Silent Guardian (bark watch and intervention) on or off right now. on=true puts the
-        robot into Silent Guardian mode; on=false puts it in standby (idle). This is the way to run
-        SG now. Missions cannot start SG mode. The robot does not confirm the change, so report it as
-        sent, and use get_robot_status to check the mode."""
+        robot into Silent Guardian mode; on=false puts it in standby (idle). To run SG at a set time,
+        use schedule_mission with type silent_guardian. The robot does not confirm the change, so
+        report it as sent, and use get_robot_status to check the mode."""
         client, user_id = _client("set_silent_guardian")
         _check_dog(user_id, dog_id)
         try:
@@ -328,82 +326,42 @@ def register_tools(mcp: MCPServer) -> None:
             return e.as_result(_status=e.status)
         return sg_mode_tool_result(bool(on), res)
 
-    def _normalise_draft(dog_id: str, goal: str, type: str, times: list[str], days: list[str],
-                         trigger: str, duration_s: int, reward_treats: int, name: Optional[str]) -> tuple[dict, list[str]]:
-        warnings: list[str] = []
-        if type not in MISSION_TYPES:
-            raise ToolError(f"type must be one of: {', '.join(MISSION_TYPES)}")
-        trigger = trigger if trigger in ("schedule", "departure", "manual") else "schedule"
-        times = [t for t in (times or []) if _hm_ok(t)]
-        if trigger == "schedule" and not times:
-            raise ToolError("A scheduled mission needs at least one time (HH:MM).")
-        if len(times) > 1:
-            warnings.append("Only the first time is used for a single mission; draft one mission per time.")
-        days = [d for d in (days or []) if d in DAYS] or DAYS
-        reward_treats = max(0, min(int(reward_treats), 3))
-        duration_s = max(10, min(int(duration_s), 3600))
-        slug = re.sub(r"[^a-z0-9]+", "_", (name or type).lower()).strip("_")[:24] or type
-        draft = {
-            "id": f"m_{slug}_{secrets.token_hex(2)}",
-            "type": type,
-            "name": (name or f"{type.replace('_', ' ').title()} mission")[:120],
-            "enabled": True,
-            "trigger": {"kind": trigger, "time": times[0] if times else None, "delay_s": 300,
-                        "cooldown_s": 7200, "days": days},
-            "duration_s": duration_s,
-            "reward_treats": reward_treats,
-            "goal": (goal or "")[:240],
-        }
-        return draft, warnings
-
-    @mcp.tool(name="draft_mission", annotations=CONTROL)
-    @audited("draft_mission")
-    async def draft_mission(dog_id: str, goal: str, type: str, times: Optional[list[str]] = None,
-                            days: Optional[list[str]] = None, trigger: str = "schedule",
-                            duration_s: int = 120, reward_treats: int = 1, name: Optional[str] = None) -> dict:
-        """Propose a training mission. It is saved as a PENDING draft and shown to the owner in the
-        WIM-Z app, who approves or declines it there; nothing runs until approved. type: recall,
-        sit_stay, down_stay, place, quiet, find_treat, sit, down, stay, spin. trigger: schedule
-        (needs times ["HH:MM"]), departure (runs after the owner leaves) or manual. Returns draft_id."""
-        client, user_id = _client("draft_mission")
+    @mcp.tool(name="get_schedule", annotations=READ)
+    @audited("get_schedule")
+    async def get_schedule(dog_id: str) -> dict:
+        """List the dog's scheduled missions and ask the robot what it has loaded (schedule_sync).
+        Each mission has id, name, type, time (HH:MM, the dog's local time), days, duration_min and,
+        when the robot confirms, on_robot and next_fire_at. confirmed_by_robot=false means the list is
+        the relay's copy only (robot offline or no reply)."""
+        client, user_id = _client("get_schedule")
         _check_dog(user_id, dog_id)
-        draft, warnings = _normalise_draft(dog_id, goal, type, times or [], days or [], trigger,
-                                           duration_s, reward_treats, name)
-        try:
-            existing = ((await client.get_setting(dog_id, "missions")).get("value") or {}).get("missions", [])
-            cap = ((await client.get_setting(dog_id, "treat_schedule")).get("value") or {}).get("daily_cap")
-            for m in existing:
-                if m.get("trigger", {}).get("kind") == "schedule" and draft["trigger"]["kind"] == "schedule" \
-                        and m["trigger"].get("time") == draft["trigger"]["time"]:
-                    warnings.append(f"Another mission ({m.get('name') or m['id']}) already runs at {draft['trigger']['time']}.")
-            if cap is not None and draft["reward_treats"] and len(existing) * draft["reward_treats"] >= cap:
-                warnings.append(f"Mission rewards may hit the daily treat cap ({cap}).")
-            row = await client.create_draft(dog_id, draft, warnings)
-        except RelayRefusal as e:
-            return e.as_result(_status=e.status)
-        return {"ok": True, "draft_id": row["draft_id"], "status": row["status"], "draft": row["draft"],
-                "warnings": warnings,
-                "message": "Sent to the owner's WIM-Z app for approval. Call schedule_mission with this draft_id to check."}
+        return await schedule_tools.get_schedule(client, dog_id)
 
     @mcp.tool(name="schedule_mission", annotations=CONTROL)
     @audited("schedule_mission")
-    async def schedule_mission(dog_id: str, draft_id: str) -> dict:
-        """Confirm a drafted mission. Only a draft the owner has APPROVED in the WIM-Z app can be
-        scheduled (approval itself schedules it). Pending drafts return refused=true with
-        reason awaiting_owner_approval; declined drafts cannot be scheduled."""
+    async def schedule_mission(dog_id: str, type: str, time: str, days: Optional[list[str]] = None,
+                               duration_min: Optional[int] = None, name: Optional[str] = None,
+                               reward_treats: Optional[int] = None, goal: str = "") -> dict:
+        """Schedule a mission on the robot right away (no approval step). type: a training mission
+        (recall, sit_stay, down_stay, place, quiet, find_treat, sit, down, stay, spin; 1-60 min,
+        default 2) or a mode: silent_guardian (bark watch) or coach (5-720 min, default 120): the robot
+        enters that mode at the time and returns to idle after duration_min. time: HH:MM 24h in the
+        dog's local time. days: mon..sun (default every day). reward_treats 0-3 (training only).
+        Returns mission_id and the robot's confirmation: confirmed_by_robot and next_fire_at. Only say
+        it is scheduled on the robot when confirmed_by_robot is true."""
         client, user_id = _client("schedule_mission")
         _check_dog(user_id, dog_id)
-        try:
-            d = await client.get_draft(dog_id, draft_id)
-        except RelayRefusal as e:
-            return e.as_result(_status=e.status)
-        if d["status"] == "approved":
-            return {"ok": True, "scheduled": True, "mission_id": d.get("mission_id"), "draft_id": draft_id,
-                    "trigger": (d.get("draft") or {}).get("trigger")}
-        if d["status"] == "pending":
-            return {"ok": False, "refused": True, "reason": "awaiting_owner_approval", "draft_id": draft_id,
-                    "hint": "The owner approves mission drafts in the WIM-Z app."}
-        return {"ok": False, "refused": True, "reason": f"draft_{d['status']}", "draft_id": draft_id}
+        return await schedule_tools.schedule_mission(client, dog_id, type, time, days, duration_min, name,
+                                                     reward_treats, goal)
+
+    @mcp.tool(name="cancel_mission", annotations=CONTROL)
+    @audited("cancel_mission")
+    async def cancel_mission(dog_id: str, mission_id: str) -> dict:
+        """Delete a scheduled mission by mission_id (from get_schedule or get_missions). The robot is
+        asked to confirm it is gone (confirmed_by_robot)."""
+        client, user_id = _client("cancel_mission")
+        _check_dog(user_id, dog_id)
+        return await schedule_tools.cancel_mission(client, dog_id, mission_id)
 
     @mcp.tool(name="speak", annotations=CONTROL)
     @audited("speak")
