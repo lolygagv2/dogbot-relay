@@ -26,7 +26,7 @@ AGENT_BASE_URL=http://127.0.0.1:8002
 ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...                            # Whisper STT
 ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...                       # the Australian voice picked in the ElevenLabs dashboard
+ELEVENLABS_VOICE_ID=...                       # the voice picked in the ElevenLabs dashboard (sets the accent)
 ```
 
 Optional: `MCP_ALLOWED_HOSTS` (default `api.wimzai.com,api.wimzai.com:*,127.0.0.1:8001,localhost:8001`),

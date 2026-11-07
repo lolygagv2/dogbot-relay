@@ -1,4 +1,4 @@
-"""Text-to-speech via ElevenLabs (Australian voice chosen in the ElevenLabs dashboard) and the
+"""Text-to-speech via ElevenLabs (the voice, and so the accent, is chosen in the ElevenLabs dashboard) and the
 short-lived audio clip store the robot downloads from.
 
 Clips live under <agent_audio_dir>/out/<clip_id>.mp3 for `agent_audio_ttl_seconds` and are

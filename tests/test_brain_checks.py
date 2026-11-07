@@ -31,3 +31,16 @@ def test_templates():
     assert "21:00" in Brain._readback_tokens(ch) and "9" in Brain._readback_tokens(ch)
     t = b._template([ch], [{"ok": True}], ["treat_cap_reached"])
     assert t.startswith("Quiet hours are now 21:00 to 07:30.") and "daily treat cap" in t
+
+
+def test_persona_has_no_accent_or_dialect_instructions():
+    """2026-11-07: the accent comes from the ElevenLabs voice; the persona is warm, dry, brief, plain English."""
+    from app.voice_agent import prompts
+    every = " ".join(v for k, v in vars(prompts).items() if k.isupper() and isinstance(v, str)).lower()
+    for word in ("austral", "aussie", "arvo", "mate", "g'day", "slang", "dialect", "accent", "british", "american"):
+        assert word not in every, word
+    assert "warm, dry and brief" in prompts.SYSTEM_PROMPT and "plain, everyday english" in prompts.SYSTEM_PROMPT.lower()
+    assert "one light joke in the start-up greeting only" in prompts.SYSTEM_PROMPT
+    assert "joke" in prompts.BOOT_GREETING_INTENT
+    for intent in (prompts.SG_REARM_INTENT, prompts.LOW_HOPPER_INTENT):
+        assert "joke" not in intent
