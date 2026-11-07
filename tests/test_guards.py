@@ -142,3 +142,17 @@ def test_music_refused_during_quiet_hours(temp_db, monkeypatch):
     assert e.value.detail["guard"] == "music_quiet_hours"
     monkeypatch.setattr(settings_service, "in_quiet_hours", lambda dog_id, local_dt=None: False)
     assert robot_control.build_robot_message("play_music", {"track": "song_calm_01"}, relay, "dog_t1")[0]["command"] == "play_music"
+
+
+@pytest.mark.parametrize("target", ["dog", "dock"])
+def test_go_to_dog_or_dock(temp_db, target):
+    msg, _ = robot_control.build_robot_message("go_to", {"target": target}, CONN, "dog_t1")
+    assert msg["command"] == "go_to" and msg["data"]["target"] == target
+
+
+@pytest.mark.parametrize("target", ["bed", "kitchen", "door", "crate", "living_room", "owner", ""])
+def test_go_to_named_spots_rejected(temp_db, target):
+    with pytest.raises(HTTPException) as e:
+        robot_control.build_robot_message("go_to", {"target": target}, AGENT, "dog_t1")
+    assert e.value.status_code == 422
+    assert e.value.detail["code"] == "unknown_target" and e.value.detail["allowed"] == ["dock", "dog"]

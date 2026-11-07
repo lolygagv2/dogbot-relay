@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 SAFE_MODES = {"idle", "silent_guardian", "coach", "mission"}  # never "manual" (drive) over HTTP
 KNOWN_MISSION_TYPES = {"recall", "sit_stay", "find_treat", "place", "quiet", "down_stay", "spin", "sit", "down", "stay"}
 KNOWN_TRICKS = {"sit", "down", "stay", "spin", "place", "paw", "speak"}
-KNOWN_TARGETS = {"dock", "bed", "kitchen", "door", "crate", "living_room", "owner"}
+KNOWN_TARGETS = {"dog", "dock"}   # go_to: drive toward the detected dog, or return to dock
 
 # What each actor kind may ask for. "relay" = departure triggers (not reachable over HTTP).
 ACTOR_ALLOWED: dict[str, set[str]] = {

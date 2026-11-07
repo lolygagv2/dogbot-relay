@@ -34,7 +34,7 @@ CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempote
 EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", "arrival", "treat", "music",
                "mission_run", "status"]
 MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
-GO_TO_TARGETS = ["dock", "bed", "kitchen", "door", "crate", "living_room", "owner"]
+GO_TO_TARGETS = ["dog", "dock"]
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
 _HM = re.compile(r"^\d{2}:\d{2}$")
@@ -444,7 +444,7 @@ def register_tools(mcp: MCPServer) -> None:
     @mcp.tool(name="go_to", annotations=CONTROL)
     @audited("go_to")
     async def go_to(dog_id: str, target: str) -> dict:
-        """Send the robot to a named spot: dock, bed, kitchen, door, crate, living_room or owner."""
+        """Send the robot toward the dog, or back to its dock."""
         client, user_id = _client("go_to")
         _check_dog(user_id, dog_id)
         if target not in GO_TO_TARGETS:

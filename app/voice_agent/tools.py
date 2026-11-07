@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 PHYSICAL_TOOLS = {"give_treat", "go_to", "take_photo", "run_trick", "standby", "speak"}
 MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
-GO_TO_TARGETS = ["dock", "bed", "kitchen", "door", "crate", "living_room", "owner"]
+GO_TO_TARGETS = ["dog", "dock"]
 TRICKS = ["sit", "down", "stay", "spin", "place", "paw", "speak"]
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
 
@@ -79,7 +79,7 @@ TOOLS: list[dict] = [
      "strict": True},
     {"name": "give_treat", "description": "Dispense one treat now (subject to the owner's daily cap).",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
-    {"name": "go_to", "description": "Send the robot to a named spot.",
+    {"name": "go_to", "description": "Send the robot toward the dog, or back to its dock.",
      "input_schema": _schema({"dog_id": _str("dog id"), "target": _str("target", GO_TO_TARGETS)}, ["dog_id", "target"]),
      "strict": True},
     {"name": "take_photo", "description": "Take one new snapshot with the robot camera (no HUD) and look at it. A copy is kept so the owner's app can add it to its photo gallery; don't say it is on a timeline. Describe what you see. Never live video.",
