@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "name": "Bezik good day (demo)",
+  "notes": "Departure 09:05, four short quiet check-ins, one bark episode at 14:10 settled at SG level 2 in 2 min 20 s, treats front-loaded in the morning.",
+  "dog_name": "Bezik",
+  "dog_breed": "Pomeranian",
+  "dog_id": "01a183fe-0169-7d8b-ac62-5d58727473bf",
+  "device_id": "wimz_robot_05",
+  "timezone": "America/New_York",
+  "day_start": "07:00",
+  "events": [
+    {
+      "offset_s": 0,
+      "type": "status",
+      "data": {
+        "battery": 98,
+        "mode": "idle",
+        "treats_remaining": 15,
+        "docked": true
+      }
+    },
+    {
+      "offset_s": 1800,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": 6000,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": 7200,
+      "type": "status",
+      "data": {
+        "battery": 97,
+        "mode": "silent_guardian",
+        "treats_remaining": 13,
+        "docked": false
+      }
+    },
+    {
+      "offset_s": 7500,
+      "type": "departure",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": 7560,
+      "type": "music",
+      "data": {
+        "action": "start",
+        "track": "song_calm_01",
+        "trigger": "departure"
+      }
+    },
+    {
+      "offset_s": 7920,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": 9300,
+      "type": "settle",
+      "data": {
+        "kind": "quiet_check",
+        "quiet_min": 30
+      }
+    },
+    {
+      "offset_s": 9360,
+      "type": "music",
+      "data": {
+        "action": "stop",
+        "track": "song_calm_01"
+      },
+      "duration_s": 1800
+    },
+    {
+      "offset_s": 13500,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": 14700,
+      "type": "settle",
+      "data": {
+        "kind": "quiet_check",
+        "quiet_min": 60
+      }
+    },
+    {
+      "offset_s": 18000,
+      "type": "status",
+      "data": {
+        "battery": 91,
+        "mode": "silent_guardian",
+        "treats_remaining": 11,
+        "docked": false
+      }
+    },
+    {
+      "offset_s": 20400,
+      "type": "settle",
+      "data": {
+        "kind": "quiet_check",
+        "quiet_min": 90
+      }
+    },
+    {
+      "offset_s": 21600,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": 25800,
+      "type": "bark_episode",
+      "id": "ep1",
+      "duration_s": 50,
+      "data": {
+        "bark_count": 9,
+        "severity": "low",
+        "peak_db": 72,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": 25830,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "ep1",
+        "result": "no_change",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": 25875,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "ep1",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": 25940,
+      "type": "settle",
+      "data": {
+        "episode_ref": "ep1"
+      }
+    },
+    {
+      "offset_s": 30600,
+      "type": "settle",
+      "data": {
+        "kind": "quiet_check",
+        "quiet_min": 75
+      }
+    },
+    {
+      "offset_s": 32400,
+      "type": "status",
+      "data": {
+        "battery": 84,
+        "mode": "silent_guardian",
+        "treats_remaining": 10,
+        "docked": false
+      }
+    },
+    {
+      "offset_s": 38400,
+      "type": "arrival",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": 38460,
+      "type": "status",
+      "data": {
+        "battery": 82,
+        "mode": "idle",
+        "treats_remaining": 10,
+        "docked": false
+      }
+    },
+    {
+      "offset_s": 39000,
+      "type": "treat",
+      "data": {
+        "source": "app",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": 39600,
+      "type": "status",
+      "data": {
+        "battery": 81,
+        "mode": "idle",
+        "treats_remaining": 9,
+        "docked": false
+      }
+    }
+  ]
+}

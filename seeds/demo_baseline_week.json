@@ -1,0 +1,3027 @@
+{
+  "version": 1,
+  "name": "Bezik baseline week (demo)",
+  "notes": "Seven ordinary days with more barking than the demo days. offset_s is relative to the demo day's day_start: days -12..-6, i.e. the previous 7-day period that get_trend(days=7) compares against when it is run the day after the demo day. Load with the demo day's date.",
+  "dog_name": "Bezik",
+  "dog_breed": "Pomeranian",
+  "dog_id": "01a183fe-0169-7d8b-ac62-5d58727473bf",
+  "device_id": "wimz_robot_05",
+  "timezone": "America/New_York",
+  "day_start": "07:00",
+  "events": [
+    {
+      "offset_s": -1035000,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -1030800,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -1029475,
+      "type": "departure",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -1029415,
+      "type": "music",
+      "data": {
+        "action": "start",
+        "track": "song_calm_01",
+        "trigger": "departure"
+      }
+    },
+    {
+      "offset_s": -1027615,
+      "type": "music",
+      "data": {
+        "action": "stop",
+        "track": "song_calm_01"
+      },
+      "duration_s": 1800
+    },
+    {
+      "offset_s": -1022700,
+      "type": "bark_episode",
+      "id": "d0e0",
+      "duration_s": 207,
+      "data": {
+        "bark_count": 72,
+        "severity": "high",
+        "peak_db": 87,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -1022680,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d0e0",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -1022610,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d0e0",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1022540,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d0e0",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1022535,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -1022470,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d0e0",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -1022356,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d0e0"
+      }
+    },
+    {
+      "offset_s": -1019100,
+      "type": "bark_episode",
+      "id": "d0e1",
+      "duration_s": 207,
+      "data": {
+        "bark_count": 31,
+        "severity": "med",
+        "peak_db": 82,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -1019080,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d0e1",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -1019010,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d0e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1018940,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d0e1",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -1018935,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -1018791,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d0e1"
+      }
+    },
+    {
+      "offset_s": -1018225,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 235
+    },
+    {
+      "offset_s": -1017000,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -1015500,
+      "type": "bark_episode",
+      "id": "d0e2",
+      "duration_s": 368,
+      "data": {
+        "bark_count": 34,
+        "severity": "med",
+        "peak_db": 87,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -1015480,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d0e2",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -1015410,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d0e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1015340,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d0e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1015335,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -1015270,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d0e2",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -1014920,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d0e2"
+      }
+    },
+    {
+      "offset_s": -1014400,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 543
+    },
+    {
+      "offset_s": -1010100,
+      "type": "bark_episode",
+      "id": "d0e3",
+      "duration_s": 203,
+      "data": {
+        "bark_count": 65,
+        "severity": "high",
+        "peak_db": 79,
+        "trigger": "unknown"
+      }
+    },
+    {
+      "offset_s": -1010080,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d0e3",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -1010010,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d0e3",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1009940,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d0e3",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1009935,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -1009870,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d0e3",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -1009739,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d0e3"
+      }
+    },
+    {
+      "offset_s": -1009200,
+      "type": "bark_episode",
+      "id": "d0e4",
+      "duration_s": 399,
+      "data": {
+        "bark_count": 57,
+        "severity": "high",
+        "peak_db": 89,
+        "trigger": "unknown"
+      }
+    },
+    {
+      "offset_s": -1009180,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d0e4",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -1009110,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d0e4",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -1008543,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d0e4"
+      }
+    },
+    {
+      "offset_s": -1001100,
+      "type": "bark_episode",
+      "id": "d0e5",
+      "duration_s": 147,
+      "data": {
+        "bark_count": 60,
+        "severity": "high",
+        "peak_db": 84,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -1001080,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d0e5",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -1001010,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d0e5",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1000940,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d0e5",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -1000935,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -1000870,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d0e5",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -1000711,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d0e5"
+      }
+    },
+    {
+      "offset_s": -998691,
+      "type": "arrival",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -948600,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -944400,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -942828,
+      "type": "departure",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -942768,
+      "type": "music",
+      "data": {
+        "action": "start",
+        "track": "song_calm_01",
+        "trigger": "departure"
+      }
+    },
+    {
+      "offset_s": -940968,
+      "type": "music",
+      "data": {
+        "action": "stop",
+        "track": "song_calm_01"
+      },
+      "duration_s": 1800
+    },
+    {
+      "offset_s": -939000,
+      "type": "bark_episode",
+      "id": "d1e0",
+      "duration_s": 325,
+      "data": {
+        "bark_count": 46,
+        "severity": "med",
+        "peak_db": 78,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -938980,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d1e0",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -938910,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d1e0",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -938840,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d1e0",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -938835,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -938770,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d1e0",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -938471,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d1e0"
+      }
+    },
+    {
+      "offset_s": -935400,
+      "type": "bark_episode",
+      "id": "d1e1",
+      "duration_s": 393,
+      "data": {
+        "bark_count": 72,
+        "severity": "high",
+        "peak_db": 86,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -935380,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d1e1",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -935310,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d1e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -935240,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d1e1",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -935235,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -934834,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d1e1"
+      }
+    },
+    {
+      "offset_s": -930600,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -926400,
+      "type": "bark_episode",
+      "id": "d1e2",
+      "duration_s": 250,
+      "data": {
+        "bark_count": 53,
+        "severity": "med",
+        "peak_db": 88,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -926380,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d1e2",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -926310,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d1e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -926240,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d1e2",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -926235,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -925898,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d1e2"
+      }
+    },
+    {
+      "offset_s": -924787,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 203
+    },
+    {
+      "offset_s": -923200,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 369
+    },
+    {
+      "offset_s": -920100,
+      "type": "bark_episode",
+      "id": "d1e3",
+      "duration_s": 223,
+      "data": {
+        "bark_count": 32,
+        "severity": "med",
+        "peak_db": 84,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -920080,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d1e3",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -920010,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d1e3",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -919726,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d1e3"
+      }
+    },
+    {
+      "offset_s": -919200,
+      "type": "bark_episode",
+      "id": "d1e4",
+      "duration_s": 193,
+      "data": {
+        "bark_count": 32,
+        "severity": "med",
+        "peak_db": 85,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -919180,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d1e4",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -919110,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d1e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -919040,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d1e4",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -919035,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -918885,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d1e4"
+      }
+    },
+    {
+      "offset_s": -914700,
+      "type": "bark_episode",
+      "id": "d1e5",
+      "duration_s": 341,
+      "data": {
+        "bark_count": 46,
+        "severity": "med",
+        "peak_db": 79,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -914680,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d1e5",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -914610,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d1e5",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -914107,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d1e5"
+      }
+    },
+    {
+      "offset_s": -911557,
+      "type": "arrival",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -862200,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -858000,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -856488,
+      "type": "departure",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -856428,
+      "type": "music",
+      "data": {
+        "action": "start",
+        "track": "song_calm_01",
+        "trigger": "departure"
+      }
+    },
+    {
+      "offset_s": -854628,
+      "type": "music",
+      "data": {
+        "action": "stop",
+        "track": "song_calm_01"
+      },
+      "duration_s": 1800
+    },
+    {
+      "offset_s": -851700,
+      "type": "bark_episode",
+      "id": "d2e0",
+      "duration_s": 327,
+      "data": {
+        "bark_count": 64,
+        "severity": "high",
+        "peak_db": 78,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -851680,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d2e0",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -851610,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d2e0",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -851136,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d2e0"
+      }
+    },
+    {
+      "offset_s": -848100,
+      "type": "bark_episode",
+      "id": "d2e1",
+      "duration_s": 255,
+      "data": {
+        "bark_count": 36,
+        "severity": "med",
+        "peak_db": 82,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -848080,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d2e1",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -848010,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d2e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -847940,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d2e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -847935,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -847870,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d2e1",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -847648,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d2e1"
+      }
+    },
+    {
+      "offset_s": -844200,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -840900,
+      "type": "bark_episode",
+      "id": "d2e2",
+      "duration_s": 254,
+      "data": {
+        "bark_count": 48,
+        "severity": "med",
+        "peak_db": 84,
+        "trigger": "unknown"
+      }
+    },
+    {
+      "offset_s": -840880,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d2e2",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -840880,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 522
+    },
+    {
+      "offset_s": -840810,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d2e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -840740,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d2e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -840735,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -840670,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d2e2",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -840388,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d2e2"
+      }
+    },
+    {
+      "offset_s": -839712,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 200
+    },
+    {
+      "offset_s": -835500,
+      "type": "bark_episode",
+      "id": "d2e3",
+      "duration_s": 227,
+      "data": {
+        "bark_count": 46,
+        "severity": "med",
+        "peak_db": 79,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -835480,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d2e3",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -835410,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d2e3",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -835340,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d2e3",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -835335,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -835175,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d2e3"
+      }
+    },
+    {
+      "offset_s": -833700,
+      "type": "bark_episode",
+      "id": "d2e4",
+      "duration_s": 377,
+      "data": {
+        "bark_count": 35,
+        "severity": "med",
+        "peak_db": 86,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -833680,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d2e4",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -833610,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d2e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -833540,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d2e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -833535,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -833470,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d2e4",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -833074,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d2e4"
+      }
+    },
+    {
+      "offset_s": -832800,
+      "type": "bark_episode",
+      "id": "d2e5",
+      "duration_s": 348,
+      "data": {
+        "bark_count": 59,
+        "severity": "high",
+        "peak_db": 83,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -832780,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d2e5",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -832710,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d2e5",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -832640,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d2e5",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -832635,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -832570,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d2e5",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -832181,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d2e5"
+      }
+    },
+    {
+      "offset_s": -828300,
+      "type": "bark_episode",
+      "id": "d2e6",
+      "duration_s": 237,
+      "data": {
+        "bark_count": 59,
+        "severity": "high",
+        "peak_db": 89,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -828280,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d2e6",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -828210,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d2e6",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -828140,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d2e6",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -828135,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -827776,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d2e6"
+      }
+    },
+    {
+      "offset_s": -825309,
+      "type": "arrival",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -775800,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -771600,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -770169,
+      "type": "departure",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -770109,
+      "type": "music",
+      "data": {
+        "action": "start",
+        "track": "song_calm_01",
+        "trigger": "departure"
+      }
+    },
+    {
+      "offset_s": -768309,
+      "type": "music",
+      "data": {
+        "action": "stop",
+        "track": "song_calm_01"
+      },
+      "duration_s": 1800
+    },
+    {
+      "offset_s": -765300,
+      "type": "bark_episode",
+      "id": "d3e0",
+      "duration_s": 213,
+      "data": {
+        "bark_count": 45,
+        "severity": "med",
+        "peak_db": 84,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -765280,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d3e0",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -765210,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d3e0",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -764869,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d3e0"
+      }
+    },
+    {
+      "offset_s": -762600,
+      "type": "bark_episode",
+      "id": "d3e1",
+      "duration_s": 356,
+      "data": {
+        "bark_count": 39,
+        "severity": "med",
+        "peak_db": 83,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -762580,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d3e1",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -762510,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d3e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -762440,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d3e1",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -762435,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -762062,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d3e1"
+      }
+    },
+    {
+      "offset_s": -760822,
+      "type": "pacing",
+      "data": {
+        "zone": "hallway"
+      },
+      "duration_s": 507
+    },
+    {
+      "offset_s": -757800,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -756300,
+      "type": "bark_episode",
+      "id": "d3e2",
+      "duration_s": 260,
+      "data": {
+        "bark_count": 45,
+        "severity": "med",
+        "peak_db": 82,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -756280,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d3e2",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -756210,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d3e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -756140,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d3e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -756135,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -756070,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d3e2",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -755839,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d3e2"
+      }
+    },
+    {
+      "offset_s": -750900,
+      "type": "bark_episode",
+      "id": "d3e3",
+      "duration_s": 344,
+      "data": {
+        "bark_count": 29,
+        "severity": "med",
+        "peak_db": 80,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -750880,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d3e3",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -750810,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d3e3",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -750740,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d3e3",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -750735,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -750317,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d3e3"
+      }
+    },
+    {
+      "offset_s": -746484,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 366
+    },
+    {
+      "offset_s": -743700,
+      "type": "bark_episode",
+      "id": "d3e4",
+      "duration_s": 271,
+      "data": {
+        "bark_count": 59,
+        "severity": "high",
+        "peak_db": 80,
+        "trigger": "unknown"
+      }
+    },
+    {
+      "offset_s": -743680,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d3e4",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -743610,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d3e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -743540,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d3e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -743535,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -743470,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d3e4",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -743187,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d3e4"
+      }
+    },
+    {
+      "offset_s": -739386,
+      "type": "arrival",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -689400,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -685200,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -683863,
+      "type": "departure",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -683803,
+      "type": "music",
+      "data": {
+        "action": "start",
+        "track": "song_calm_01",
+        "trigger": "departure"
+      }
+    },
+    {
+      "offset_s": -682003,
+      "type": "music",
+      "data": {
+        "action": "stop",
+        "track": "song_calm_01"
+      },
+      "duration_s": 1800
+    },
+    {
+      "offset_s": -674400,
+      "type": "bark_episode",
+      "id": "d4e0",
+      "duration_s": 184,
+      "data": {
+        "bark_count": 41,
+        "severity": "med",
+        "peak_db": 82,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -674380,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d4e0",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -674310,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d4e0",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -674240,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d4e0",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -674235,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -674048,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d4e0"
+      }
+    },
+    {
+      "offset_s": -671400,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -670800,
+      "type": "bark_episode",
+      "id": "d4e1",
+      "duration_s": 206,
+      "data": {
+        "bark_count": 62,
+        "severity": "high",
+        "peak_db": 81,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -670780,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d4e1",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -670710,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d4e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -670640,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d4e1",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -670635,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -670467,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d4e1"
+      }
+    },
+    {
+      "offset_s": -669900,
+      "type": "bark_episode",
+      "id": "d4e2",
+      "duration_s": 419,
+      "data": {
+        "bark_count": 59,
+        "severity": "high",
+        "peak_db": 86,
+        "trigger": "unknown"
+      }
+    },
+    {
+      "offset_s": -669880,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d4e2",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -669810,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d4e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -669740,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d4e2",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -669735,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -669190,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d4e2"
+      }
+    },
+    {
+      "offset_s": -669000,
+      "type": "bark_episode",
+      "id": "d4e3",
+      "duration_s": 179,
+      "data": {
+        "bark_count": 32,
+        "severity": "med",
+        "peak_db": 79,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -668980,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d4e3",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -668910,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d4e3",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -668840,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d4e3",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -668835,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -668648,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d4e3"
+      }
+    },
+    {
+      "offset_s": -666420,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 550
+    },
+    {
+      "offset_s": -661800,
+      "type": "bark_episode",
+      "id": "d4e4",
+      "duration_s": 411,
+      "data": {
+        "bark_count": 31,
+        "severity": "med",
+        "peak_db": 83,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -661780,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d4e4",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -661710,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d4e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -661640,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d4e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -661635,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -661570,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d4e4",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -661129,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d4e4"
+      }
+    },
+    {
+      "offset_s": -660888,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 404
+    },
+    {
+      "offset_s": -658200,
+      "type": "bark_episode",
+      "id": "d4e5",
+      "duration_s": 381,
+      "data": {
+        "bark_count": 23,
+        "severity": "med",
+        "peak_db": 80,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -658180,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d4e5",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -658110,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d4e5",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -658040,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d4e5",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -658035,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -657571,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d4e5"
+      }
+    },
+    {
+      "offset_s": -655500,
+      "type": "bark_episode",
+      "id": "d4e6",
+      "duration_s": 139,
+      "data": {
+        "bark_count": 27,
+        "severity": "med",
+        "peak_db": 79,
+        "trigger": "unknown"
+      }
+    },
+    {
+      "offset_s": -655480,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d4e6",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -655410,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d4e6",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -655340,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d4e6",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -655335,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -655265,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d4e6"
+      }
+    },
+    {
+      "offset_s": -652870,
+      "type": "arrival",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -603000,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -598800,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -597461,
+      "type": "departure",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -597401,
+      "type": "music",
+      "data": {
+        "action": "start",
+        "track": "song_calm_01",
+        "trigger": "departure"
+      }
+    },
+    {
+      "offset_s": -595601,
+      "type": "music",
+      "data": {
+        "action": "stop",
+        "track": "song_calm_01"
+      },
+      "duration_s": 1800
+    },
+    {
+      "offset_s": -589800,
+      "type": "bark_episode",
+      "id": "d5e0",
+      "duration_s": 344,
+      "data": {
+        "bark_count": 47,
+        "severity": "med",
+        "peak_db": 78,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -589780,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d5e0",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -589710,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d5e0",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -589640,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d5e0",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -589635,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -589327,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d5e0"
+      }
+    },
+    {
+      "offset_s": -587100,
+      "type": "bark_episode",
+      "id": "d5e1",
+      "duration_s": 377,
+      "data": {
+        "bark_count": 27,
+        "severity": "med",
+        "peak_db": 84,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -587080,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d5e1",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -587010,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d5e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -586940,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d5e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -586935,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -586870,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d5e1",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -586486,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d5e1"
+      }
+    },
+    {
+      "offset_s": -585300,
+      "type": "bark_episode",
+      "id": "d5e2",
+      "duration_s": 198,
+      "data": {
+        "bark_count": 34,
+        "severity": "med",
+        "peak_db": 86,
+        "trigger": "unknown"
+      }
+    },
+    {
+      "offset_s": -585280,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d5e2",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -585210,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d5e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -585140,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d5e2",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -585135,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -585000,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -584898,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d5e2"
+      }
+    },
+    {
+      "offset_s": -583888,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 430
+    },
+    {
+      "offset_s": -583500,
+      "type": "bark_episode",
+      "id": "d5e3",
+      "duration_s": 190,
+      "data": {
+        "bark_count": 59,
+        "severity": "high",
+        "peak_db": 82,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -583480,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d5e3",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -583410,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d5e3",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -583139,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d5e3"
+      }
+    },
+    {
+      "offset_s": -578039,
+      "type": "pacing",
+      "data": {
+        "zone": "hallway"
+      },
+      "duration_s": 520
+    },
+    {
+      "offset_s": -576300,
+      "type": "bark_episode",
+      "id": "d5e4",
+      "duration_s": 391,
+      "data": {
+        "bark_count": 21,
+        "severity": "med",
+        "peak_db": 81,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -576280,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d5e4",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -576210,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d5e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -576140,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d5e4",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -576135,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -575651,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d5e4"
+      }
+    },
+    {
+      "offset_s": -573600,
+      "type": "bark_episode",
+      "id": "d5e5",
+      "duration_s": 386,
+      "data": {
+        "bark_count": 64,
+        "severity": "high",
+        "peak_db": 89,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -573580,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d5e5",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -573510,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d5e5",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -573057,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d5e5"
+      }
+    },
+    {
+      "offset_s": -570900,
+      "type": "bark_episode",
+      "id": "d5e6",
+      "duration_s": 372,
+      "data": {
+        "bark_count": 35,
+        "severity": "med",
+        "peak_db": 78,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -570880,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d5e6",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -570810,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d5e6",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -570740,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d5e6",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -570735,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -570670,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d5e6",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -570298,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d5e6"
+      }
+    },
+    {
+      "offset_s": -566739,
+      "type": "arrival",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -516600,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -512400,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -511025,
+      "type": "departure",
+      "data": {
+        "method": "door"
+      }
+    },
+    {
+      "offset_s": -510965,
+      "type": "music",
+      "data": {
+        "action": "start",
+        "track": "song_calm_01",
+        "trigger": "departure"
+      }
+    },
+    {
+      "offset_s": -509165,
+      "type": "music",
+      "data": {
+        "action": "stop",
+        "track": "song_calm_01"
+      },
+      "duration_s": 1800
+    },
+    {
+      "offset_s": -507900,
+      "type": "bark_episode",
+      "id": "d6e0",
+      "duration_s": 236,
+      "data": {
+        "bark_count": 38,
+        "severity": "med",
+        "peak_db": 88,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -507880,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d6e0",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -507810,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d6e0",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -507525,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d6e0"
+      }
+    },
+    {
+      "offset_s": -498600,
+      "type": "treat",
+      "data": {
+        "source": "schedule",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -498000,
+      "type": "bark_episode",
+      "id": "d6e1",
+      "duration_s": 327,
+      "data": {
+        "bark_count": 31,
+        "severity": "med",
+        "peak_db": 85,
+        "trigger": "neighbor_dog"
+      }
+    },
+    {
+      "offset_s": -497980,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d6e1",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -497910,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d6e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -497840,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d6e1",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -497835,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -497770,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d6e1",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -497459,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d6e1"
+      }
+    },
+    {
+      "offset_s": -497010,
+      "type": "pacing",
+      "data": {
+        "zone": "hallway"
+      },
+      "duration_s": 443
+    },
+    {
+      "offset_s": -496078,
+      "type": "pacing",
+      "data": {
+        "zone": "door"
+      },
+      "duration_s": 285
+    },
+    {
+      "offset_s": -493500,
+      "type": "bark_episode",
+      "id": "d6e2",
+      "duration_s": 379,
+      "data": {
+        "bark_count": 55,
+        "severity": "med",
+        "peak_db": 84,
+        "trigger": "unknown"
+      }
+    },
+    {
+      "offset_s": -493480,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d6e2",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -493410,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d6e2",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -493340,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d6e2",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -493335,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -492994,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d6e2"
+      }
+    },
+    {
+      "offset_s": -487200,
+      "type": "bark_episode",
+      "id": "d6e3",
+      "duration_s": 377,
+      "data": {
+        "bark_count": 22,
+        "severity": "med",
+        "peak_db": 87,
+        "trigger": "door"
+      }
+    },
+    {
+      "offset_s": -487180,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d6e3",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -487110,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d6e3",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -487040,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d6e3",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -487035,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -486579,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d6e3"
+      }
+    },
+    {
+      "offset_s": -486300,
+      "type": "bark_episode",
+      "id": "d6e4",
+      "duration_s": 311,
+      "data": {
+        "bark_count": 24,
+        "severity": "med",
+        "peak_db": 88,
+        "trigger": "delivery"
+      }
+    },
+    {
+      "offset_s": -486280,
+      "type": "intervention",
+      "data": {
+        "kind": "sound",
+        "escalation_level": 1,
+        "episode_ref": "d6e4",
+        "result": "escalated",
+        "sound_id": "chime"
+      }
+    },
+    {
+      "offset_s": -486210,
+      "type": "intervention",
+      "data": {
+        "kind": "voice",
+        "escalation_level": 2,
+        "episode_ref": "d6e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -486140,
+      "type": "intervention",
+      "data": {
+        "kind": "treat",
+        "escalation_level": 3,
+        "episode_ref": "d6e4",
+        "result": "escalated"
+      }
+    },
+    {
+      "offset_s": -486135,
+      "type": "treat",
+      "data": {
+        "source": "auto",
+        "count": 1
+      }
+    },
+    {
+      "offset_s": -486070,
+      "type": "intervention",
+      "data": {
+        "kind": "approach",
+        "escalation_level": 4,
+        "episode_ref": "d6e4",
+        "result": "settled"
+      }
+    },
+    {
+      "offset_s": -485879,
+      "type": "settle",
+      "data": {
+        "episode_ref": "d6e4"
+      }
+    },
+    {
+      "offset_s": -480512,
+      "type": "arrival",
+      "data": {
+        "method": "door"
+      }
+    }
+  ]
+}
