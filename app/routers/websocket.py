@@ -1233,6 +1233,10 @@ async def websocket_device_endpoint(
                 # Auto-persist SG events to activity_events for REST timeline
                 _maybe_persist_as_activity(device_id, owner_id, message)
 
+                # App deleted a relay-made schedule on the robot: drop it from the relay's missions too
+                if event_name == "schedule_deleted":
+                    await _sync_robot_schedule_delete(message, device_id, owner_id)
+
                 # Forward event and verify delivery (P2: Build 34 - Event Forwarding Verification)
                 delivered_count = await manager.forward_event_to_owner(device_id, message)
                 if event_name in TRACKED_EVENTS:
@@ -2106,6 +2110,10 @@ async def websocket_generic_endpoint(
 
                     # Auto-persist SG events to activity_events for REST timeline
                     _maybe_persist_as_activity(identifier, owner_id, message)
+
+                    # App deleted a relay-made schedule on the robot: drop it from the relay's missions too
+                    if event_name == "schedule_deleted":
+                        await _sync_robot_schedule_delete(message, identifier, owner_id)
 
                     # Forward event and verify delivery (P2: Build 34 - Event Forwarding Verification)
                     delivered_count = await manager.forward_event_to_owner(identifier, message)

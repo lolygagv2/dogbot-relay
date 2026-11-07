@@ -328,3 +328,21 @@ def test_ws_schedule_deleted_hook(temp_db, msg, removed):
     _seed_missions(["m_a"])
     run(_sync_robot_schedule_delete(msg, "robot_1", "user_t1"))
     assert _mission_ids() == ([] if removed else ["m_a"])
+
+
+def test_ws_hook_accepts_robots_event_frame(temp_db):
+    """The shape wimz_robot_05 actually sent on 2026-11-07 18:36 (generic `event` frame)."""
+    from app.routers.websocket import _sync_robot_schedule_delete
+    _seed_missions(["m_silent_guardian_0300_2f0e", "m_keep"])
+    msg = {"type": "event", "event": "schedule_deleted", "device_id": "wimz_robot_05", "success": True,
+           "deleted": "11364ed7", "dog_id": "dog_t1", "source": "relay_settings",
+           "mission_id": "m_silent_guardian_0300_2f0e"}
+    run(_sync_robot_schedule_delete(msg, "wimz_robot_05", "user_t1"))
+    assert _mission_ids() == ["m_keep"]
+
+
+def test_both_event_paths_call_the_hook():
+    from app.routers import websocket as ws
+    src = inspect.getsource(ws)
+    assert src.count('if event_name == "schedule_deleted":') == 2
+    assert src.count('if msg_type == "schedule_deleted":') == 2
