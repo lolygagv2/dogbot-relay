@@ -1073,11 +1073,14 @@ async def websocket_device_endpoint(
                 meta = command_results.resolve(cid, message) or {}
                 owner_id = manager.get_device_owner(device_id)
                 logger.info(f"[CMD-RESULT] {device_id}: {meta.get('command') or '?'} {cid} ok={message.get('ok')}")
+                from app.services import photo_gallery
+                gallery_id = photo_gallery.record_take_photo(cid, meta, message)
                 if owner_id:
                     await manager.send_to_user_apps(owner_id, {
                         "type": "command_result",
                         "command_id": cid,
                         "command": meta.get("command"),
+                        "gallery_photo_id": gallery_id,
                         "dog_id": meta.get("dog_id") or message.get("dog_id"),
                         "device_id": device_id,
                         "ok": bool(message.get("ok", True)),

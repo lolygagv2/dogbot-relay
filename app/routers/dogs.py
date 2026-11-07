@@ -399,9 +399,14 @@ async def merge_dog_profiles(
 @router.get("/{dog_id}/photos", response_model=list[DogPhoto])
 async def list_dog_photos(
     dog_id: str,
-    current_user: Annotated[dict, Depends(get_current_user)]
+    current_user: Annotated[dict, Depends(get_current_user)],
+    since: Optional[datetime] = None,
 ):
-    """Get all photos for a dog. User must have access to the dog."""
+    """Get all photos for a dog, newest first. User must have access to the dog.
+
+    `since` (ISO 8601) returns only photos captured strictly after it, for the app's
+    gallery catch-up (relay-recorded snapshots, see app/services/photo_gallery.py).
+    """
     user_id = current_user["user_id"]
 
     role = get_user_dog_role(user_id, dog_id)
@@ -412,8 +417,10 @@ async def list_dog_photos(
         )
 
     photos = get_dog_photos(dog_id)
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
 
-    return [
+    out = [
         DogPhoto(
             id=photo["id"],
             dog_id=photo["dog_id"],
@@ -423,6 +430,10 @@ async def list_dog_photos(
         )
         for photo in photos
     ]
+    if since is not None:
+        out = [p for p in out
+               if (p.captured_at if p.captured_at.tzinfo else p.captured_at.replace(tzinfo=timezone.utc)) > since]
+    return out
 
 
 @router.post("/{dog_id}/photos", response_model=DogPhoto, status_code=status.HTTP_201_CREATED)
