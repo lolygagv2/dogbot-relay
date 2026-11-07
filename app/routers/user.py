@@ -9,10 +9,8 @@ from app.database import (
     delete_device_pairing,
     get_device_owner as db_get_device_owner,
     get_dog_by_id,
-    get_dog_owner,
-    set_device_dogs,
 )
-from app.models import DeviceDogsUpdate, UserPairDeviceRequest, UserPairDeviceResponse
+from app.models import UserPairDeviceRequest, UserPairDeviceResponse
 from app.services import pairing
 
 logger = logging.getLogger(__name__)
@@ -50,8 +48,8 @@ async def pair_device(
     # Update in-memory cache
     manager.set_device_owner(device_id, user_id)
 
-    # Pairing 2026-11-07: the robot always has a dog (placeholder if the owner has none
-    # paired to it), and learns it right away if online.
+    # The robot serves all of the owner's dogs (placeholder if the owner has none) and
+    # learns them right away if online.
     pairing.device_dog_ids(device_id)
     await _push_profiles(device_id, user_id)
 
@@ -167,7 +165,7 @@ async def get_user_devices(
     return {"devices": devices}
 
 
-# ============== Robot <-> dog pairing (device_dogs, 2026-11-07) ==============
+# ============== A robot's dogs = its owner's dogs (owner model 2026-11-07) ==============
 
 async def _push_profiles(device_id: str, user_id: str) -> None:
     try:
@@ -183,7 +181,11 @@ def _owned_device(device_id: str, user_id: str) -> None:
                             detail={"code": "device_not_paired", "device_id": device_id})
 
 
-def _dogs_body(device_id: str) -> dict:
+@router.get("/devices/{device_id}/dogs")
+async def get_device_dogs(device_id: str, current_user: dict = Depends(get_current_user)):
+    """The dogs this robot serves = all of the owner's dogs, oldest first (a placeholder is
+    created if the owner has none). Robots and dogs are not linked individually."""
+    _owned_device(device_id, current_user["user_id"])
     dogs = []
     for dog_id in pairing.device_dog_ids(device_id):
         d = get_dog_by_id(dog_id) or {}
@@ -191,27 +193,10 @@ def _dogs_body(device_id: str) -> dict:
     return {"device_id": device_id, "dogs": dogs}
 
 
-@router.get("/devices/{device_id}/dogs")
-async def get_device_dogs(device_id: str, current_user: dict = Depends(get_current_user)):
-    """The robot's paired dogs, first = primary (a placeholder is created if it has none)."""
-    _owned_device(device_id, current_user["user_id"])
-    return _dogs_body(device_id)
-
-
 @router.put("/devices/{device_id}/dogs")
-async def put_device_dogs(device_id: str, body: DeviceDogsUpdate, current_user: dict = Depends(get_current_user)):
-    """Re-pair the robot to exactly these dogs (all must be owned by the caller).
-
-    Events stay keyed by dog_id, so dogs unpaired here (including a placeholder) keep their
-    history; to fold a placeholder's history into a real dog use POST /api/dogs/merge.
-    """
-    user_id = current_user["user_id"]
-    _owned_device(device_id, user_id)
-    for dog_id in body.dog_ids:
-        if not get_dog_by_id(dog_id) or get_dog_owner(dog_id) != user_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail={"code": "dog_not_owned", "dog_id": dog_id})
-    set_device_dogs(device_id, body.dog_ids)
-    logger.info(f"[PAIRING] user {user_id} paired {device_id} -> {body.dog_ids}")
-    await _push_profiles(device_id, user_id)
-    return _dogs_body(device_id)
+async def put_device_dogs(device_id: str, current_user: dict = Depends(get_current_user)):
+    """Retired 2026-11-07: a robot serves all of its owner's dogs, so there is no per-robot
+    dog list to edit. Add/remove dogs with the normal /api/dogs endpoints instead."""
+    raise HTTPException(status_code=status.HTTP_410_GONE,
+                        detail={"code": "robot_dog_pairing_removed",
+                                "message": "Robots serve all of the owner's dogs; nothing to re-pair."})

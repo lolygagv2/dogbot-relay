@@ -12,23 +12,25 @@ not double-counted in the app timeline.
 
 ---
 
-## 0. Pairing: the robot always has a dog (added 2026-11-07)
+## 0. Owners, robots and dogs (revised 2026-11-07 evening; replaces the morning's pairing)
 
-Pairing never blocks the robot. The relay keeps an explicit robot-to-dog link
-(`device_dogs`). On `POST /api/device/register` and on every `/ws/device` connect, if no
-dog is paired to you, the relay pairs you with **all of your owner's existing dogs**. Only
-if the owner has no dogs does it create a **placeholder dog** for the owner, named after you
-(`wimz_robot_05` → "Robot 05's dog", id `ph_<owner>_<device_id>`), pair it, and treat it
-like any dog: events, roll-ups, settings, commands and utterances all work.
+Owners, robots and dogs are **independent**. You belong to an owner; dogs belong to an
+owner; you and a dog are related only through that owner. There is **no robot-to-dog link**:
+you serve **all of your owner's dogs**, and your online/battery/mode state is yours alone.
+It shows the same for every dog the owner has.
 
-- The `profiles` message now also carries **`paired_dog_ids`**: your own dogs, first =
-  primary. `profiles` itself still lists all of the owner's dogs (for ArUco recognition);
-  each profile has `is_placeholder` (bool).
-- A placeholder's `dog_id` is stable. If the owner renames it, the id stays the same. If
-  the owner re-pairs you to other dogs, you get a fresh `profiles` push with new
-  `paired_dog_ids`: switch to the new primary for new events.
-- With exactly **one** paired dog you may omit `dog_id` on any event and on
-  `/agent/utterance`, and the relay fills in that dog. With several paired dogs, send it.
+- Pairing never blocks you. On `POST /api/device/register` and every `/ws/device` connect,
+  if your owner has no dogs the relay creates a **placeholder dog** for the owner (named after
+  you, `wimz_robot_05` → "Robot 05's dog", id `ph_<owner>_<device_id>`). It works like any dog.
+- The `profiles` message lists all of the owner's dogs (for ArUco recognition), each with
+  `is_placeholder`. `paired_dog_ids` is still sent for compatibility, but it now always
+  equals the owner's dog ids (oldest first). **Don't treat it as "my dogs" vs others: every
+  profile is yours.**
+- **Send `dog_id` on every event except `status`.** Use the dog you identified (ArUco). The relay
+  fills in `dog_id` only when the owner has **exactly one** dog. Otherwise the event
+  is rejected with `dog_id required (owner has N dogs)`. The relay never guesses on recorded data.
+- `/agent/utterance` without `dog_id` falls back to the owner's **oldest** dog. Send `dog_id`
+  when you know who you're talking to.
 - A robot with no owner gets no dog (there is nobody to attach one to); pair it in the app.
 
 ---
@@ -46,7 +48,7 @@ X-Timestamp: <unix seconds>            # optional; sig over device_id+timestamp 
 `sig = HMAC_SHA256(device_secret, device_id + timestamp)` (the relay also accepts
 `device_id:timestamp` and plain `device_id`). The device must be paired to an owner, and
 every `dog_id` you reference must belong to that owner, or the event/request is rejected
-(`status` events may omit `dog_id`, see §2; with one paired dog any event may, see §0).
+(`status` events may omit `dog_id`, see §2; if the owner has exactly one dog any event may, see §0).
 
 ---
 
@@ -73,7 +75,7 @@ what the robot agent found in the robot's sender:
 |---|---|---|---|
 | `event_id` | string, 1-128 chars | yes | UUID; idempotency key |
 | `type` | enum (table below) | yes | |
-| `dog_id` | string, 1-128 chars | **yes, except `type: "status"`**, or when you have exactly one paired dog (§0) | must belong to the device owner |
+| `dog_id` | string, 1-128 chars | **yes, except `type: "status"`**, or when the owner has exactly one dog (§0) | must belong to the device owner |
 | `ts` | string | yes | ISO-8601 with offset (naive = UTC); epoch s/ms also accepted |
 | `duration_s` | number 0-86400 | per type | |
 | `data` | object | no (default `{}`) | per-type fields below |
@@ -81,9 +83,9 @@ what the robot agent found in the robot's sender:
 
 **Status is device-scoped.** Send `status` without a `dog_id` (it describes the robot, not a
 dog). The relay stores it once, with no dog, keyed by your device_id; there are no per-dog
-copies, and the response lists your `event_id` as usual. Every dog paired with your robot
+copies, and the response lists your `event_id` as usual. Every one of your owner's dogs
 sees it: the dog status the app, connector and agent read (`GET /api/dogs/{dog}/status`) is
-the latest status from the dog's paired robot, looked up by device_id. Sending a `dog_id` on
+the latest status from the owner's robots (a connected one first), looked up by device_id. Sending a `dog_id` on
 status still works and is still checked against the owner, but isn't needed.
 
 `ts` is ISO-8601 with offset (naive = UTC); `device_id` is taken from the HMAC identity.
@@ -180,7 +182,7 @@ Push-to-talk / wake-word clip: record one utterance (16 kHz mono WAV, ≤ 30 s, 
 and POST it with the HMAC headers:
 
 ```
-POST /agent/utterance   multipart: file=<wav>, dog_id=<dog>   (dog_id optional: defaults to your primary paired dog, §0)
+POST /agent/utterance   multipart: file=<wav>, dog_id=<dog>   (dog_id optional: defaults to the owner's oldest dog, §0; send it when known)
 → 200 {"text_in": "...", "text_out": "...", "audio_url": "https://api.wimzai.com/agent/audio/<clip>.mp3",
        "clip_id": "...", "expires_at": <unix>, "tools_used": [...], "refused": [...]}
 ```

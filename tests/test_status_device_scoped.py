@@ -2,7 +2,7 @@
 
 dog_id is optional for type "status" only; a dog-less status is stored once with dog_id NULL,
 keyed by device_id (no per-dog copies).
-The dog status route reads the latest status by the paired robot's device_id, not by dog_id.
+The dog status route reads the latest status by the owner's robots' device_id, not by dog_id.
 """
 import asyncio
 
@@ -25,16 +25,15 @@ def _ingest(events, device_id="robot_t", user_id="user_t1"):
                                                  source="robot", notify=False, forward=False))
 
 
-def test_dog_id_required_for_non_status_unless_robot_has_one_dog(temp_db):
+def test_dog_id_required_for_non_status_unless_owner_has_one_dog(temp_db):
     assert EventIn.model_validate(_status("s0")).dog_id is None
     # validate_event (replayer/admin/internal paths) still requires it for non-status
     assert event_store.validate_event({"event_id": "t2", "type": "treat", "ts": "2026-11-06T18:00:00Z",
                                        "data": {"source": "auto"}}) == (None, "dog_id required")
-    # a robot with two paired dogs must say which dog
+    # a robot whose owner has two dogs must say which dog
     db.create_device_pairing("user_t1", "robot_t")
     db.create_dog(dog_id="dog_t3", name="Bea", user_id="user_t1")
     db.add_user_dog("user_t1", "dog_t3", "owner")
-    db.set_device_dogs("robot_t", ["dog_t1", "dog_t3"])
     robot = Actor(kind="robot", id="robot_t", user_id="user_t1", device_id="robot_t")
     batch = EventBatchIn.model_validate({"events": [{"event_id": "t0", "type": "treat", "ts": "2026-11-06T18:00:00Z",
                                                      "data": {"source": "auto"}}]})

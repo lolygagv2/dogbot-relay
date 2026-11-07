@@ -52,7 +52,7 @@ def _pick_dog(user_id: Optional[str], dog_id: Optional[str], device_id: Optional
         d = get_dog_by_id(dog_id)
         if d:
             return d
-    if device_id:  # the robot's paired (or placeholder) dog, via device_dogs
+    if device_id:  # the robot owner's oldest dog (or placeholder)
         from app.services import pairing
         primary = pairing.primary_dog_id(device_id)
         d = get_dog_by_id(primary) if primary else None

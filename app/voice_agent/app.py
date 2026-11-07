@@ -158,7 +158,7 @@ async def utterance(file: UploadFile = File(...), dog_id: Optional[str] = Form(d
                     caller: Caller = Depends(jwt_or_device)):
     t_all = time.monotonic()
     if not dog_id:
-        # pairing 2026-11-07: a robot may omit dog_id; use its paired (or placeholder) dog
+        # a robot may omit dog_id: fall back to its owner's oldest dog (or placeholder)
         from app.services import pairing
         dog_id = pairing.primary_dog_id(caller.device_id) if caller.source == "robot" else None
         if not dog_id:

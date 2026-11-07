@@ -89,7 +89,7 @@ async def push_profiles_to_device(device_id: str, user_id: str) -> bool:
     sent = await manager.send_to_robot(device_id, {
         "type": "profiles",
         "profiles": profiles,
-        # pairing 2026-11-07: this robot's own dogs (device_dogs), first = primary
+        # owner model 2026-11-07: the dogs this robot serves = all of the owner's dogs
         "paired_dog_ids": pairing.device_dog_ids(device_id),
     })
     if sent:

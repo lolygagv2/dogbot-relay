@@ -35,19 +35,20 @@ async def post_events(batch: EventBatchIn, actor: Actor = Depends(resolve_actor)
         user_id = actor.user_id
 
     # Robot may only post for dogs its owner has; admin may post for anything.
-    # Pairing 2026-11-07: a robot with exactly one paired dog may omit dog_id (except on
-    # status, which stays device-scoped with dog_id NULL); the relay fills in that dog.
-    paired = pairing.device_dog_ids(device_id) if actor.kind == "robot" else []
+    # A robot may omit dog_id only when its owner has exactly one dog (the relay fills it in);
+    # with several, it must say which -- never guess on recorded data. Status stays
+    # device-scoped with dog_id NULL.
+    owner_dogs = pairing.device_dog_ids(device_id) if actor.kind == "robot" else []
     rejected, allowed = [], []
     for ev in batch.events:
         try:
             item = ev.model_dump()
             if item["dog_id"] is None and ev.type != "status":
-                if len(paired) != 1:
+                if len(owner_dogs) != 1:
                     rejected.append({"event_id": ev.event_id,
-                                     "reason": f"dog_id required (robot has {len(paired)} paired dogs)"})
+                                     "reason": f"dog_id required (owner has {len(owner_dogs)} dogs)"})
                     continue
-                item["dog_id"] = paired[0]
+                item["dog_id"] = owner_dogs[0]
             if actor.kind == "robot" and item["dog_id"] is not None:
                 check_dog_access(actor, item["dog_id"])
             allowed.append(item)
@@ -115,8 +116,9 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         replay_device = rp.device_id if replay_active else None
     except ImportError:
         pass
-    # Status is device-scoped (contract fix 2026-11-06): read the latest status row by device_id
-    # for the dog's paired robot(s) -- an online robot first -- never by dog_id.
+    # Robot state is the robot's own: "online" = one of the owner's robots is connected, no
+    # matter which dog is asked about. The latest status row is read by device_id (an online
+    # robot first), never by dog_id (contract fix 2026-11-06).
     candidates = online or devices
     if replay_device:
         candidates = [*candidates, replay_device]

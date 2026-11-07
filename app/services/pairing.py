@@ -1,14 +1,19 @@
-"""Robot <-> dog pairing (2026-11-07). Pairing must never block a robot.
+"""Owners, robots and dogs (2026-11-07, v2). Pairing must never block a robot.
 
-`device_dogs` is the explicit link. When a robot with an owner has no paired dog, it is
-paired with all of the owner's existing dogs; only if the owner has none is a placeholder
-dog created for the owner (named after the robot, e.g. "Robot 05's dog"), paired to it,
-and treated like any other dog: events, roll-ups, settings, utterances and
-commands all work against it. The owner can rename it (same dog_id, history kept), or
-re-pair the robot to other dogs; events are keyed by dog_id, so nothing is lost, and
-POST /api/dogs/merge folds a placeholder's history into a real dog.
+Three independent things, joined only through the owner:
+- a robot belongs to an owner (robots.owner_user_id, set by pair-device);
+- a dog belongs to an owner (user_dogs role=owner);
+- robots and dogs are NOT linked to each other. A robot serves all of its owner's dogs, and a
+  dog is served by all of its owner's robots. Robot state (online, battery, mode) belongs to
+  the robot alone and never depends on which dog is asked about.
 
-Every "which dog is this robot?" question goes through `device_dog_ids()`.
+If a robot's owner has no dogs yet, a placeholder dog is created for the owner (named after
+the robot, e.g. "Robot 05's dog") so events, roll-ups, settings, utterances and commands all
+work. It is an ordinary dog: the owner can rename it (same dog_id, history kept) or fold its
+history into a real dog with POST /api/dogs/merge.
+
+The v1 `device_dogs` link table (2026-11-07 morning) is no longer read; it stays in the
+database, untouched, for rollback.
 """
 from __future__ import annotations
 
@@ -18,15 +23,11 @@ from typing import Optional
 
 from app.database import (
     create_placeholder_dog,
-    get_device_dog_ids,
     get_device_owner,
     get_dog_by_id,
-    get_dog_device_ids,
     get_dog_owner,
     get_owned_dog_ids,
     get_user_paired_devices,
-    link_device_dog,
-    set_device_dogs,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,58 +41,49 @@ def placeholder_name(device_id: str) -> str:
 
 
 def placeholder_dog_id(device_id: str, owner: str) -> str:
-    # deterministic per (owner, robot): re-ensuring re-links the same placeholder
+    # deterministic per (owner, robot): re-ensuring finds the same placeholder
     return f"ph_{owner}_{device_id}"
 
 
-def ensure_device_dogs(device_id: str) -> list[str]:
-    """Paired dog ids for a robot. A robot with none is paired with all of its owner's
-    existing dogs; if the owner has no dogs, with a new placeholder dog.
-    Returns [] only when the robot has no owner (nothing to attach a dog to)."""
-    dogs = get_device_dog_ids(device_id)
-    if dogs:
-        return dogs
-    owner = get_device_owner(device_id)
-    if not owner:
-        return []
+def _ensure_owner_has_dog(device_id: str, owner: str) -> list[str]:
     owned = get_owned_dog_ids(owner)
     if owned:
-        set_device_dogs(device_id, owned)
-        logger.info(f"[PAIRING] paired {device_id} with owner {owner}'s existing dogs {owned}")
-        return get_device_dog_ids(device_id)
+        return owned
     dog_id = placeholder_dog_id(device_id, owner)
     existing = get_dog_by_id(dog_id)
     if existing is None:
         create_placeholder_dog(dog_id, placeholder_name(device_id), owner)
-        logger.info(f"[PAIRING] created placeholder dog {dog_id} ({placeholder_name(device_id)!r}) for {device_id}")
+        logger.info(f"[PAIRING] owner {owner} has no dogs: created placeholder {dog_id} "
+                    f"({placeholder_name(device_id)!r}) for {device_id}")
     elif get_dog_owner(dog_id) != owner:  # pragma: no cover - id embeds the owner
-        logger.error(f"[PAIRING] placeholder {dog_id} exists under another owner; not linking")
+        logger.error(f"[PAIRING] placeholder {dog_id} exists under another owner; not using it")
         return []
-    link_device_dog(device_id, dog_id)
-    logger.info(f"[PAIRING] paired {device_id} -> {dog_id}")
-    return get_device_dog_ids(device_id)
+    return get_owned_dog_ids(owner)
 
 
 def device_dog_ids(device_id: Optional[str]) -> list[str]:
-    """The robot's paired dogs (ensured). Use this everywhere a device resolves its dog."""
+    """The dogs a robot serves = its owner's dogs, oldest first (a placeholder is created if
+    the owner has none). [] only when the robot has no owner. Never raises."""
     if not device_id:
         return []
+    owner = get_device_owner(device_id)
+    if not owner:
+        return []
     try:
-        return ensure_device_dogs(device_id)
-    except Exception as e:  # never block a robot on pairing bookkeeping
+        return _ensure_owner_has_dog(device_id, owner)
+    except Exception as e:  # never block a robot on dog bookkeeping
         logger.error(f"[PAIRING] ensure failed for {device_id}: {e}")
-        return get_device_dog_ids(device_id)
+        return get_owned_dog_ids(owner)
 
 
 def primary_dog_id(device_id: Optional[str]) -> Optional[str]:
+    """Fallback dog when a robot omits dog_id where a guess is harmless (speech): the owner's
+    oldest dog. Data-recording paths (POST /events) refuse to guess instead."""
     dogs = device_dog_ids(device_id)
     return dogs[0] if dogs else None
 
 
-def dog_devices(dog_id: str, owner: Optional[str]) -> list[str]:
-    """Robots for a dog: its device_dogs links; if it has none (e.g. a dog the owner added
-    in the app but never paired), fall back to all of the owner's robots."""
-    linked = get_dog_device_ids(dog_id)
-    if linked:
-        return linked
+def dog_devices(dog_id: str, owner: Optional[str] = None) -> list[str]:
+    """Robots that serve a dog = all of its owner's robots."""
+    owner = owner or get_dog_owner(dog_id)
     return get_user_paired_devices(owner) if owner else []

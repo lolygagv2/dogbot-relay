@@ -159,10 +159,9 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
 
 def _pick_device(owner: Optional[str], requested: Optional[str],
                  dog_id: Optional[str] = None) -> tuple[Optional[str], bool]:
-    """(device_id, online). Requested device must belong to the owner. Otherwise prefer the
-    dog's paired robot(s) (device_dogs), falling back to any of the owner's robots."""
+    """(device_id, online). Requested device must belong to the owner. Otherwise any of the
+    owner's robots, an online one first. Robots aren't tied to dogs, so dog_id doesn't narrow it."""
     from app.connection_manager import get_connection_manager
-    from app.services import pairing
 
     manager = get_connection_manager()
     devices = get_user_paired_devices(owner) if owner else []
@@ -170,8 +169,6 @@ def _pick_device(owner: Optional[str], requested: Optional[str],
         if requested not in devices:
             raise HTTPException(status_code=404, detail={"code": "device_not_paired", "device_id": requested})
         return requested, manager.is_robot_online(requested)
-    if dog_id:
-        devices = [d for d in pairing.dog_devices(dog_id, owner) if d in devices] or devices
     for d in devices:
         if manager.is_robot_online(d):
             return d, True

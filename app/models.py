@@ -494,19 +494,14 @@ class EventIn(BaseModel):
         "treat", "music", "mission_run", "status",
     ]
     # status: device-scoped, stored with dog_id NULL when omitted (contract fix 2026-11-06).
-    # Other types: required, except a robot with exactly one paired dog (device_dogs) may
-    # omit it and the relay fills in that dog (pairing 2026-11-07).
+    # Other types: required, except a robot whose owner has exactly one dog may omit it and
+    # the relay fills in that dog (owner model 2026-11-07).
     dog_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     ts: str = Field(..., description="ISO-8601 timestamp; naive = UTC")
     duration_s: Optional[float] = Field(default=None, ge=0, le=86400)
     data: dict = Field(default_factory=dict)
     device_id: Optional[str] = None   # ignored for robot callers (taken from HMAC identity)
 
-
-
-class DeviceDogsUpdate(BaseModel):
-    """PUT /api/user/devices/{device_id}/dogs: the robot's paired dogs, in order (first = primary)."""
-    dog_ids: list[str] = Field(..., min_length=1, max_length=20)
 
 
 class EventBatchIn(BaseModel):

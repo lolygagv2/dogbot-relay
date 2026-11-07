@@ -869,7 +869,7 @@ async def websocket_device_endpoint(
     # Extract client IP
     client_ip = get_client_ip(websocket)
 
-    # Pairing must never block a robot: ensure it has a dog (placeholder if needed)
+    # Never block a robot: ensure its owner has a dog (placeholder if needed)
     # before the profiles push below, so the robot learns its dog_id on connect.
     from app.services import pairing
     pairing.device_dog_ids(device_id)
@@ -1746,7 +1746,7 @@ async def websocket_generic_endpoint(
             else:
                 logger.warning(f"Device {device_id} has no owner in database")
             from app.services import pairing
-            pairing.device_dog_ids(device_id)  # never block a robot: placeholder dog if none
+            pairing.device_dog_ids(device_id)  # never block a robot: owner gets a placeholder dog if none
 
             # Register in manager (but don't call accept() again)
             if device_id in manager.robot_connections:
