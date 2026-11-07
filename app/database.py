@@ -2,6 +2,7 @@ import contextlib
 import json
 import logging
 import sqlite3
+import os
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -9,7 +10,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Database path
-DB_PATH = Path(__file__).parent.parent / "data" / "wimz.db"
+# WIMZ_DB_PATH overrides the location (tests point it at a temp file so they never open data/wimz.db)
+DB_PATH = Path(os.environ.get("WIMZ_DB_PATH") or Path(__file__).parent.parent / "data" / "wimz.db")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -30,6 +32,25 @@ def db_connection():
         yield conn
     finally:
         conn.close()
+
+
+def backup_db_before_rebuild(reason: str) -> Path:
+    """Consistent copy of the DB (SQLite online backup, WAL-safe) before any schema rebuild.
+    Written next to the DB as wimz.db.bak-<UTC timestamp>-<reason>. Raises on failure so the
+    rebuild never runs without a backup."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    dest = DB_PATH.with_name(f"{DB_PATH.name}.bak-{stamp}-{reason}")
+    src = sqlite3.connect(str(DB_PATH))
+    try:
+        out = sqlite3.connect(str(dest))
+        try:
+            src.backup(out)
+        finally:
+            out.close()
+    finally:
+        src.close()
+    logger.info(f"[MIGRATION] backed up {DB_PATH} -> {dest} before schema rebuild ({reason})")
+    return dest
 
 
 def init_db():
@@ -472,6 +493,7 @@ def init_db():
         # events.dog_id must accept NULL. SQLite can't drop NOT NULL in place -> rebuild.
         cursor.execute("PRAGMA table_info(events)")
         if any(col[1] == "dog_id" and col[3] for col in cursor.fetchall()):
+            backup_db_before_rebuild("events_dog_id_nullable")
             cursor.execute("ALTER TABLE events RENAME TO events_old_notnull")
             cursor.execute("DROP INDEX IF EXISTS idx_events_dog_ts")
             cursor.execute("DROP INDEX IF EXISTS idx_events_dog_date_type")
@@ -2830,21 +2852,6 @@ def get_latest_status_for_devices(device_ids: list[str]) -> Optional[dict]:
         ).fetchone()
     return _row_to_event(row) if row else None
 
-
-def get_device_dog_ids(device_id: str) -> list[str]:
-    """Dogs paired with a robot: the dogs owned by the robot's owner (same rule check_dog_access
-    applies to robot callers), oldest first. Empty if the robot is unpaired or owns no dogs."""
-    with db_connection() as conn:
-        rows = conn.execute(
-            """SELECT d.id FROM robots r
-               JOIN dogs d ON d.id IN (
-                   SELECT ud.dog_id FROM user_dogs ud WHERE ud.user_id = r.owner_user_id AND ud.role = 'owner'
-                   UNION SELECT d2.id FROM dogs d2 WHERE d2.user_id = r.owner_user_id)
-               WHERE r.device_id = ? AND r.owner_user_id IS NOT NULL
-               ORDER BY d.created_at ASC, d.id ASC""",
-            (device_id,),
-        ).fetchall()
-    return [r["id"] for r in rows]
 
 
 def count_events(dog_id: str, type: str, local_date: Optional[str] = None, since_ts: Optional[str] = None) -> int:

@@ -1,17 +1,31 @@
 """Pytest fixtures: point the app's SQLite at a temp file, seed a user + dog."""
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+REAL_DB = (ROOT / "data" / "wimz.db").resolve()
 sys.path.insert(0, str(ROOT))
+# Must be set BEFORE app.database is imported: its import runs init_db() (incl. migrations).
+# Tests never open the real data/wimz.db.
+_IMPORT_DB_DIR = tempfile.mkdtemp(prefix="wimz-test-")
+os.environ["WIMZ_DB_PATH"] = os.path.join(_IMPORT_DB_DIR, "import.db")
 os.environ.setdefault("INTERNAL_API_TOKEN", "test-internal-token")
 os.environ.setdefault("ADMIN_EMAILS", "admin@example.com")
 os.environ.setdefault("MCP_PUBLIC_BASE_URL", "http://127.0.0.1:8001")
 
-import app.database as db  # noqa: E402  (import runs init_db against the dev DB once; harmless)
+import app.database as db  # noqa: E402  (import runs init_db against the temp import.db above)
+
+assert Path(db.DB_PATH).resolve() != REAL_DB, "tests must never open data/wimz.db"
+
+
+@pytest.fixture(autouse=True)
+def _never_real_db():
+    yield
+    assert Path(db.DB_PATH).resolve() != REAL_DB, "a test pointed DB_PATH at data/wimz.db"
 
 
 @pytest.fixture()

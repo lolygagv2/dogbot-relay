@@ -59,13 +59,11 @@ what the robot agent found in the robot's sender:
 | `device_id` | string | no | **ignored for robot callers**; the relay uses the HMAC `X-Device-ID` |
 
 **Status is device-scoped.** Send `status` without a `dog_id` (it describes the robot, not a
-dog). The relay attaches it to every dog paired with the robot (the dogs of the robot's
-owner). If the robot has no paired dog yet, the relay still stores it (dog_id NULL, keyed by
-device_id), so status stays visible. If there are several dogs, the first gets your `event_id`
-and the others get `<event_id>:<dog_id>`, and the response lists only your `event_id`.
-Sending a `dog_id` on status still works and is still checked against the owner. The
-dog status the app, connector and agent read (`GET /api/dogs/{dog}/status`) is the latest
-status from the dog's paired robot, looked up by device_id.
+dog). The relay stores it once, with no dog, keyed by your device_id; there are no per-dog
+copies, and the response lists your `event_id` as usual. Every dog paired with your robot
+sees it: the dog status the app, connector and agent read (`GET /api/dogs/{dog}/status`) is
+the latest status from the dog's paired robot, looked up by device_id. Sending a `dog_id` on
+status still works and is still checked against the owner, but isn't needed.
 
 `ts` is ISO-8601 with offset (naive = UTC); `device_id` is taken from the HMAC identity.
 `data.image_url` / `data.clip_url` must be relay media paths (`/api/media/download/...`,

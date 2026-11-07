@@ -1,7 +1,7 @@
 """Contract fix 2026-11-06: status events are device-scoped.
 
-dog_id is optional for type "status" only; a dog-less status is resolved on ingest to the
-robot's paired dog(s), or stored with dog_id NULL keyed by device_id when the robot has none.
+dog_id is optional for type "status" only; a dog-less status is stored once with dog_id NULL,
+keyed by device_id (no per-dog copies).
 The dog status route reads the latest status by the paired robot's device_id, not by dog_id.
 """
 import asyncio
@@ -42,7 +42,7 @@ def test_eventin_dog_id_optional_only_for_status():
                                        "data": {"source": "auto"}}) == (None, "dog_id required")
 
 
-def test_unpaired_robot_status_stored_with_null_dog(temp_db):
+def test_status_without_dog_stored_once_with_null_dog(temp_db):
     res = _ingest([_status("s_unpaired")], device_id="robot_lonely")
     assert res["accepted"] == ["s_unpaired"]
     row = db.get_event("s_unpaired")
@@ -51,23 +51,44 @@ def test_unpaired_robot_status_stored_with_null_dog(temp_db):
     assert _ingest([_status("s_unpaired")], device_id="robot_lonely")["duplicate"] == ["s_unpaired"]
 
 
-def test_paired_robot_status_resolves_to_paired_dog(temp_db):
-    db.create_device_pairing("user_t1", "robot_t")
-    assert db.get_device_dog_ids("robot_t") == ["dog_t1"]
-    res = _ingest([_status("s_one")])
-    assert res["accepted"] == ["s_one"]
-    assert db.get_event("s_one")["dog_id"] == "dog_t1"
-
-
-def test_status_fans_out_to_every_paired_dog_idempotently(temp_db):
+def test_status_is_one_row_even_with_several_paired_dogs(temp_db):
     db.create_device_pairing("user_t1", "robot_t")
     db.create_dog(dog_id="dog_t3", name="Bea", user_id="user_t1")
     db.add_user_dog("user_t1", "dog_t3", "owner")
     res = _ingest([_status("s_multi")])
     assert res["accepted"] == ["s_multi"]
-    assert db.get_event("s_multi")["dog_id"] == "dog_t1"
-    assert db.get_event("s_multi:dog_t3")["dog_id"] == "dog_t3"
+    assert db.get_event("s_multi")["dog_id"] is None
+    assert db.get_event("s_multi:dog_t3") is None
+    with db.db_connection() as conn:
+        assert conn.execute("SELECT count(*) FROM events WHERE type = 'status'").fetchone()[0] == 1
     assert _ingest([_status("s_multi")])["duplicate"] == ["s_multi"]
+    # both dogs see it through the shared robot
+    owner = Actor(kind="app", id="user_t1", user_id="user_t1")
+    for dog in ("dog_t1", "dog_t3"):
+        assert asyncio.run(routes.get_dog_status(dog, actor=owner))["battery"] == 77
+
+
+def test_rebuild_migration_backs_up_first(tmp_path, monkeypatch):
+    import sqlite3
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE events (event_id TEXT PRIMARY KEY, dog_id TEXT NOT NULL, device_id TEXT NOT NULL,
+        user_id TEXT, type TEXT NOT NULL, ts TEXT NOT NULL, duration_s REAL, data TEXT NOT NULL DEFAULT '{}',
+        source TEXT NOT NULL DEFAULT 'robot', local_date TEXT NOT NULL, created_at TEXT NOT NULL)""")
+    conn.execute("INSERT INTO events VALUES ('e1','dog_t1','r','u','treat','t',NULL,'{}','robot','d','c')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, "DB_PATH", path)
+    db.init_db()
+    backups = list(tmp_path.glob("old.db.bak-*-events_dog_id_nullable"))
+    assert len(backups) == 1
+    b = sqlite3.connect(backups[0])
+    assert b.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+    assert [c[3] for c in b.execute("PRAGMA table_info(events)") if c[1] == "dog_id"] == [1]  # pre-rebuild copy
+    b.close()
+    assert db.get_event("e1")["dog_id"] == "dog_t1"  # data survived the rebuild
+    db.init_db()  # already nullable: no second backup
+    assert len(list(tmp_path.glob("old.db.bak-*"))) == 1
 
 
 def test_robot_post_without_dog_id_skips_dog_check(temp_db):

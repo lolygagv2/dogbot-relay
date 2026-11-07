@@ -18,7 +18,6 @@ from zoneinfo import ZoneInfo
 
 from app.database import (
     get_daily_summary_row,
-    get_device_dog_ids,
     get_event,
     insert_activity_event,
     insert_event,
@@ -215,28 +214,17 @@ async def ingest_events(
         if dog_id_override:
             ev["dog_id"] = dog_id_override
 
-        # Device-scoped status with no dog_id: fan out to the robot's paired dog(s), or keep
-        # one row with dog_id NULL keyed by device_id so robot status is still visible.
-        if ev["dog_id"] is None:
-            dog_ids: list[Optional[str]] = list(get_device_dog_ids(device_id)) or [None]
-        else:
-            dog_ids = [ev["dog_id"]]
-
-        any_inserted = False
-        for i, dog_id in enumerate(dog_ids):
-            row = dict(ev, dog_id=dog_id, data=dict(ev["data"]))
-            # first row keeps the robot's event_id; extra dogs get a deterministic derived id
-            row["event_id"] = ev["event_id"] if i == 0 else f"{ev['event_id']}:{dog_id}"
-            if await _ingest_one(row, device_id=device_id, user_id=user_id, source=source,
-                                 notify=notify, forward=forward, tz_cache=tz_cache, hooks=(i == 0)):
-                any_inserted = True
-        result["accepted" if any_inserted else "duplicate"].append(ev["event_id"])
+        # A status with no dog_id is device-scoped: stored once, dog_id NULL, keyed by
+        # device_id (no per-dog copies). Status reads go by the dog's paired robot.
+        inserted = await _ingest_one(ev, device_id=device_id, user_id=user_id, source=source,
+                                     notify=notify, forward=forward, tz_cache=tz_cache)
+        result["accepted" if inserted else "duplicate"].append(ev["event_id"])
 
     return result
 
 
 async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], source: str, notify: bool,
-                      forward: bool, tz_cache: dict, hooks: bool) -> bool:
+                      forward: bool, tz_cache: dict) -> bool:
     """Insert one validated event row and run the side effects. Returns False on duplicate."""
     from app.services import notify_service
 
@@ -303,8 +291,7 @@ async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], sourc
                 await notify_service.handle_triggers(ev, user_id)
             except Exception as e:  # pragma: no cover
                 logger.error(f"[EVENTS] triggers failed for {ev['event_id']}: {e}")
-        if hooks:  # once per robot event, even when a status fans out to several dogs
-            _agent_hooks(ev, user_id)
+        _agent_hooks(ev, user_id)
 
     if forward and user_id:
         await _forward(ev, user_id, mirrored_payload)
@@ -317,7 +304,7 @@ def _agent_hooks(ev: dict, user_id: Optional[str]) -> None:
 
     if ev["type"] != "status":
         return
-    dog_id = ev["dog_id"]  # may be None (unpaired robot); hooks are keyed by device
+    dog_id = ev["dog_id"]  # None for device-scoped status; the agent picks the dog itself
     mode = str(ev["data"].get("mode") or "")
     prev = _last_mode.get(ev["device_id"])
     _last_mode[ev["device_id"]] = mode
