@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from typing import Optional, Literal
 from datetime import datetime
 from enum import Enum
@@ -493,11 +493,19 @@ class EventIn(BaseModel):
         "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
         "treat", "music", "mission_run", "status",
     ]
-    dog_id: str = Field(..., min_length=1, max_length=128)
+    # Required for every type except "status": status is device-scoped (contract fix 2026-11-06)
+    # and, when omitted, is resolved on ingest to the robot's paired dog(s).
+    dog_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     ts: str = Field(..., description="ISO-8601 timestamp; naive = UTC")
     duration_s: Optional[float] = Field(default=None, ge=0, le=86400)
     data: dict = Field(default_factory=dict)
     device_id: Optional[str] = None   # ignored for robot callers (taken from HMAC identity)
+
+    @model_validator(mode="after")
+    def _dog_id_required_unless_status(self):
+        if self.dog_id is None and self.type != "status":
+            raise ValueError(f"dog_id is required for type {self.type!r}")
+        return self
 
 
 class EventBatchIn(BaseModel):

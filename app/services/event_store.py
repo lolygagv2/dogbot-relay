@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from app.database import (
     get_daily_summary_row,
+    get_device_dog_ids,
     get_event,
     insert_activity_event,
     insert_event,
@@ -26,6 +27,7 @@ from app.database import (
     mark_summary_dirty,
     upsert_daily_summary,
 )
+from app.config import get_settings
 from app.models import EVENT_TYPES, TreatSchedule
 from app.services import settings_service
 
@@ -35,7 +37,7 @@ MEDIA_PREFIX = "/api/media/download/"
 SETTLE_WINDOW_S = 600  # a settle within episode end + 10 min counts for that episode
 LOW_HOPPER_THRESHOLD = 3
 
-# last known robot mode per dog (for sg_rearm detection); in-process only
+# last known robot mode per device (for sg_rearm detection); in-process only
 _last_mode: dict[str, str] = {}
 
 
@@ -80,8 +82,9 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
     event_id = str(ev.get("event_id") or "").strip()
     if not event_id or len(event_id) > 128:
         return None, "event_id required"
-    dog_id = str(ev.get("dog_id") or "").strip()
-    if not dog_id:
+    dog_id = str(ev.get("dog_id") or "").strip() or None
+    if dog_id is None and etype != "status":
+        # status is device-scoped (contract fix 2026-11-06); resolved on ingest
         return None, "dog_id required"
     dt = normalize_ts(ev.get("ts"))
     if dt is None:
@@ -201,8 +204,6 @@ async def ingest_events(
     dog_id_override: Optional[str] = None,
 ) -> dict:
     """Run the pipeline for a batch. Returns {accepted, duplicate, rejected}."""
-    from app.services import notify_service
-
     result: dict[str, list] = {"accepted": [], "duplicate": [], "rejected": []}
     tz_cache: dict[str, ZoneInfo] = {}
 
@@ -213,60 +214,87 @@ async def ingest_events(
             continue
         if dog_id_override:
             ev["dog_id"] = dog_id_override
-        dog_id = ev["dog_id"]
-        tz = tz_cache.get(dog_id)
-        if tz is None:
-            tz = settings_service.get_timezone(dog_id)
-            tz_cache[dog_id] = tz
-        local_date = local_date_for(ev["_dt"], tz)
-        ev["local_date"] = local_date
-        ev["source"] = source
-        ev["device_id"] = device_id
-        ev["user_id"] = user_id
 
-        # settle: derive settle_s from the referenced episode so pushes/roll-ups can quote it
-        if ev["type"] == "settle" and ev["data"].get("episode_id") and "settle_s" not in ev["data"]:
-            episode = get_event(str(ev["data"]["episode_id"]))
-            if episode:
-                delta = (ev["_dt"] - normalize_ts(episode["ts"])).total_seconds()
-                if delta >= 0:
-                    ev["data"]["settle_s"] = round(delta)
+        # Device-scoped status with no dog_id: fan out to the robot's paired dog(s), or keep
+        # one row with dog_id NULL keyed by device_id so robot status is still visible.
+        if ev["dog_id"] is None:
+            dog_ids: list[Optional[str]] = list(get_device_dog_ids(device_id)) or [None]
+        else:
+            dog_ids = [ev["dog_id"]]
 
-        inserted = insert_event(
-            event_id=ev["event_id"], dog_id=dog_id, device_id=device_id, user_id=user_id,
-            type=ev["type"], ts=ev["ts"], duration_s=ev["duration_s"], data=ev["data"],
-            source=source, local_date=local_date,
-        )
-        if not inserted:
-            result["duplicate"].append(ev["event_id"])
-            continue
-        result["accepted"].append(ev["event_id"])
+        any_inserted = False
+        for i, dog_id in enumerate(dog_ids):
+            row = dict(ev, dog_id=dog_id, data=dict(ev["data"]))
+            # first row keeps the robot's event_id; extra dogs get a deterministic derived id
+            row["event_id"] = ev["event_id"] if i == 0 else f"{ev['event_id']}:{dog_id}"
+            if await _ingest_one(row, device_id=device_id, user_id=user_id, source=source,
+                                 notify=notify, forward=forward, tz_cache=tz_cache, hooks=(i == 0)):
+                any_inserted = True
+        result["accepted" if any_inserted else "duplicate"].append(ev["event_id"])
 
-        if ev["type"] == "treat" and ev["data"].get("command_id"):
-            link_treat_ledger(str(ev["data"]["command_id"]), ev["event_id"])
-        if ev["type"] == "treat" and ev["data"].get("image_url"):
-            # PHOTO ACCESS: treat stills are kept 7 days (other stills 24h)
-            from app.services import media_files
-            media_files.pin_media(ev["data"]["image_url"], media_files.TREAT_STILL_TTL_S)
+    return result
 
+
+async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], source: str, notify: bool,
+                      forward: bool, tz_cache: dict, hooks: bool) -> bool:
+    """Insert one validated event row and run the side effects. Returns False on duplicate."""
+    from app.services import notify_service
+
+    dog_id = ev["dog_id"]
+    tz_key = dog_id or ""
+    tz = tz_cache.get(tz_key)
+    if tz is None:
+        tz = settings_service.get_timezone(dog_id) if dog_id else ZoneInfo(get_settings().default_timezone)
+        tz_cache[tz_key] = tz
+    local_date = local_date_for(ev["_dt"], tz)
+    ev["local_date"] = local_date
+    ev["source"] = source
+    ev["device_id"] = device_id
+    ev["user_id"] = user_id
+
+    # settle: derive settle_s from the referenced episode so pushes/roll-ups can quote it
+    if ev["type"] == "settle" and ev["data"].get("episode_id") and "settle_s" not in ev["data"]:
+        episode = get_event(str(ev["data"]["episode_id"]))
+        if episode:
+            delta = (ev["_dt"] - normalize_ts(episode["ts"])).total_seconds()
+            if delta >= 0:
+                ev["data"]["settle_s"] = round(delta)
+
+    inserted = insert_event(
+        event_id=ev["event_id"], dog_id=dog_id, device_id=device_id, user_id=user_id,
+        type=ev["type"], ts=ev["ts"], duration_s=ev["duration_s"], data=ev["data"],
+        source=source, local_date=local_date,
+    )
+    if not inserted:
+        return False
+
+    if ev["type"] == "treat" and ev["data"].get("command_id"):
+        link_treat_ledger(str(ev["data"]["command_id"]), ev["event_id"])
+    if ev["type"] == "treat" and ev["data"].get("image_url"):
+        # PHOTO ACCESS: treat stills are kept 7 days (other stills 24h)
+        from app.services import media_files
+        media_files.pin_media(ev["data"]["image_url"], media_files.TREAT_STILL_TTL_S)
+
+    if ev["type"] != "status":  # status is never rolled up
         mark_summary_dirty(dog_id, local_date)
 
-        mirrored_payload = None
-        mirror = _mirror_activity(ev)
-        if mirror and user_id:
-            act_type, payload = mirror
-            payload = {k: v for k, v in payload.items() if v is not None}
-            payload["event_id"] = ev["event_id"]
-            try:
-                stored = insert_activity_event(
-                    event_id=ev["event_id"], user_id=user_id, device_id=device_id, dog_id=dog_id,
-                    type=act_type, timestamp=ev["ts"], payload=payload,
-                )
-                mirrored_payload = (act_type, stored["payload"])
-            except Exception as e:  # pragma: no cover
-                logger.error(f"[EVENTS] activity mirror failed for {ev['event_id']}: {e}")
+    mirrored_payload = None
+    mirror = _mirror_activity(ev)
+    if mirror and user_id:
+        act_type, payload = mirror
+        payload = {k: v for k, v in payload.items() if v is not None}
+        payload["event_id"] = ev["event_id"]
+        try:
+            stored = insert_activity_event(
+                event_id=ev["event_id"], user_id=user_id, device_id=device_id, dog_id=dog_id,
+                type=act_type, timestamp=ev["ts"], payload=payload,
+            )
+            mirrored_payload = (act_type, stored["payload"])
+        except Exception as e:  # pragma: no cover
+            logger.error(f"[EVENTS] activity mirror failed for {ev['event_id']}: {e}")
 
-        if notify:
+    if notify:
+        if dog_id:
             try:
                 await notify_service.evaluate_notify_rules(ev, user_id)
             except Exception as e:  # pragma: no cover
@@ -275,12 +303,12 @@ async def ingest_events(
                 await notify_service.handle_triggers(ev, user_id)
             except Exception as e:  # pragma: no cover
                 logger.error(f"[EVENTS] triggers failed for {ev['event_id']}: {e}")
+        if hooks:  # once per robot event, even when a status fans out to several dogs
             _agent_hooks(ev, user_id)
 
-        if forward and user_id:
-            await _forward(ev, user_id, mirrored_payload)
-
-    return result
+    if forward and user_id:
+        await _forward(ev, user_id, mirrored_payload)
+    return True
 
 
 def _agent_hooks(ev: dict, user_id: Optional[str]) -> None:
@@ -289,10 +317,10 @@ def _agent_hooks(ev: dict, user_id: Optional[str]) -> None:
 
     if ev["type"] != "status":
         return
-    dog_id = ev["dog_id"]
+    dog_id = ev["dog_id"]  # may be None (unpaired robot); hooks are keyed by device
     mode = str(ev["data"].get("mode") or "")
-    prev = _last_mode.get(dog_id)
-    _last_mode[dog_id] = mode
+    prev = _last_mode.get(ev["device_id"])
+    _last_mode[ev["device_id"]] = mode
     if mode == "silent_guardian" and prev is not None and prev != "silent_guardian":
         notify_service.notify_agent("sg_rearm", ev["device_id"], user_id, dog_id,
                                     {"previous_mode": prev, "armed_at": ev["ts"]}, ev["event_id"])
@@ -300,6 +328,8 @@ def _agent_hooks(ev: dict, user_id: Optional[str]) -> None:
     if isinstance(tr, (int, float)) and tr <= LOW_HOPPER_THRESHOLD:
         cap = None
         try:
+            if not dog_id:
+                raise ValueError("no dog")
             cap = TreatSchedule.model_validate(settings_service.get_value(dog_id, "treat_schedule")).daily_cap
         except Exception:
             pass

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from app.auth import Actor, check_dog_access, resolve_actor
-from app.database import get_event, get_latest_event, get_user_paired_devices, list_events
+from app.database import get_event, get_latest_status_for_devices, get_user_paired_devices, list_events
 from app.services import media_files
 from app.models import EVENT_TYPES, EventBatchIn, EventBatchResult, QuietHours
 from app.services import event_store, settings_service
@@ -38,7 +38,8 @@ async def post_events(batch: EventBatchIn, actor: Actor = Depends(resolve_actor)
     rejected, allowed = [], []
     for ev in batch.events:
         try:
-            if actor.kind == "robot":
+            # status without dog_id is device-scoped: resolved to the robot's paired dog(s) on ingest
+            if actor.kind == "robot" and ev.dog_id is not None:
                 check_dog_access(actor, ev.dog_id)
             allowed.append(ev.model_dump())
         except HTTPException as e:
@@ -97,19 +98,26 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
     manager = get_connection_manager()
     devices = get_user_paired_devices(owner) if owner else []
     online = [d for d in devices if manager.is_robot_online(d)]
-    last = get_latest_event(dog_id, "status")
+    replay_active, replay_device = False, None
+    try:
+        from app.services.replayer import get_replayer
+        rp = get_replayer()
+        replay_active = rp.handles(dog_id)
+        replay_device = rp.device_id if replay_active else None
+    except ImportError:
+        pass
+    # Status is device-scoped (contract fix 2026-11-06): read the latest status row by device_id
+    # for the dog's paired robot(s) -- an online robot first -- never by dog_id.
+    candidates = online or devices
+    if replay_device:
+        candidates = [*candidates, replay_device]
+    last = get_latest_status_for_devices(candidates)
     used, _ = settings_service.treats_used_today(dog_id)
     cap = settings_service.get_value(dog_id, "treat_schedule").get("daily_cap")
     qh = QuietHours.model_validate(settings_service.get_value(dog_id, "quiet_hours"))
-    replay_active = False
-    try:
-        from app.services.replayer import get_replayer
-        replay_active = get_replayer().handles(dog_id)
-    except ImportError:
-        pass
     return {
         "dog_id": dog_id,
-        "device_id": online[0] if online else (devices[0] if devices else None),
+        "device_id": (last or {}).get("device_id") or (online[0] if online else (devices[0] if devices else None)),
         "robot_online": bool(online),
         "mode": (last or {}).get("data", {}).get("mode"),
         "battery": (last or {}).get("data", {}).get("battery"),

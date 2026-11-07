@@ -24,7 +24,8 @@ X-Timestamp: <unix seconds>            # optional; sig over device_id+timestamp 
 
 `sig = HMAC_SHA256(device_secret, device_id + timestamp)` (the relay also accepts
 `device_id:timestamp` and plain `device_id`). The device must be paired to an owner, and
-every `dog_id` you reference must belong to that owner, or the event/request is rejected.
+every `dog_id` you reference must belong to that owner, or the event/request is rejected
+(`status` events may omit `dog_id`, see §2).
 
 ---
 
@@ -42,6 +43,30 @@ POST /events
 → 200 {"accepted": ["uuid"], "duplicate": [], "rejected": [{"event_id": "...", "reason": "..."}]}
 ```
 
+### Verified `EventIn` shape (contract fix 2026-11-06)
+
+This is the exact per-event shape the relay validates (`app/models.py: EventIn`), matching
+what the robot agent found in the robot's sender:
+
+| field | type | required | notes |
+|---|---|---|---|
+| `event_id` | string, 1-128 chars | yes | UUID; idempotency key |
+| `type` | enum (table below) | yes | |
+| `dog_id` | string, 1-128 chars | **yes, except `type: "status"`** | must belong to the device owner |
+| `ts` | string | yes | ISO-8601 with offset (naive = UTC); epoch s/ms also accepted |
+| `duration_s` | number 0-86400 | per type | |
+| `data` | object | no (default `{}`) | per-type fields below |
+| `device_id` | string | no | **ignored for robot callers**; the relay uses the HMAC `X-Device-ID` |
+
+**Status is device-scoped.** Send `status` without a `dog_id` (it describes the robot, not a
+dog). The relay attaches it to every dog paired with the robot (the dogs of the robot's
+owner). If the robot has no paired dog yet, the relay still stores it (dog_id NULL, keyed by
+device_id), so status stays visible. If there are several dogs, the first gets your `event_id`
+and the others get `<event_id>:<dog_id>`, and the response lists only your `event_id`.
+Sending a `dog_id` on status still works and is still checked against the owner. The
+dog status the app, connector and agent read (`GET /api/dogs/{dog}/status`) is the latest
+status from the dog's paired robot, looked up by device_id.
+
 `ts` is ISO-8601 with offset (naive = UTC); `device_id` is taken from the HMAC identity.
 `data.image_url` / `data.clip_url` must be relay media paths (`/api/media/download/...`,
 upload a still or clip first via the existing `POST /api/media/upload`); anything else is
@@ -57,7 +82,7 @@ stripped.
 | `treat` | `data.source` `auto\|app\|connector\|agent\|schedule` | `command_id` (echo the relay's command_id when the dispense was relay-issued, see §4), `count` (default 1), `multiplier` |
 | `music` | `data.action` `start\|stop`, `data.track` (a song sound_id) | `duration_s` on stop, `trigger` |
 | `mission_run` | `data.mission_id` or `data.mission_type`, `data.result` `success\|fail\|aborted` | `duration_s`, `trigger` `schedule\|departure\|manual\|agent` |
-| `status` | `data.battery` (int), `data.mode` | `treats_remaining`, `wifi_rssi`, **`docked`** (bool), **`light_level`** (0-255). Send every few minutes and on mode change. Never rolled up or pushed. `treats_remaining <= 3` triggers the agent's low-hopper speech; a transition into `silent_guardian` triggers the "re-armed" speech. |
+| `status` | `data.battery` (int), `data.mode`; **no `dog_id` needed** | `treats_remaining`, `wifi_rssi`, **`docked`** (bool), **`light_level`** (0-255). Send every few minutes and on mode change. Never rolled up or pushed. `treats_remaining <= 3` triggers the agent's low-hopper speech; a transition into `silent_guardian` triggers the "re-armed" speech. |
 
 The relay mirrors these into the app timeline, evaluates the owner's notify rules, and
 builds the daily roll-up (`GET /summary/{dog}/{date}`).

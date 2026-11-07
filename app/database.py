@@ -456,7 +456,7 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 event_id    TEXT PRIMARY KEY,
-                dog_id      TEXT NOT NULL,
+                dog_id      TEXT,              -- NULL only for status from a robot with no paired dog
                 device_id   TEXT NOT NULL,
                 user_id     TEXT,
                 type        TEXT NOT NULL,
@@ -468,7 +468,35 @@ def init_db():
                 created_at  TEXT NOT NULL
             )
         """)
+        # Migration (contract fix 2026-11-06): status events are device-scoped, so
+        # events.dog_id must accept NULL. SQLite can't drop NOT NULL in place -> rebuild.
+        cursor.execute("PRAGMA table_info(events)")
+        if any(col[1] == "dog_id" and col[3] for col in cursor.fetchall()):
+            cursor.execute("ALTER TABLE events RENAME TO events_old_notnull")
+            cursor.execute("DROP INDEX IF EXISTS idx_events_dog_ts")
+            cursor.execute("DROP INDEX IF EXISTS idx_events_dog_date_type")
+            cursor.execute("DROP INDEX IF EXISTS idx_events_source")
+            cursor.execute("""
+                CREATE TABLE events (
+                    event_id    TEXT PRIMARY KEY,
+                    dog_id      TEXT,
+                    device_id   TEXT NOT NULL,
+                    user_id     TEXT,
+                    type        TEXT NOT NULL,
+                    ts          TEXT NOT NULL,
+                    duration_s  REAL,
+                    data        TEXT NOT NULL DEFAULT '{}',
+                    source      TEXT NOT NULL DEFAULT 'robot',
+                    local_date  TEXT NOT NULL,
+                    created_at  TEXT NOT NULL
+                )
+            """)
+            cursor.execute("INSERT INTO events SELECT event_id, dog_id, device_id, user_id, type, ts, duration_s, "
+                           "data, source, local_date, created_at FROM events_old_notnull")
+            cursor.execute("DROP TABLE events_old_notnull")
+            logger.info("[MIGRATION] events.dog_id is now nullable (device-scoped status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_dog_ts ON events(dog_id, ts DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_device_type_ts ON events(device_id, type, ts DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_dog_date_type ON events(dog_id, local_date, type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_source ON events(source, dog_id)")
 
@@ -2706,7 +2734,7 @@ def get_dog_owner(dog_id: str) -> Optional[str]:
 
 def insert_event(
     event_id: str,
-    dog_id: str,
+    dog_id: Optional[str],
     device_id: str,
     user_id: Optional[str],
     type: str,
@@ -2787,6 +2815,36 @@ def get_latest_event(dog_id: str, type: str) -> Optional[dict]:
             (dog_id, type),
         ).fetchone()
     return _row_to_event(row) if row else None
+
+
+def get_latest_status_for_devices(device_ids: list[str]) -> Optional[dict]:
+    """Latest `status` event across the given robots, keyed by device_id (status is device-scoped)."""
+    ids = [d for d in dict.fromkeys(device_ids) if d]
+    if not ids:
+        return None
+    with db_connection() as conn:
+        row = conn.execute(
+            f"SELECT * FROM events WHERE type = 'status' AND device_id IN ({','.join('?' for _ in ids)}) "
+            "ORDER BY ts DESC LIMIT 1",
+            ids,
+        ).fetchone()
+    return _row_to_event(row) if row else None
+
+
+def get_device_dog_ids(device_id: str) -> list[str]:
+    """Dogs paired with a robot: the dogs owned by the robot's owner (same rule check_dog_access
+    applies to robot callers), oldest first. Empty if the robot is unpaired or owns no dogs."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            """SELECT d.id FROM robots r
+               JOIN dogs d ON d.id IN (
+                   SELECT ud.dog_id FROM user_dogs ud WHERE ud.user_id = r.owner_user_id AND ud.role = 'owner'
+                   UNION SELECT d2.id FROM dogs d2 WHERE d2.user_id = r.owner_user_id)
+               WHERE r.device_id = ? AND r.owner_user_id IS NOT NULL
+               ORDER BY d.created_at ASC, d.id ASC""",
+            (device_id,),
+        ).fetchall()
+    return [r["id"] for r in rows]
 
 
 def count_events(dog_id: str, type: str, local_date: Optional[str] = None, since_ts: Optional[str] = None) -> int:
