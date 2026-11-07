@@ -151,6 +151,7 @@ def _consent_form(sid: str, sess: dict) -> HTMLResponse:
         {''.join(rows)}
         <p class='note'>Read access to summaries, events and status is always included.
         Photos: see snapshots WIM-Z already took. Camera: ask WIM-Z to take a new snapshot. Never live video.
+        Listen: WIM-Z records up to 15 seconds of sound and the assistant hears it; clips are deleted after 1 hour.
         This assistant can only widen quiet hours, never narrow them. Treat requests are limited by your daily cap.</p>
         <div class='btns'>
           <button class='deny' type='submit' name='action' value='deny'>Deny</button>

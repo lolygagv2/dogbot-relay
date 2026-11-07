@@ -34,18 +34,20 @@ MOVE_ACTIONS: dict[str, tuple[str, int, int, int]] = {
 
 # What each actor kind may ask for. "relay" = departure triggers (not reachable over HTTP).
 ACTOR_ALLOWED: dict[str, set[str]] = {
-    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick"},
-    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick"},
-    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts"},
+    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen"},
+    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen"},
+    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen"},
     # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
     # server) — never with HUD, max one per 0.5 s per assistant. (Quiet hours no longer apply:
     # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
-    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo"},
+    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen"},
     # play_tts for "relay" = speak(): the URL is always a relay-made WIM-Z voice clip.
     "relay":     {"start_mission", "play_music", "play_tts"},
 }
 
 MOVE_WAIT_S = 8   # callers wait this long for the step's command_result
+LISTEN_MAX_S = 15   # listen: record 1-15 s; the clip is kept 1 hour (media_files.AUDIO_TTL_S)
+LISTEN_EXTRA_WAIT_S = 10   # callers wait seconds + this for the robot's command_result
 
 
 def move_tool_result(action: str, res: dict) -> dict:
@@ -63,6 +65,31 @@ def move_tool_result(action: str, res: dict) -> dict:
     if r.get("error"):
         out["error"] = str(r["error"])[:120]
     return out
+
+def listen_tool_result(res: dict) -> tuple[dict, Optional[str]]:
+    """Shape a dispatch() result for the listen tools: (fields, clip_url or None).
+    fields: ok, labels (list of str), db (number), plus seconds/peak_db/clip_expires_in_s when given."""
+    if res.get("simulated"):
+        return {"ok": False, "reason": "robot_offline_demo", "simulated": True}, None
+    if res.get("timed_out"):
+        return {"ok": False, "reason": "listen_timed_out", "command_id": res.get("command_id")}, None
+    r = res.get("result") or {}
+    inner = r.get("result") if isinstance(r.get("result"), dict) else {}
+    out: dict[str, Any] = {"ok": bool(r.get("ok", True)), "command_id": res.get("command_id")}
+    labels = inner.get("labels")
+    if isinstance(labels, list):
+        out["labels"] = [str(x)[:64] for x in labels if isinstance(x, (str, int, float))][:20]
+    for k in ("db", "peak_db", "seconds"):
+        if isinstance(inner.get(k), (int, float)) and not isinstance(inner.get(k), bool):
+            out[k] = inner[k]
+    if r.get("error"):
+        out["error"] = str(r["error"])[:120]
+    clip = next((inner[k] for k in ("clip_url", "audio_url", "url") if isinstance(inner.get(k), str) and inner[k]), None)
+    if clip:
+        from app.services.media_files import AUDIO_TTL_S
+        out["clip_expires_in_s"] = AUDIO_TTL_S
+    return out, clip
+
 
 PHOTO_MIN_INTERVAL_S = 0.5   # connectors: snapshot-move-snapshot loops need fast stills
 _last_photo: dict[str, float] = {}   # actor label -> monotonic time of last connector snapshot
@@ -177,6 +204,16 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
                                                              "amount": raw, "min": lo, "max": hi, "unit": unit})
             out = ("move", {"action": action, "amount": amount, "unit": unit, "speed": "creep",
                             "source": source, "command_id": command_id})
+        case "listen":
+            raw = data.get("seconds")
+            try:
+                seconds = int(raw)
+            except (TypeError, ValueError):
+                seconds = None
+            if seconds is None or isinstance(raw, bool) or not 1 <= seconds <= LISTEN_MAX_S:
+                raise HTTPException(status_code=422, detail={"code": "listen_seconds_out_of_range", "seconds": raw,
+                                                             "min": 1, "max": LISTEN_MAX_S})
+            out = ("listen", {"seconds": seconds, "source": source, "command_id": command_id})
         case "run_trick":
             trick = str(data.get("trick") or "")[:64]
             if trick not in KNOWN_TRICKS:

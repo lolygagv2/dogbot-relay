@@ -25,7 +25,7 @@ from app.mcp_server import oauth_db
 
 logger = logging.getLogger(__name__)
 
-ALL_SCOPES = ["read", "settings", "missions", "physical", "photos", "camera"]
+ALL_SCOPES = ["read", "settings", "missions", "physical", "photos", "camera", "listen"]
 SCOPE_LABELS = {
     "read": "Read summaries, events and robot status",
     "settings": "Change quiet hours, music and sensitivity",
@@ -33,16 +33,17 @@ SCOPE_LABELS = {
     "physical": "Give a treat, move the robot or speak through it",
     "photos": "See snapshots WIM-Z already took",
     "camera": "Ask WIM-Z to take a new snapshot (never live video)",
+    "listen": "Ask WIM-Z to listen for up to 15 seconds and hear the recording",
 }
 # Off by default on the consent screen even when requested (PHOTO ACCESS 2026-11-06).
-OPT_IN_SCOPES = {"photos", "camera"}
+OPT_IN_SCOPES = {"photos", "camera", "listen"}
 TOOL_SCOPES = {
     "get_dogs": "read", "get_day_summary": "read", "get_events": "read", "get_trend": "read",
     "get_missions": "read", "get_robot_status": "read",
     "set_quiet_hours": "settings", "set_music": "settings",
     "draft_mission": "missions", "schedule_mission": "missions",
     "give_treat": "physical", "go_to": "physical", "move": "physical", "speak": "physical",
-    "get_event_photo": "photos", "take_photo": "camera",
+    "get_event_photo": "photos", "take_photo": "camera", "listen": "listen",
 }
 
 

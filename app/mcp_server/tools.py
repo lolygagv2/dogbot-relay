@@ -2,12 +2,13 @@
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status
 Control tools: set_quiet_hours, set_music, draft_mission, schedule_mission, give_treat, go_to, move, speak
+Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
 calls the relay through RelayClient (actor `connector:<client_id>`). Relay refusals come
 back as ordinary results `{ok: false, refused: true, reason, ...}` so the assistant can
-tell the user why. Nothing here returns media, video or human audio; event payloads are
-whitelisted to scalar fields.
+tell the user why. Media is limited to stills (photos / camera scopes) and listen() clips (listen
+scope, kept 1 hour); never video. Event payloads are whitelisted to scalar fields.
 """
 from __future__ import annotations
 
@@ -21,13 +22,14 @@ from zoneinfo import ZoneInfo
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.server.mcpserver.utilities.types import Image
+from mcp.server.mcpserver.utilities.types import Audio, Image
 from mcp.types import ToolAnnotations
 
 from app.database import get_dog_by_id, get_user_dog_role, get_user_dogs
 from app.mcp_server.authz import audited, require_scope
 from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
+from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
@@ -442,6 +444,38 @@ def register_tools(mcp: MCPServer) -> None:
         except RelayRefusal as e:
             return [json.dumps(e.as_result())]
         return [_image(raw, ctype), json.dumps({"ok": True, "command_id": res.get("command_id"), "bytes": len(raw)})]
+
+    @mcp.tool(name="listen", annotations=CONTROL)
+    @audited("listen")
+    async def listen(dog_id: str, seconds: int) -> list:
+        """Asks the robot to listen for up to 15 seconds and returns what it heard, with the recording."""
+        client, user_id = _client("listen")
+        _check_dog(user_id, dog_id)
+        if not 1 <= int(seconds) <= LISTEN_MAX_S:
+            raise ToolError(f"seconds must be 1 to {LISTEN_MAX_S}")
+        try:
+            res = await client.command(dog_id, "listen", {"seconds": int(seconds)},
+                                       wait_s=int(seconds) + LISTEN_EXTRA_WAIT_S)
+        except RelayRefusal as e:
+            return [json.dumps(e.as_result())]
+        fields, clip = listen_tool_result(res)
+        if not clip:
+            if fields.get("ok"):
+                fields["clip"] = "none_returned"
+            return [json.dumps(fields)]
+        try:
+            raw, ctype = await client.still(dog_id, clip)
+        except RelayRefusal as e:
+            fields["clip"] = "unavailable"
+            fields["clip_error"] = e.as_result().get("reason")
+            return [json.dumps(fields)]
+        fields["clip_bytes"] = len(raw)
+        return [_audio(raw, ctype), json.dumps(fields)]
+
+    def _audio(raw: bytes, content_type: str) -> Audio:
+        fmt = {"audio/wav": "wav", "audio/x-wav": "wav", "audio/mpeg": "mpeg", "audio/mp4": "mp4",
+               "audio/ogg": "ogg", "audio/flac": "flac", "audio/aac": "aac"}.get(content_type.split(";")[0].strip(), "wav")
+        return Audio(data=raw, format=fmt)
 
     @mcp.tool(name="go_to", annotations=CONTROL)
     @audited("go_to")

@@ -1,7 +1,7 @@
 """Media file storage shared by the upload router, the event store and the photo routes.
 
 Files live in `media_storage_dir` (default <repo>/data/media, persistent across reboots).
-Retention: video 1 h, stills 24 h, and stills pinned by `pin_media` (treat snapshots) 7 days
+Retention: video 1 h, audio clips (listen) 1 h, stills 24 h, and stills pinned by `pin_media` (treat snapshots) 7 days
 (PHOTO ACCESS amendment 2026-11-06). Pins are sidecar files `<name>.ttl` holding the TTL in
 seconds, so they survive restarts. Seed stills under <repo>/seeds/media are read-only.
 """
@@ -18,11 +18,15 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 VIDEO_TTL_S = 3600
+AUDIO_TTL_S = 3600   # listen() clips
 IMAGE_TTL_S = 24 * 3600
 TREAT_STILL_TTL_S = 7 * 24 * 3600
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".aac"}
 MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
-               ".mp4": "video/mp4", ".mov": "video/quicktime"}
+               ".mp4": "video/mp4", ".mov": "video/quicktime",
+               ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg",
+               ".flac": "audio/flac", ".aac": "audio/aac"}
 DOWNLOAD_PREFIX = "/api/media/download/"
 SEEDS_MEDIA_DIR = Path(__file__).parent.parent.parent / "seeds" / "media"
 
@@ -52,6 +56,9 @@ def resolve(filename: str) -> Optional[Path]:
         return None
     p = media_dir() / safe
     if p.is_file():
+        # Expired files count as gone even before cleanup_old_files (which only runs on upload) deletes them.
+        if time.time() - p.stat().st_mtime > _ttl_for(p):
+            return None
         return p
     if safe.startswith("seed_"):
         sp = SEEDS_MEDIA_DIR / safe
@@ -83,7 +90,10 @@ def _ttl_for(path: Path) -> int:
             return int(side.read_text().strip())
         except (ValueError, OSError):
             pass
-    return IMAGE_TTL_S if path.suffix.lower() in IMAGE_EXTS else VIDEO_TTL_S
+    ext = path.suffix.lower()
+    if ext in IMAGE_EXTS:
+        return IMAGE_TTL_S
+    return AUDIO_TTL_S if ext in AUDIO_EXTS else VIDEO_TTL_S
 
 
 def cleanup_old_files() -> int:

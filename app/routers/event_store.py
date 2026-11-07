@@ -166,14 +166,15 @@ async def get_event_photo(dog_id: str, event_id: str, actor: Actor = Depends(res
 
 @router.get("/api/dogs/{dog_id}/media/{filename}")
 async def get_dog_media_still(dog_id: str, filename: str, actor: Actor = Depends(resolve_actor)):
-    """A still by download name (used right after take_photo). Images only; the name must come
-    from a robot paired to the dog's owner (upload names are <device_id>_<hex>.<ext>) or a seed."""
+    """A still (after take_photo) or a listen() audio clip, by download name. Images and audio only;
+    the name must come from a robot paired to the dog's owner (upload names are
+    <device_id>_<hex>.<ext>) or a seed. Expired files (stills 24 h, clips 1 h) are 404."""
     if actor.kind == "robot":
         raise HTTPException(status_code=403, detail={"code": "robot_not_allowed"})
     owner = check_dog_access(actor, dog_id)
     safe = filename.split("/")[-1]
     path = media_files.resolve(safe)
-    if not path or path.suffix.lower() not in media_files.IMAGE_EXTS:
+    if not path or path.suffix.lower() not in (media_files.IMAGE_EXTS | media_files.AUDIO_EXTS):
         raise HTTPException(status_code=404, detail={"code": "still_not_found"})
     devices = get_user_paired_devices(owner) if owner else []
     if not safe.startswith("seed_") and not any(safe.startswith(f"{d}_") for d in devices):

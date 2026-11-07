@@ -19,10 +19,11 @@ from app.database import get_dog_by_id, get_user_dog_role, get_user_dogs
 from app.mcp_server import oauth_db
 from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, move_tool_result
+from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 
 logger = logging.getLogger(__name__)
 
-PHYSICAL_TOOLS = {"give_treat", "go_to", "move", "take_photo", "run_trick", "standby", "speak"}
+PHYSICAL_TOOLS = {"give_treat", "go_to", "move", "take_photo", "listen", "run_trick", "standby", "speak"}
 MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
 GO_TO_TARGETS = ["dog", "dock"]
 MOVE_ACTIONS = list(MOVE_SPEC)
@@ -92,6 +93,11 @@ TOOLS: list[dict] = [
      "strict": True},
     {"name": "take_photo", "description": "Take one new snapshot with the robot camera (no HUD) and look at it. A copy is kept so the owner's app can add it to its photo gallery; don't say it is on a timeline. Describe what you see. Never live video.",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
+    {"name": "listen", "description": "Asks the robot to listen for up to 15 seconds and returns what it heard, with the recording.",
+     "input_schema": _schema({"dog_id": _str("dog id"),
+                              "seconds": {"type": "integer", "description": "how long to listen, 1-15 seconds"}},
+                             ["dog_id", "seconds"]),
+     "strict": True},
     {"name": "get_event_photo", "description": "Look at the snapshot WIM-Z already took for an event (use an event_id from get_events where has_photo is true).",
      "input_schema": _schema({"dog_id": _str("dog id"), "event_id": _str("event id")}, ["dog_id", "event_id"]), "strict": True},
     {"name": "run_trick", "description": "Ask the robot to cue a trick.",
@@ -235,6 +241,16 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
         if name == "go_to":
             res = await c.command(dog_id, "go_to", {"target": a["target"]})
             return {"ok": True, "target": a["target"], "simulated": res.get("simulated")}
+        if name == "listen":
+            secs = int(a["seconds"])
+            if not 1 <= secs <= LISTEN_MAX_S:
+                return {"ok": False, "refused": True, "reason": "listen_seconds_out_of_range", "max": LISTEN_MAX_S}
+            res = await c.command(dog_id, "listen", {"seconds": secs}, wait_s=secs + LISTEN_EXTRA_WAIT_S)
+            fields, clip = listen_tool_result(res)
+            if clip:
+                # The Messages API takes no audio input, so the voice agent gets the labels and level only.
+                fields["recording"] = "kept 1 hour for connectors; not playable here"
+            return fields
         if name == "move":
             res = await c.command(dog_id, "move", {"action": a["action"], "amount": a["amount"]}, wait_s=MOVE_WAIT_S)
             return move_tool_result(a["action"], res)
