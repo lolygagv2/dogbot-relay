@@ -82,7 +82,7 @@ TOOLS: list[dict] = [
     {"name": "go_to", "description": "Send the robot to a named spot.",
      "input_schema": _schema({"dog_id": _str("dog id"), "target": _str("target", GO_TO_TARGETS)}, ["dog_id", "target"]),
      "strict": True},
-    {"name": "take_photo", "description": "Take one new snapshot with the robot camera (no HUD) and look at it; it is also saved to the owner's timeline. Never live video.",
+    {"name": "take_photo", "description": "Take one new snapshot with the robot camera (no HUD) and look at it. The photo is not added to the owner's app timeline or photo gallery, so never say it was; describe what you see instead. Never live video.",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
     {"name": "get_event_photo", "description": "Look at the snapshot WIM-Z already took for an event (use an event_id from get_events where has_photo is true).",
      "input_schema": _schema({"dog_id": _str("dog id"), "event_id": _str("event id")}, ["dog_id", "event_id"]), "strict": True},
