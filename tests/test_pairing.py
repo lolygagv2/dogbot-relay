@@ -31,6 +31,17 @@ def test_unowned_robot_gets_no_dog(temp_db):
     assert pairing.device_dog_ids("wimz_robot_99") == []
 
 
+def test_new_robot_pairs_with_owners_existing_dogs(temp_db):
+    db.create_dog(dog_id="dog_t3", name="Bea", user_id="user_t1")
+    db.add_user_dog("user_t1", "dog_t3", "owner")
+    db.create_device_pairing("user_t1", "wimz_robot_05")
+    assert pairing.device_dog_ids("wimz_robot_05") == ["dog_t1", "dog_t3"]
+    assert db.get_dog_by_id(PH) is None                          # no placeholder
+    # dogs the owner only views/cares for are not the owner's dogs
+    db.create_device_pairing("user_t2", "wimz_robot_06")         # user_t2 is a viewer of dog_t1
+    assert pairing.device_dog_ids("wimz_robot_06") == ["ph_user_t2_wimz_robot_06"]
+
+
 def test_placeholder_created_once_and_paired(temp_db):
     _owner_without_dogs()
     assert pairing.device_dog_ids("wimz_robot_05") == [PH]

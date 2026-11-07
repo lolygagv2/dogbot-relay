@@ -1,8 +1,9 @@
 """Robot <-> dog pairing (2026-11-07). Pairing must never block a robot.
 
-`device_dogs` is the explicit link. When a robot with an owner has no paired dog, a
-placeholder dog is created for the owner (named after the robot, e.g. "Robot 05's dog"),
-paired to it, and treated like any other dog: events, roll-ups, settings, utterances and
+`device_dogs` is the explicit link. When a robot with an owner has no paired dog, it is
+paired with all of the owner's existing dogs; only if the owner has none is a placeholder
+dog created for the owner (named after the robot, e.g. "Robot 05's dog"), paired to it,
+and treated like any other dog: events, roll-ups, settings, utterances and
 commands all work against it. The owner can rename it (same dog_id, history kept), or
 re-pair the robot to other dogs; events are keyed by dog_id, so nothing is lost, and
 POST /api/dogs/merge folds a placeholder's history into a real dog.
@@ -22,8 +23,10 @@ from app.database import (
     get_dog_by_id,
     get_dog_device_ids,
     get_dog_owner,
+    get_owned_dog_ids,
     get_user_paired_devices,
     link_device_dog,
+    set_device_dogs,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +45,8 @@ def placeholder_dog_id(device_id: str, owner: str) -> str:
 
 
 def ensure_device_dogs(device_id: str) -> list[str]:
-    """Paired dog ids for a robot, creating + pairing a placeholder if it has none.
+    """Paired dog ids for a robot. A robot with none is paired with all of its owner's
+    existing dogs; if the owner has no dogs, with a new placeholder dog.
     Returns [] only when the robot has no owner (nothing to attach a dog to)."""
     dogs = get_device_dog_ids(device_id)
     if dogs:
@@ -50,6 +54,11 @@ def ensure_device_dogs(device_id: str) -> list[str]:
     owner = get_device_owner(device_id)
     if not owner:
         return []
+    owned = get_owned_dog_ids(owner)
+    if owned:
+        set_device_dogs(device_id, owned)
+        logger.info(f"[PAIRING] paired {device_id} with owner {owner}'s existing dogs {owned}")
+        return get_device_dog_ids(device_id)
     dog_id = placeholder_dog_id(device_id, owner)
     existing = get_dog_by_id(dog_id)
     if existing is None:

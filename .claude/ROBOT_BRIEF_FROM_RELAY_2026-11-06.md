@@ -15,10 +15,11 @@ not double-counted in the app timeline.
 ## 0. Pairing: the robot always has a dog (added 2026-11-07)
 
 Pairing never blocks the robot. The relay keeps an explicit robot-to-dog link
-(`device_dogs`). On `POST /api/device/register` and on every `/ws/device` connect, if your
-owner has no dog paired to you, the relay creates a **placeholder dog** for the owner, named
-after you (`wimz_robot_05` → "Robot 05's dog", id `ph_<owner>_<device_id>`), pairs it, and
-treats it like any dog: events, roll-ups, settings, commands and utterances all work.
+(`device_dogs`). On `POST /api/device/register` and on every `/ws/device` connect, if no
+dog is paired to you, the relay pairs you with **all of your owner's existing dogs**. Only
+if the owner has no dogs does it create a **placeholder dog** for the owner, named after you
+(`wimz_robot_05` → "Robot 05's dog", id `ph_<owner>_<device_id>`), pair it, and treat it
+like any dog: events, roll-ups, settings, commands and utterances all work.
 
 - The `profiles` message now also carries **`paired_dog_ids`**: your own dogs, first =
   primary. `profiles` itself still lists all of the owner's dogs (for ArUco recognition);

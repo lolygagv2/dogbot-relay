@@ -16,8 +16,9 @@ Error bodies are uniform: `{"detail": {"code": "...", ...}}`. Codes you will see
 ## 0. Robot ↔ dog pairing and placeholder dogs (added 2026-11-07)
 
 A robot is now explicitly paired to dogs. Pairing never blocks a robot: if you pair a robot
-(`POST /api/user/pair-device`) and it has no dog paired, the relay creates a **placeholder
-dog** for you named after the robot (e.g. "Robot 05's dog"). It is a normal dog in
+(`POST /api/user/pair-device`) and it has no dog paired, the relay pairs it with **all of
+your existing dogs** (narrow it with `PUT .../dogs` below). Only if you have no dogs does the
+relay create a **placeholder dog** for you named after the robot (e.g. "Robot 05's dog"). It is a normal dog in
 `GET /api/dogs` (same events, roll-up, settings, status, commands), flagged
 **`isPlaceholder: true`**. Suggest "Name your dog" in the UI for it.
 

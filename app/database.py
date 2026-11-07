@@ -2921,6 +2921,19 @@ def get_dog_device_ids(dog_id: str) -> list[str]:
     return [r["device_id"] for r in rows]
 
 
+def get_owned_dog_ids(user_id: str) -> list[str]:
+    """Dogs the user owns (user_dogs role=owner, else dogs.user_id), oldest first."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            """SELECT d.id FROM dogs d
+               WHERE d.id IN (SELECT ud.dog_id FROM user_dogs ud WHERE ud.user_id = ? AND ud.role = 'owner')
+                  OR (d.user_id = ? AND NOT EXISTS (SELECT 1 FROM user_dogs ux WHERE ux.dog_id = d.id AND ux.role = 'owner'))
+               ORDER BY d.created_at ASC, d.id ASC""",
+            (user_id, user_id),
+        ).fetchall()
+    return [r["id"] for r in rows]
+
+
 def link_device_dog(device_id: str, dog_id: str) -> None:
     with db_connection() as conn:
         conn.execute("INSERT OR IGNORE INTO device_dogs (device_id, dog_id, created_at) VALUES (?, ?, ?)",
