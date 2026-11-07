@@ -40,7 +40,7 @@ OPT_IN_SCOPES = {"photos", "camera", "listen"}
 TOOL_SCOPES = {
     "get_dogs": "read", "get_day_summary": "read", "get_events": "read", "get_trend": "read",
     "get_missions": "read", "get_robot_status": "read",
-    "set_quiet_hours": "settings", "set_music": "settings",
+    "set_quiet_hours": "settings", "set_music": "settings", "set_sg_sensitivity": "settings",
     "draft_mission": "missions", "schedule_mission": "missions",
     "give_treat": "physical", "go_to": "physical", "move": "physical", "speak": "physical",
     "get_event_photo": "photos", "take_photo": "camera", "listen": "listen",

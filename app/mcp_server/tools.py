@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status
-Control tools: set_quiet_hours, set_music, draft_mission, schedule_mission, give_treat, go_to, move, speak
+Control tools: set_quiet_hours, set_music, set_sg_sensitivity, draft_mission, schedule_mission, give_treat, go_to, move, speak
 Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
@@ -38,6 +38,7 @@ EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", 
                "mission_run", "status"]
 MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
 GO_TO_TARGETS = ["dog", "dock"]
+SG_LEVELS = ["low", "medium", "high"]
 MOVE_ACTIONS = list(_MOVE_SPEC)
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
@@ -287,6 +288,29 @@ def register_tools(mcp: MCPServer) -> None:
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return {"ok": True, "music_plan": row["value"], "version": row["version"]}
+
+    @mcp.tool(name="set_sg_sensitivity", annotations=CONTROL)
+    @audited("set_sg_sensitivity")
+    async def set_sg_sensitivity(dog_id: str, level: Optional[str] = None, min_episode_s: Optional[int] = None,
+                                 escalate_after_s: Optional[int] = None) -> dict:
+        """Set how sensitive Silent Guardian (bark intervention) is: level low, medium or high; min_episode_s = seconds of barking before it counts as an episode (1-600); escalate_after_s = seconds before it escalates (5-3600). Omitted values keep their current setting."""
+        client, user_id = _client("set_sg_sensitivity")
+        _check_dog(user_id, dog_id)
+        if level is not None and level not in SG_LEVELS:
+            raise ToolError(f"level must be one of: {', '.join(SG_LEVELS)}")
+        try:
+            cur = (await client.get_setting(dog_id, "sg_sensitivity")).get("value") or {}
+            new = dict(cur)
+            if level is not None:
+                new["level"] = level
+            if min_episode_s is not None:
+                new["min_episode_s"] = int(min_episode_s)
+            if escalate_after_s is not None:
+                new["escalate_after_s"] = int(escalate_after_s)
+            row = await client.put_setting(dog_id, "sg_sensitivity", new)
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return {"ok": True, "sg_sensitivity": row["value"], "version": row["version"]}
 
     def _normalise_draft(dog_id: str, goal: str, type: str, times: list[str], days: list[str],
                          trigger: str, duration_s: int, reward_treats: int, name: Optional[str]) -> tuple[dict, list[str]]:

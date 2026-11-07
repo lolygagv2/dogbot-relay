@@ -68,6 +68,12 @@ TOOLS: list[dict] = [
      "input_schema": _schema({"dog_id": _str("dog id"), "enabled": {"type": "boolean"},
                               "volume": {"type": "integer", "description": "0-100, or -1 to keep"}},
                              ["dog_id", "enabled", "volume"]), "strict": True},
+    {"name": "set_sg_sensitivity",
+     "description": "Set how sensitive Silent Guardian (bark intervention) is: level low, medium or high; min_episode_s = seconds of barking before it counts as an episode (1-600); escalate_after_s = seconds before it escalates (5-3600). Pass -1 for a number to keep its current value.",
+     "input_schema": _schema({"dog_id": _str("dog id"), "level": _str("low | medium | high", ["low", "medium", "high"]),
+                              "min_episode_s": {"type": "integer", "description": "1-600, or -1 to keep"},
+                              "escalate_after_s": {"type": "integer", "description": "5-3600, or -1 to keep"}},
+                             ["dog_id", "level", "min_episode_s", "escalate_after_s"]), "strict": True},
     {"name": "draft_mission",
      "description": "Propose a training mission as a draft the owner approves in the WIM-Z app (nothing runs until approved). type: recall, sit_stay, down_stay, place, quiet, find_treat, sit, down, stay, spin. trigger: schedule (needs time HH:MM), departure, or manual.",
      "input_schema": _schema({"dog_id": _str("dog id"), "type": _str("mission type", MISSION_TYPES),
@@ -210,6 +216,17 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
                 cur["volume"] = min(100, vol)
             row = await c.put_setting(dog_id, "music_plan", cur)
             return {"ok": True, "music_enabled": row["value"]["enabled"], "volume": row["value"]["volume"]}
+        if name == "set_sg_sensitivity":
+            cur = (await c.get_setting(dog_id, "sg_sensitivity")).get("value") or {}
+            cur["level"] = a["level"]
+            for k in ("min_episode_s", "escalate_after_s"):
+                v = int(a.get(k, -1))
+                if v >= 0:
+                    cur[k] = v
+            row = await c.put_setting(dog_id, "sg_sensitivity", cur)
+            v = row["value"]
+            return {"ok": True, "level": v["level"], "min_episode_s": v["min_episode_s"],
+                    "escalate_after_s": v["escalate_after_s"]}
         if name == "draft_mission":
             trig = a.get("trigger") or "manual"
             tm = (a.get("time") or "").strip() or None

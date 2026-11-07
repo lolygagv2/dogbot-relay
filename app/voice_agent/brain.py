@@ -186,7 +186,7 @@ class Brain:
                 tool_results_data.append(res)
                 if res.get("refused"):
                     refused.append(str(res.get("reason")))
-                if tu.name in ("set_quiet_hours", "set_music", "draft_mission") and res.get("ok"):
+                if tu.name in ("set_quiet_hours", "set_music", "set_sg_sensitivity", "draft_mission") and res.get("ok"):
                     settings_changes.append({"tool": tu.name, "result": res})
                 blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": _tool_result_content(res)})
             messages.append({"role": "user", "content": blocks})
@@ -268,6 +268,8 @@ class Brain:
             return toks
         if change["tool"] == "set_music":
             return [str(r.get("volume"))] if r.get("volume") is not None else []
+        if change["tool"] == "set_sg_sensitivity":
+            return [str(r.get("level") or "")]
         if change["tool"] == "draft_mission":
             return [str(r.get("type") or "").replace("_", " "), str(r.get("type") or "")]
         return []
@@ -280,6 +282,9 @@ class Brain:
             return f"Quiet hours are now {qh.get('start')} to {qh.get('end')}."
         if change["tool"] == "set_music":
             return f"Music is {'on' if r.get('music_enabled') else 'off'} at volume {r.get('volume')}."
+        if change["tool"] == "set_sg_sensitivity":
+            return (f"Silent Guardian sensitivity is now {r.get('level')}: an episode starts after "
+                    f"{r.get('min_episode_s')} seconds and escalates after {r.get('escalate_after_s')} seconds.")
         if change["tool"] == "draft_mission":
             t = f" at {r.get('time')}" if r.get("time") else ""
             return f"I've sent a {str(r.get('type')).replace('_', ' ')} mission{t} to your app for approval."
