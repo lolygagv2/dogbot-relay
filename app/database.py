@@ -3064,6 +3064,41 @@ def upsert_daily_summary(dog_id: str, date_str: str, tz: str, summary: dict,
         conn.commit()
 
 
+def list_device_events(device_id: str, types: list[str], since: Optional[str] = None,
+                       until: Optional[str] = None, limit: int = 20000) -> list[dict]:
+    """A robot's events of the given types, oldest first, with since <= ts < until."""
+    sql = f"SELECT * FROM events WHERE device_id = ? AND type IN ({','.join('?' for _ in types)})"
+    params: list = [device_id, *types]
+    if since:
+        sql += " AND ts >= ?"
+        params.append(since)
+    if until:
+        sql += " AND ts < ?"
+        params.append(until)
+    sql += " ORDER BY ts ASC LIMIT ?"
+    params.append(int(limit))
+    with db_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_event(r) for r in rows]
+
+
+def last_device_event_before(device_id: str, type: str, before: str) -> Optional[dict]:
+    with db_connection() as conn:
+        row = conn.execute("SELECT * FROM events WHERE device_id = ? AND type = ? AND ts < ? ORDER BY ts DESC LIMIT 1",
+                           (device_id, type, before)).fetchone()
+    return _row_to_event(row) if row else None
+
+
+def mark_summaries_dirty_from(dog_ids: list[str], date_str: str) -> None:
+    """Mark every cached summary on or after date_str dirty for these dogs."""
+    if not dog_ids:
+        return
+    with db_connection() as conn:
+        conn.execute(f"UPDATE daily_summary SET dirty = 1 WHERE date >= ? AND dog_id IN ({','.join('?' for _ in dog_ids)})",
+                     (date_str, *dog_ids))
+        conn.commit()
+
+
 def mark_summary_dirty(dog_id: str, date_str: str) -> None:
     with db_connection() as conn:
         conn.execute(

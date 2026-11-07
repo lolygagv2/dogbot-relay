@@ -39,6 +39,9 @@ EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", 
                "mission_run", "status"]
 GO_TO_TARGETS = ["dog", "dock"]
 SG_LEVELS = ["low", "medium", "high"]
+TREND_MAX_DAYS = 90
+TREND_METRICS = ["treats", "bark_episodes", "bark_s", "interventions", "pacing_s", "alone_s",
+                 "missions_success", "missions_fail", "sg_s", "coach_s"]
 MOVE_ACTIONS = list(_MOVE_SPEC)
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
 _HM = re.compile(r"^\d{2}:\d{2}$")
@@ -145,30 +148,37 @@ def register_tools(mcp: MCPServer) -> None:
 
     @mcp.tool(name="get_trend", annotations=READ)
     @audited("get_trend")
-    async def get_trend(dog_id: str, days: int = 7) -> dict:
-        """Day-by-day series over the last 7 or 14 days (treats, bark episodes, bark seconds,
-        interventions, missions, alone time, median time-to-settle) with totals and the delta
-        versus the previous period of the same length. Numbers only."""
+    async def get_trend(dog_id: str, days: int = 7, compare_dog_id: Optional[str] = None) -> dict:
+        """Day-by-day series over the last `days` days (1-90, default 7; today is the last day):
+        treats, bark episodes, bark seconds, interventions, pacing, alone time, missions, median
+        time-to-settle, and sg_s / coach_s (seconds the robot spent in Silent Guardian / Coach mode).
+        Returns totals and the delta versus the previous period of the same length.
+        compare_dog_id: a second dog on the same dates; adds `compare` (its series and totals) and
+        `comparison` (per metric: dog, compare, difference = dog - compare, pct_difference vs compare).
+        Robot mode time is shared by every dog in the home unless a mode session was for one dog,
+        so sg_s / coach_s are often equal between dogs. Numbers only."""
         client, user_id = _client("get_trend")
         _check_dog(user_id, dog_id)
-        days = 14 if int(days) >= 14 else 7
+        if compare_dog_id is not None:
+            if compare_dog_id == dog_id:
+                raise ToolError("compare_dog_id must be a different dog.")
+            _check_dog(user_id, compare_dog_id)
+        days = max(1, min(int(days), TREND_MAX_DAYS))
         try:
             status = await client.get_status(dog_id)
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         tz = ZoneInfo(status.get("timezone") or "UTC")
         today = datetime.now(timezone.utc).astimezone(tz).date()
-        dates = [(today - timedelta(days=i)).isoformat() for i in range(2 * days)]
-        sem = asyncio.Semaphore(6)
+        dates = [(today - timedelta(days=i)).isoformat() for i in range(2 * days)]   # newest first
+        sem = asyncio.Semaphore(8)
 
-        async def one(d: str) -> dict:
+        async def one(dog: str, d: str) -> dict:
             async with sem:
                 try:
-                    return await client.get_summary(dog_id, d)
+                    return await client.get_summary(dog, d)
                 except (RelayRefusal, RelayError):
                     return {"date": d, "counts": {}, "totals": {}, "time_to_settle": {}}
-
-        summaries = await asyncio.gather(*(one(d) for d in dates))
 
         def row(s: dict) -> dict:
             c, t, tts = s.get("counts", {}), s.get("totals", {}), s.get("time_to_settle", {})
@@ -176,23 +186,41 @@ def register_tools(mcp: MCPServer) -> None:
                     "bark_s": t.get("bark_s", 0), "interventions": c.get("intervention", 0),
                     "pacing_s": t.get("pacing_s", 0), "alone_s": t.get("alone_s", 0),
                     "missions_success": t.get("missions_success", 0), "missions_fail": t.get("missions_fail", 0),
+                    "sg_s": t.get("sg_s", 0), "coach_s": t.get("coach_s", 0),
                     "settle_median_s": tts.get("median_s")}
 
-        rows = [row(s) for s in summaries]
-        current, previous = list(reversed(rows[:days])), list(reversed(rows[days:]))
-        metrics = ["treats", "bark_episodes", "bark_s", "interventions", "pacing_s", "alone_s",
-                   "missions_success", "missions_fail"]
-
         def totals(rs: list[dict]) -> dict:
-            out = {m: sum((r.get(m) or 0) for r in rs) for m in metrics}
+            out = {m: sum((r.get(m) or 0) for r in rs) for m in TREND_METRICS}
             med = [r["settle_median_s"] for r in rs if r.get("settle_median_s") is not None]
             out["settle_median_s_avg"] = round(sum(med) / len(med)) if med else None
             return out
 
+        jobs = [one(dog_id, d) for d in dates]
+        if compare_dog_id:
+            jobs += [one(compare_dog_id, d) for d in dates[:days]]
+        summaries = await asyncio.gather(*jobs)
+        rows = [row(s) for s in summaries[:2 * days]]
+        current, previous = list(reversed(rows[:days])), list(reversed(rows[days:]))
         cur_t, prev_t = totals(current), totals(previous)
-        delta = {m: (cur_t[m] - prev_t[m]) for m in metrics}
-        return {"dog_id": dog_id, "days": days, "from": current[0]["date"], "to": current[-1]["date"],
-                "series": current, "totals": cur_t, "previous_period_totals": prev_t, "delta": delta}
+        delta = {m: (cur_t[m] - prev_t[m]) for m in TREND_METRICS}
+        out = {"dog_id": dog_id, "days": days, "from": current[0]["date"], "to": current[-1]["date"],
+               "series": current, "totals": cur_t, "previous_period_totals": prev_t, "delta": delta}
+        if compare_dog_id:
+            other = list(reversed([row(s) for s in summaries[2 * days:]]))
+            for r, d in zip(other, reversed(dates[:days])):
+                r["date"] = d   # same dates as `series`, even for a day the relay could not summarise
+            other_t = totals(other)
+            comparison = {}
+            for m in [*TREND_METRICS, "settle_median_s_avg"]:
+                a, b = cur_t[m], other_t[m]
+                if a is None or b is None:
+                    comparison[m] = {"dog": a, "compare": b, "difference": None, "pct_difference": None}
+                else:
+                    comparison[m] = {"dog": a, "compare": b, "difference": a - b,
+                                     "pct_difference": round((a - b) / b * 100) if b else None}
+            out["compare"] = {"dog_id": compare_dog_id, "series": other, "totals": other_t}
+            out["comparison"] = comparison
+        return out
 
     @mcp.tool(name="get_missions", annotations=READ)
     @audited("get_missions")

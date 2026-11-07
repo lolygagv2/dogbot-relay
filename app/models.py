@@ -483,7 +483,7 @@ class ScheduleListResponse(BaseModel):
 
 EVENT_TYPES = (
     "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
-    "treat", "music", "mission_run", "status",
+    "treat", "music", "mission_run", "status", "mode_change",
 )
 
 
@@ -491,8 +491,11 @@ class EventIn(BaseModel):
     event_id: str = Field(..., min_length=1, max_length=128)
     type: Literal[
         "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
-        "treat", "music", "mission_run", "status",
+        "treat", "music", "mission_run", "status", "mode_change",
     ]
+    # mode_change (2026-11-07): device-scoped like status; data.mode is the mode just entered.
+    # With dog_id it counts toward that dog only (e.g. a Coach session), without it toward all
+    # of the owner's dogs. Rolled up as totals.sg_s / totals.coach_s.
     # status: device-scoped, stored with dog_id NULL when omitted (contract fix 2026-11-06).
     # Other types: required, except a robot whose owner has exactly one dog may omit it and
     # the relay fills in that dog (owner model 2026-11-07).

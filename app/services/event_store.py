@@ -18,11 +18,17 @@ from zoneinfo import ZoneInfo
 
 from app.database import (
     get_daily_summary_row,
+    get_dog_owner,
     get_event,
+    get_user_dogs,
+    get_user_paired_devices,
     insert_activity_event,
     insert_event,
+    last_device_event_before,
     link_treat_ledger,
+    list_device_events,
     list_events,
+    mark_summaries_dirty_from,
     mark_summary_dirty,
     upsert_daily_summary,
 )
@@ -35,6 +41,9 @@ logger = logging.getLogger(__name__)
 MEDIA_PREFIX = "/api/media/download/"
 SETTLE_WINDOW_S = 600  # a settle within episode end + 10 min counts for that episode
 LOW_HOPPER_THRESHOLD = 3
+# mode time (2026-11-07): totals.<key> = seconds the robot spent in that mode on the local day
+MODE_TOTALS = {"silent_guardian": "sg_s", "coach": "coach_s"}
+HEARTBEAT_GRACE_S = 120  # a mode period ends this long after the robot's last status heartbeat
 
 # last known robot mode per device (for sg_rearm detection); in-process only
 _last_mode: dict[str, str] = {}
@@ -82,8 +91,8 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
     if not event_id or len(event_id) > 128:
         return None, "event_id required"
     dog_id = str(ev.get("dog_id") or "").strip() or None
-    if dog_id is None and etype != "status":
-        # status is device-scoped (contract fix 2026-11-06); resolved on ingest
+    if dog_id is None and etype not in ("status", "mode_change"):
+        # status / mode_change are device-scoped (contract fix 2026-11-06); resolved on ingest
         return None, "dog_id required"
     dt = normalize_ts(ev.get("ts"))
     if dt is None:
@@ -131,6 +140,11 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
             return None, "mission_run requires data.mission_id or data.mission_type"
         if data.get("result") not in ("success", "fail", "aborted"):
             return None, "mission_run requires data.result in success|fail|aborted"
+    elif etype == "mode_change":
+        mode = data.get("mode")
+        if not isinstance(mode, str) or not mode.strip() or len(mode) > 32:
+            return None, "mode_change requires data.mode"
+        data["mode"] = mode.strip().lower()
     elif etype == "status":
         if not isinstance(data.get("battery"), (int, float)):
             return None, "status requires data.battery"
@@ -263,7 +277,11 @@ async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], sourc
         from app.services import media_files
         media_files.pin_media(ev["data"]["image_url"], media_files.TREAT_STILL_TTL_S)
 
-    if ev["type"] != "status":  # status is never rolled up
+    if ev["type"] == "mode_change":
+        # a mode change shifts mode time for that day and every later day it carries into
+        dogs = [dog_id] if dog_id else [d["id"] for d in get_user_dogs(user_id or "") if d.get("role") == "owner"]
+        mark_summaries_dirty_from(dogs, (ev["_dt"] - timedelta(days=1)).date().isoformat())
+    elif ev["type"] != "status":  # status is never rolled up
         mark_summary_dirty(dog_id, local_date)
 
     mirrored_payload = None
@@ -366,12 +384,73 @@ def _parse(ts: str) -> datetime:
     return normalize_ts(ts) or datetime.now(timezone.utc)
 
 
+def _device_mode_periods(device_id: str, start: datetime, end: datetime) -> tuple[list[tuple], bool]:
+    """(mode, dog_id, from, to) periods for one robot within [start, end), from its mode_change events.
+    The mode in force at `start` carries in from the last earlier mode_change. A period also ends at a
+    status heartbeat reporting a different mode, and HEARTBEAT_GRACE_S after the last heartbeat (robot
+    went quiet). Returns (periods, still_running_at_end)."""
+    s_iso, e_iso = start.isoformat(), end.isoformat()
+    prior = last_device_event_before(device_id, "mode_change", s_iso)
+    rows = list_device_events(device_id, ["mode_change", "status"], since=s_iso, until=e_iso)
+    beats = [r for r in rows if r["type"] == "status"]
+    last_beat = beats[-1] if beats else last_device_event_before(device_id, "status", s_iso)
+    stop = end   # a robot that never sends status heartbeats is not capped
+    if last_beat:
+        stop = min(end, max(start, _parse(last_beat["ts"]) + timedelta(seconds=HEARTBEAT_GRACE_S)))
+    periods: list[tuple] = []
+    cur: Optional[tuple] = None   # (mode, dog_id, from)
+    for r in ([prior] if prior else []) + rows:
+        t = max(_parse(r["ts"]), start)
+        mode = str((r["data"] or {}).get("mode") or "").lower()
+        if r["type"] == "mode_change":
+            if cur:
+                periods.append((*cur, t))
+            cur = (mode, r["dog_id"], t)
+        elif cur and mode and mode != cur[0]:   # heartbeat contradicts the open period
+            periods.append((*cur, t))
+            cur = None
+    running = False
+    if cur:
+        periods.append((*cur, max(cur[2], stop)))
+        running = stop >= end
+    return periods, running
+
+
+def mode_seconds(dog_id: str, start: datetime, end_of_day: datetime, now: datetime) -> tuple[dict, bool]:
+    """Seconds the owner's robots spent in each MODE_TOTALS mode on [start, end_of_day), counting
+    periods whose mode_change named no dog or named this dog. Overlapping robots are counted once."""
+    out = {k: 0 for k in MODE_TOTALS.values()}
+    end = min(now, end_of_day)
+    owner = get_dog_owner(dog_id)
+    if end <= start or not owner:
+        return out, False
+    spans: dict[str, list[tuple[datetime, datetime]]] = {k: [] for k in out}
+    running = False
+    for device_id in get_user_paired_devices(owner):
+        periods, still = _device_mode_periods(device_id, start, end)
+        for mode, ev_dog, a, b in periods:
+            key = MODE_TOTALS.get(mode)
+            if key and (ev_dog is None or ev_dog == dog_id) and b > a:
+                spans[key].append((a, b))
+                running = running or (still and b >= end and end < end_of_day)
+    for key, iv in spans.items():
+        total, last_end = 0.0, None
+        for a, b in sorted(iv):
+            if last_end is not None and a < last_end:
+                a = last_end
+            if b > a:
+                total += (b - a).total_seconds()
+                last_end = b if last_end is None else max(last_end, b)
+        out[key] = round(total)
+    return out, running
+
+
 def compute_daily_summary(dog_id: str, date_str: str) -> dict:
     tz = settings_service.get_timezone(dog_id)
     rows = list_events(dog_id, local_date=date_str, limit=20000, order="asc")
-    rows = [r for r in rows if r["type"] != "status"]
+    rows = [r for r in rows if r["type"] not in ("status", "mode_change")]
 
-    counts = {t: 0 for t in EVENT_TYPES if t != "status"}
+    counts = {t: 0 for t in EVENT_TYPES if t not in ("status", "mode_change")}
     totals: dict[str, Any] = {
         "bark_s": 0.0, "pacing_s": 0.0, "music_s": 0.0, "treats": 0, "alone_s": 0.0,
         "interventions_by_kind": {}, "missions_success": 0, "missions_fail": 0,
@@ -472,6 +551,9 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
             settings_service.get_value(dog_id, "treat_schedule")).daily_cap
     except Exception:
         totals["treat_cap"] = None
+    mode_s, mode_running = mode_seconds(dog_id, day_start.astimezone(timezone.utc),
+                                        day_end.astimezone(timezone.utc), now)
+    totals.update(mode_s)
     for k in ("bark_s", "pacing_s", "music_s", "alone_s"):
         totals[k] = round(totals[k])
 
@@ -480,6 +562,7 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
         "computed_at": datetime.now(timezone.utc).isoformat(),
         "counts": counts, "totals": totals, "time_to_settle": tts, "top_episodes": top[:3],
         "event_count": len(rows),
+        "mode_running": mode_running,   # a counted mode is still on: recompute on the next read
         "first_event_ts": rows[0]["ts"] if rows else None,
         "last_event_ts": rows[-1]["ts"] if rows else None,
     }
@@ -487,7 +570,7 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
 
 def get_summary(dog_id: str, date_str: str, refresh: bool = False) -> dict:
     row = None if refresh else get_daily_summary_row(dog_id, date_str)
-    if row and not row["dirty"]:
+    if row and not row["dirty"] and not row["summary"].get("mode_running"):
         return row["summary"]
     summary = compute_daily_summary(dog_id, date_str)
     upsert_daily_summary(dog_id, date_str, summary["tz"], summary, summary["event_count"],

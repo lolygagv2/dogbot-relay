@@ -37,13 +37,13 @@ async def post_events(batch: EventBatchIn, actor: Actor = Depends(resolve_actor)
     # Robot may only post for dogs its owner has; admin may post for anything.
     # A robot may omit dog_id only when its owner has exactly one dog (the relay fills it in);
     # with several, it must say which -- never guess on recorded data. Status stays
-    # device-scoped with dog_id NULL.
+    # device-scoped with dog_id NULL, and so does mode_change (robot mode, 2026-11-07).
     owner_dogs = pairing.device_dog_ids(device_id) if actor.kind == "robot" else []
     rejected, allowed = [], []
     for ev in batch.events:
         try:
             item = ev.model_dump()
-            if item["dog_id"] is None and ev.type != "status":
+            if item["dog_id"] is None and ev.type not in ("status", "mode_change"):
                 if len(owner_dogs) != 1:
                     rejected.append({"event_id": ev.event_id,
                                      "reason": f"dog_id required (owner has {len(owner_dogs)} dogs)"})
@@ -87,7 +87,7 @@ async def get_dog_events(
         if bad:
             raise HTTPException(status_code=422, detail={"code": "unknown_type", "types": bad})
     else:
-        types = [t for t in EVENT_TYPES if t != "status"]
+        types = [t for t in EVENT_TYPES if t not in ("status", "mode_change")]
     for name, val in (("since", since), ("until", until)):
         if val and event_store.normalize_ts(val) is None:
             raise HTTPException(status_code=422, detail={"code": "bad_timestamp", "field": name})
