@@ -304,7 +304,7 @@ def _agent_hooks(ev: dict, user_id: Optional[str]) -> None:
 
     if ev["type"] != "status":
         return
-    dog_id = ev["dog_id"]  # None for device-scoped status; the agent picks the dog itself
+    dog_id = ev["dog_id"]  # None for device-scoped status; the agent resolves the robot's dog
     mode = str(ev["data"].get("mode") or "")
     prev = _last_mode.get(ev["device_id"])
     _last_mode[ev["device_id"]] = mode

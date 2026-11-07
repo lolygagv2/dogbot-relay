@@ -34,6 +34,13 @@ def db_connection():
         conn.close()
 
 
+# dog d is owned by robot r's owner (same rule as get_dog_owner / check_dog_access)
+_OWNED_BY_ROBOT_OWNER_SQL = """(
+    d.id IN (SELECT ud.dog_id FROM user_dogs ud WHERE ud.user_id = r.owner_user_id AND ud.role = 'owner')
+    OR (d.user_id = r.owner_user_id
+        AND NOT EXISTS (SELECT 1 FROM user_dogs ux WHERE ux.dog_id = d.id AND ux.role = 'owner')))"""
+
+
 def backup_db_before_rebuild(reason: str) -> Path:
     """Consistent copy of the DB (SQLite online backup, WAL-safe) before any schema rebuild.
     Written next to the DB as wimz.db.bak-<UTC timestamp>-<reason>. Raises on failure so the
@@ -166,6 +173,33 @@ def init_db():
         if "device_secret" not in robot_columns:
             cursor.execute("ALTER TABLE robots ADD COLUMN device_secret TEXT")
             logger.info("[MIGRATION] Added device_secret column to robots table")
+
+        # Pairing (2026-11-07): explicit robot <-> dog link. Before this table a robot's
+        # dogs were implicitly "every dog its owner owns"; the first creation backfills
+        # exactly that so existing robots keep the same dogs.
+        cursor.execute("PRAGMA table_info(dogs)")
+        if "is_placeholder" not in [col[1] for col in cursor.fetchall()]:
+            cursor.execute("ALTER TABLE dogs ADD COLUMN is_placeholder INTEGER NOT NULL DEFAULT 0")
+            logger.info("[MIGRATION] Added is_placeholder column to dogs table")
+        cursor.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_dogs'")
+        device_dogs_existed = cursor.fetchone() is not None
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS device_dogs (
+                device_id   TEXT NOT NULL,
+                dog_id      TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                PRIMARY KEY (device_id, dog_id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_device_dogs_dog ON device_dogs(dog_id)")
+        if not device_dogs_existed:
+            cursor.execute(f"""
+                INSERT OR IGNORE INTO device_dogs (device_id, dog_id, created_at)
+                SELECT r.device_id, d.id, ? FROM robots r JOIN dogs d
+                  ON {_OWNED_BY_ROBOT_OWNER_SQL}
+                WHERE r.owner_user_id IS NOT NULL
+            """, (datetime.now(timezone.utc).isoformat(),))
+            logger.info(f"[MIGRATION] Created device_dogs, backfilled {cursor.rowcount} owner-implied link(s)")
 
         # Dog photos table
         cursor.execute("""
@@ -928,6 +962,7 @@ def _row_to_dog(row) -> dict:
         "goals": goals,
         "last_mission_id": row["last_mission_id"] if "last_mission_id" in keys else None,
         "photo_version": row["photo_version"] if "photo_version" in keys else 1,
+        "is_placeholder": bool(row["is_placeholder"]) if "is_placeholder" in keys else False,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"] if "updated_at" in keys else row["created_at"],
     }
@@ -953,6 +988,9 @@ def update_dog(dog_id: str, **fields) -> Optional[dict]:
         fields["goals"] = json.dumps(fields["goals"])
 
     fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if fields.get("name"):
+        # an owner naming the robot's placeholder dog makes it a regular dog (same dog_id)
+        fields["is_placeholder"] = 0
 
     with db_connection() as conn:
         cursor = conn.cursor()
@@ -979,6 +1017,8 @@ def delete_dog(dog_id: str, user_id: str = None) -> bool:
 
         # Delete user_dogs relationships first
         cursor.execute("DELETE FROM user_dogs WHERE dog_id = ?", (dog_id,))
+        # Unpair from robots (a robot left with no dog gets a placeholder on next contact)
+        cursor.execute("DELETE FROM device_dogs WHERE dog_id = ?", (dog_id,))
         # Delete dog photos
         cursor.execute("DELETE FROM dog_photos WHERE dog_id = ?", (dog_id,))
         # Delete dog metrics
@@ -1125,6 +1165,17 @@ def _merge_dog_rows(cursor, user_id: str, survivor: str, losers: list[str]) -> d
             (survivor, loser),
         )
         cursor.execute("DELETE FROM user_dogs WHERE dog_id = ?", (loser,))
+
+        # Event store (Dec 9 build) + pairing: events and their audit trails follow the
+        # survivor so re-pairing a robot off a placeholder never loses history.
+        for table in ("events", "notify_log", "settings_audit", "treat_ledger", "mission_drafts", "mcp_audit"):
+            cursor.execute(f"UPDATE {table} SET dog_id = ? WHERE dog_id = ?", (survivor, loser))
+        for table in ("session_report", "dog_settings", "device_dogs"):
+            # PK/unique collisions: the survivor already has that row and keeps its own
+            cursor.execute(f"UPDATE OR IGNORE {table} SET dog_id = ? WHERE dog_id = ?", (survivor, loser))
+            cursor.execute(f"DELETE FROM {table} WHERE dog_id = ?", (loser,))
+        cursor.execute("DELETE FROM daily_summary WHERE dog_id = ?", (loser,))
+        cursor.execute("UPDATE daily_summary SET dirty = 1 WHERE dog_id = ?", (survivor,))
 
         cursor.execute("DELETE FROM dogs WHERE id = ?", (loser,))
     return stats
@@ -2837,6 +2888,67 @@ def get_latest_event(dog_id: str, type: str) -> Optional[dict]:
             (dog_id, type),
         ).fetchone()
     return _row_to_event(row) if row else None
+
+
+# ---- device_dogs (pairing, 2026-11-07) ----
+
+def get_device_dog_ids(device_id: str) -> list[str]:
+    """Dogs paired with a robot via device_dogs, oldest link first. Only dogs the robot's
+    CURRENT owner owns count (a robot handed to a new owner drops the old owner's dogs)."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT d.id FROM device_dogs dd
+                JOIN robots r ON r.device_id = dd.device_id AND r.owner_user_id IS NOT NULL
+                JOIN dogs d ON d.id = dd.dog_id AND {_OWNED_BY_ROBOT_OWNER_SQL}
+                WHERE dd.device_id = ?
+                ORDER BY dd.created_at ASC, d.created_at ASC, d.id ASC""",
+            (device_id,),
+        ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def get_dog_device_ids(dog_id: str) -> list[str]:
+    """Robots a dog is paired with via device_dogs (owner-checked), oldest link first."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT dd.device_id FROM device_dogs dd
+                JOIN robots r ON r.device_id = dd.device_id AND r.owner_user_id IS NOT NULL
+                JOIN dogs d ON d.id = dd.dog_id AND {_OWNED_BY_ROBOT_OWNER_SQL}
+                WHERE dd.dog_id = ?
+                ORDER BY dd.created_at ASC, dd.device_id ASC""",
+            (dog_id,),
+        ).fetchall()
+    return [r["device_id"] for r in rows]
+
+
+def link_device_dog(device_id: str, dog_id: str) -> None:
+    with db_connection() as conn:
+        conn.execute("INSERT OR IGNORE INTO device_dogs (device_id, dog_id, created_at) VALUES (?, ?, ?)",
+                     (device_id, dog_id, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+
+
+def set_device_dogs(device_id: str, dog_ids: list[str]) -> None:
+    """Replace a robot's pairing with exactly these dogs (order = link order). Events are
+    keyed by dog_id, so unlinking a dog never touches its history."""
+    now = datetime.now(timezone.utc)
+    with db_connection() as conn:
+        conn.execute("DELETE FROM device_dogs WHERE device_id = ?", (device_id,))
+        for i, dog_id in enumerate(dict.fromkeys(dog_ids)):
+            conn.execute("INSERT INTO device_dogs (device_id, dog_id, created_at) VALUES (?, ?, ?)",
+                         (device_id, dog_id, (now + timedelta(microseconds=i)).isoformat()))
+        conn.commit()
+
+
+def create_placeholder_dog(dog_id: str, name: str, user_id: str) -> dict:
+    """Owner-owned dog row flagged is_placeholder (the robot's default until re-paired)."""
+    dog = create_dog(dog_id=dog_id, name=name, user_id=user_id)
+    with db_connection() as conn:
+        conn.execute("UPDATE dogs SET is_placeholder = 1 WHERE id = ?", (dog_id,))
+        conn.commit()
+    add_user_dog(user_id, dog_id, "owner")
+    dog["is_placeholder"] = True
+    return dog
 
 
 def get_latest_status_for_devices(device_ids: list[str]) -> Optional[dict]:

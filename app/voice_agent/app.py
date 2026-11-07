@@ -154,8 +154,15 @@ async def _run_text(caller: Caller, dog_id: str, text: str, want_tts: bool) -> t
 
 
 @app.post("/agent/utterance")
-async def utterance(dog_id: str = Form(...), file: UploadFile = File(...), caller: Caller = Depends(jwt_or_device)):
+async def utterance(file: UploadFile = File(...), dog_id: Optional[str] = Form(default=None),
+                    caller: Caller = Depends(jwt_or_device)):
     t_all = time.monotonic()
+    if not dog_id:
+        # pairing 2026-11-07: a robot may omit dog_id; use its paired (or placeholder) dog
+        from app.services import pairing
+        dog_id = pairing.primary_dog_id(caller.device_id) if caller.source == "robot" else None
+        if not dog_id:
+            raise HTTPException(status_code=422, detail={"code": "dog_id_required"})
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail={"code": "empty_audio"})

@@ -12,6 +12,26 @@ not double-counted in the app timeline.
 
 ---
 
+## 0. Pairing: the robot always has a dog (added 2026-11-07)
+
+Pairing never blocks the robot. The relay keeps an explicit robot-to-dog link
+(`device_dogs`). On `POST /api/device/register` and on every `/ws/device` connect, if your
+owner has no dog paired to you, the relay creates a **placeholder dog** for the owner, named
+after you (`wimz_robot_05` → "Robot 05's dog", id `ph_<owner>_<device_id>`), pairs it, and
+treats it like any dog: events, roll-ups, settings, commands and utterances all work.
+
+- The `profiles` message now also carries **`paired_dog_ids`**: your own dogs, first =
+  primary. `profiles` itself still lists all of the owner's dogs (for ArUco recognition);
+  each profile has `is_placeholder` (bool).
+- A placeholder's `dog_id` is stable. If the owner renames it, the id stays the same. If
+  the owner re-pairs you to other dogs, you get a fresh `profiles` push with new
+  `paired_dog_ids`: switch to the new primary for new events.
+- With exactly **one** paired dog you may omit `dog_id` on any event and on
+  `/agent/utterance`, and the relay fills in that dog. With several paired dogs, send it.
+- A robot with no owner gets no dog (there is nobody to attach one to); pair it in the app.
+
+---
+
 ## 1. Authentication for the new HTTP endpoints
 
 Same HMAC identity as `POST /api/device/register`:
@@ -25,7 +45,7 @@ X-Timestamp: <unix seconds>            # optional; sig over device_id+timestamp 
 `sig = HMAC_SHA256(device_secret, device_id + timestamp)` (the relay also accepts
 `device_id:timestamp` and plain `device_id`). The device must be paired to an owner, and
 every `dog_id` you reference must belong to that owner, or the event/request is rejected
-(`status` events may omit `dog_id`, see §2).
+(`status` events may omit `dog_id`, see §2; with one paired dog any event may, see §0).
 
 ---
 
@@ -52,7 +72,7 @@ what the robot agent found in the robot's sender:
 |---|---|---|---|
 | `event_id` | string, 1-128 chars | yes | UUID; idempotency key |
 | `type` | enum (table below) | yes | |
-| `dog_id` | string, 1-128 chars | **yes, except `type: "status"`** | must belong to the device owner |
+| `dog_id` | string, 1-128 chars | **yes, except `type: "status"`**, or when you have exactly one paired dog (§0) | must belong to the device owner |
 | `ts` | string | yes | ISO-8601 with offset (naive = UTC); epoch s/ms also accepted |
 | `duration_s` | number 0-86400 | per type | |
 | `data` | object | no (default `{}`) | per-type fields below |
@@ -159,7 +179,7 @@ Push-to-talk / wake-word clip: record one utterance (16 kHz mono WAV, ≤ 30 s, 
 and POST it with the HMAC headers:
 
 ```
-POST /agent/utterance   multipart: file=<wav>, dog_id=<dog>
+POST /agent/utterance   multipart: file=<wav>, dog_id=<dog>   (dog_id optional: defaults to your primary paired dog, §0)
 → 200 {"text_in": "...", "text_out": "...", "audio_url": "https://api.wimzai.com/agent/audio/<clip>.mp3",
        "clip_id": "...", "expires_at": <unix>, "tools_used": [...], "refused": [...]}
 ```

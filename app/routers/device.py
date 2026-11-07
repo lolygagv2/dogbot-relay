@@ -53,6 +53,10 @@ async def register_device(
             detail="Invalid device signature"
         )
 
+    # Pairing must never block a robot: make sure it has a dog (placeholder if needed)
+    from app.services import pairing
+    pairing.device_dog_ids(device_data.device_id)
+
     # Generate pairing code for new devices
     pairing_code = generate_pairing_code()
 

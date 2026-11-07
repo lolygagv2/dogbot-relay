@@ -47,9 +47,15 @@ def _debounced(event: str, key: str) -> bool:
     return False
 
 
-def _pick_dog(user_id: Optional[str], dog_id: Optional[str]) -> Optional[dict]:
+def _pick_dog(user_id: Optional[str], dog_id: Optional[str], device_id: Optional[str] = None) -> Optional[dict]:
     if dog_id:
         d = get_dog_by_id(dog_id)
+        if d:
+            return d
+    if device_id:  # the robot's paired (or placeholder) dog, via device_dogs
+        from app.services import pairing
+        primary = pairing.primary_dog_id(device_id)
+        d = get_dog_by_id(primary) if primary else None
         if d:
             return d
     if user_id:
@@ -85,7 +91,7 @@ async def handle(hook: dict) -> dict:
         return {"skipped": "unknown_event"}
     if not user_id:
         return {"skipped": "no_user"}
-    dog = _pick_dog(user_id, hook.get("dog_id"))
+    dog = _pick_dog(user_id, hook.get("dog_id"), device_id)
     if not dog:
         return {"skipped": "no_dog"}
     dog_id = dog.get("id") or dog.get("dog_id")

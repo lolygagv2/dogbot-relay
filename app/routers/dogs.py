@@ -71,6 +71,7 @@ def _dog_to_profile(dog: dict) -> dict[str, Any]:
         "breed": dog.get("breed"),
         "photo_url": dog.get("profile_photo_url"),
         "photo_version": dog.get("photo_version") or 1,
+        "is_placeholder": bool(dog.get("is_placeholder")),
     }
 
 
@@ -81,11 +82,15 @@ def build_user_profiles(user_id: str) -> list[dict[str, Any]]:
 
 async def push_profiles_to_device(device_id: str, user_id: str) -> bool:
     """Send the full profiles snapshot to a single robot (used on device connect)."""
+    from app.services import pairing
+
     manager = get_connection_manager()
     profiles = build_user_profiles(user_id)
     sent = await manager.send_to_robot(device_id, {
         "type": "profiles",
         "profiles": profiles,
+        # pairing 2026-11-07: this robot's own dogs (device_dogs), first = primary
+        "paired_dog_ids": pairing.device_dog_ids(device_id),
     })
     if sent:
         logger.info(f"[DOG-SYNC] Pushed {len(profiles)} profile(s) to device {device_id} for user {user_id}")
@@ -104,10 +109,13 @@ async def _notify_robots_reload_dogs(user_id: str):
     manager = get_connection_manager()
     devices = manager.get_user_devices(user_id)
     profiles = build_user_profiles(user_id)
+    from app.services import pairing
+
     for device_id in devices:
         sent = await manager.send_to_robot(device_id, {
             "type": "profiles",
             "profiles": profiles,
+            "paired_dog_ids": pairing.device_dog_ids(device_id),
         })
         await manager.send_to_robot(device_id, {
             "command": "reload_dogs",
@@ -137,6 +145,7 @@ def _to_response(dog: dict) -> dict[str, Any]:
         "createdAt": dog.get("created_at"),
         "updatedAt": dog.get("updated_at") or dog.get("created_at"),
         "photoVersion": dog.get("photo_version") or 1,
+        "isPlaceholder": bool(dog.get("is_placeholder")),
     }
 
 

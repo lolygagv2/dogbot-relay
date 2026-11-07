@@ -13,6 +13,33 @@ Error bodies are uniform: `{"detail": {"code": "...", ...}}`. Codes you will see
 
 ---
 
+## 0. Robot ↔ dog pairing and placeholder dogs (added 2026-11-07)
+
+A robot is now explicitly paired to dogs. Pairing never blocks a robot: if you pair a robot
+(`POST /api/user/pair-device`) and it has no dog paired, the relay creates a **placeholder
+dog** for you named after the robot (e.g. "Robot 05's dog"). It is a normal dog in
+`GET /api/dogs` (same events, roll-up, settings, status, commands), flagged
+**`isPlaceholder: true`**. Suggest "Name your dog" in the UI for it.
+
+```
+GET /api/user/devices/{device_id}/dogs            (owner of the robot)
+→ {"device_id": "...", "dogs": [{"dog_id": "...", "name": "...", "is_placeholder": true}]}   first = primary
+
+PUT /api/user/devices/{device_id}/dogs            body {"dog_ids": ["<dog>", ...]}   (1-20, all yours)
+→ same shape; the robot gets a fresh profiles push. 400 dog_not_owned, 404 device_not_paired
+```
+
+- **Rename** the placeholder with the usual `PUT /api/dogs/{dog_id}`. The `dog_id` and all
+  history stay the same, and `isPlaceholder` becomes false.
+- **Re-pair** with `PUT .../dogs`. Dogs you unpair keep all their events and roll-ups, and
+  stay in your dog list. To fold a placeholder's history into a real dog, call
+  `POST /api/dogs/merge` with `{"target_dog_id": "<real>", "source_dog_ids": ["<placeholder>"]}`
+  (events, roll-ups, settings and treat ledger now move with a merge).
+- `GET /api/dogs/{dog_id}/status` reads the latest status from the robot(s) paired to that
+  dog. A dog with no paired robot falls back to any of your robots.
+
+---
+
 ## 1. Daily roll-up and events
 
 ```

@@ -17,7 +17,7 @@ from app.auth import Actor, check_dog_access, resolve_actor
 from app.database import get_event, get_latest_status_for_devices, get_user_paired_devices, list_events
 from app.services import media_files
 from app.models import EVENT_TYPES, EventBatchIn, EventBatchResult, QuietHours
-from app.services import event_store, settings_service
+from app.services import event_store, pairing, settings_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Event store"])
@@ -35,13 +35,22 @@ async def post_events(batch: EventBatchIn, actor: Actor = Depends(resolve_actor)
         user_id = actor.user_id
 
     # Robot may only post for dogs its owner has; admin may post for anything.
+    # Pairing 2026-11-07: a robot with exactly one paired dog may omit dog_id (except on
+    # status, which stays device-scoped with dog_id NULL); the relay fills in that dog.
+    paired = pairing.device_dog_ids(device_id) if actor.kind == "robot" else []
     rejected, allowed = [], []
     for ev in batch.events:
         try:
-            # status without dog_id is device-scoped: resolved to the robot's paired dog(s) on ingest
-            if actor.kind == "robot" and ev.dog_id is not None:
-                check_dog_access(actor, ev.dog_id)
-            allowed.append(ev.model_dump())
+            item = ev.model_dump()
+            if item["dog_id"] is None and ev.type != "status":
+                if len(paired) != 1:
+                    rejected.append({"event_id": ev.event_id,
+                                     "reason": f"dog_id required (robot has {len(paired)} paired dogs)"})
+                    continue
+                item["dog_id"] = paired[0]
+            if actor.kind == "robot" and item["dog_id"] is not None:
+                check_dog_access(actor, item["dog_id"])
+            allowed.append(item)
         except HTTPException as e:
             rejected.append({"event_id": ev.event_id, "reason": str(e.detail.get("code") if isinstance(e.detail, dict) else e.detail)})
 
@@ -96,7 +105,7 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
 
     owner = check_dog_access(actor, dog_id)
     manager = get_connection_manager()
-    devices = get_user_paired_devices(owner) if owner else []
+    devices = pairing.dog_devices(dog_id, owner)
     online = [d for d in devices if manager.is_robot_online(d)]
     replay_active, replay_device = False, None
     try:

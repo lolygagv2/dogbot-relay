@@ -6,9 +6,6 @@ The dog status route reads the latest status by the paired robot's device_id, no
 """
 import asyncio
 
-import pytest
-from pydantic import ValidationError
-
 import app.database as db
 from app.auth import Actor
 from app.models import EventBatchIn, EventIn
@@ -28,18 +25,21 @@ def _ingest(events, device_id="robot_t", user_id="user_t1"):
                                                  source="robot", notify=False, forward=False))
 
 
-def test_eventin_dog_id_optional_only_for_status():
-    ev = EventIn.model_validate(_status("s0"))
-    assert ev.dog_id is None
-    with pytest.raises(ValidationError):
-        EventIn.model_validate({"event_id": "t0", "type": "treat", "ts": "2026-11-06T18:00:00Z",
-                                "data": {"source": "auto"}})
-    ok = EventIn.model_validate({"event_id": "t1", "type": "treat", "dog_id": "dog_t1",
-                                 "ts": "2026-11-06T18:00:00Z", "data": {"source": "auto"}})
-    assert ok.dog_id == "dog_t1"
-    # validate_event (used by replayer/admin paths too) applies the same rule
+def test_dog_id_required_for_non_status_unless_robot_has_one_dog(temp_db):
+    assert EventIn.model_validate(_status("s0")).dog_id is None
+    # validate_event (replayer/admin/internal paths) still requires it for non-status
     assert event_store.validate_event({"event_id": "t2", "type": "treat", "ts": "2026-11-06T18:00:00Z",
                                        "data": {"source": "auto"}}) == (None, "dog_id required")
+    # a robot with two paired dogs must say which dog
+    db.create_device_pairing("user_t1", "robot_t")
+    db.create_dog(dog_id="dog_t3", name="Bea", user_id="user_t1")
+    db.add_user_dog("user_t1", "dog_t3", "owner")
+    db.set_device_dogs("robot_t", ["dog_t1", "dog_t3"])
+    robot = Actor(kind="robot", id="robot_t", user_id="user_t1", device_id="robot_t")
+    batch = EventBatchIn.model_validate({"events": [{"event_id": "t0", "type": "treat", "ts": "2026-11-06T18:00:00Z",
+                                                     "data": {"source": "auto"}}]})
+    res = asyncio.run(routes.post_events(batch, actor=robot))
+    assert res["accepted"] == [] and res["rejected"][0]["reason"].startswith("dog_id required")
 
 
 def test_status_without_dog_stored_once_with_null_dog(temp_db):

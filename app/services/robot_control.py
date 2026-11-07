@@ -157,9 +157,12 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
     return message, guard
 
 
-def _pick_device(owner: Optional[str], requested: Optional[str]) -> tuple[Optional[str], bool]:
-    """(device_id, online). Requested device must belong to the owner."""
+def _pick_device(owner: Optional[str], requested: Optional[str],
+                 dog_id: Optional[str] = None) -> tuple[Optional[str], bool]:
+    """(device_id, online). Requested device must belong to the owner. Otherwise prefer the
+    dog's paired robot(s) (device_dogs), falling back to any of the owner's robots."""
     from app.connection_manager import get_connection_manager
+    from app.services import pairing
 
     manager = get_connection_manager()
     devices = get_user_paired_devices(owner) if owner else []
@@ -167,6 +170,8 @@ def _pick_device(owner: Optional[str], requested: Optional[str]) -> tuple[Option
         if requested not in devices:
             raise HTTPException(status_code=404, detail={"code": "device_not_paired", "device_id": requested})
         return requested, manager.is_robot_online(requested)
+    if dog_id:
+        devices = [d for d in pairing.dog_devices(dog_id, owner) if d in devices] or devices
     for d in devices:
         if manager.is_robot_online(d):
             return d, True
@@ -186,7 +191,7 @@ async def dispatch(dog_id: str, command: str, data: dict, actor: Actor,
         raise HTTPException(status_code=403, detail={"code": "command_not_allowed"})
     message, guard = build_robot_message(command, data, actor, dog_id)
     owner = get_dog_owner(dog_id)
-    target, online = _pick_device(owner, device_id)
+    target, online = _pick_device(owner, device_id, dog_id)
 
     # Demo dog with no live robot -> let the replayer simulate the effect.
     if not online:
