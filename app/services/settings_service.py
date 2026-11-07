@@ -247,7 +247,9 @@ def _guard_put(actor: Actor, key: str, old: Any, new: Any) -> None:
         return
     if key == "quiet_hours":
         o, n = QuietHours.model_validate(old), QuietHours.model_validate(new)
-        if o.enabled and not n.enabled:
+        # Connectors/agents may turn quiet hours ON (any window) or widen an enabled window;
+        # never turn them off or narrow them. A write with enabled=false is never theirs to make.
+        if not n.enabled:
             raise GuardDenied("quiet_hours_widen_only", "connector cannot disable quiet hours")
         if o.enabled and not minute_set(o.start, o.end) <= minute_set(n.start, n.end):
             raise GuardDenied("quiet_hours_widen_only",

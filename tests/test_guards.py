@@ -74,7 +74,7 @@ def test_command_allowlist(temp_db):
 
 
 def test_connector_take_photo_guards(temp_db, monkeypatch):
-    """PHOTO ACCESS: connector snapshots are HUD-less, rate limited per assistant, refused in quiet hours."""
+    """PHOTO ACCESS: connector snapshots are HUD-less and rate limited per assistant."""
     robot_control._last_photo.clear()
     monkeypatch.setattr(settings_service, "in_quiet_hours", lambda dog_id, local_dt=None: False)
     msg, _ = robot_control.build_robot_message("take_photo", {"with_hud": True}, CONN, "dog_t1")
@@ -84,11 +84,61 @@ def test_connector_take_photo_guards(temp_db, monkeypatch):
     assert e.value.status_code == 429 and e.value.detail["code"] == "camera_rate"
     other = Actor(kind="connector", id="chatgpt", user_id="user_t1")
     robot_control.build_robot_message("take_photo", {}, other, "dog_t1")      # per-assistant limit
+    # quiet hours no longer block snapshots (they suppress only music, speech, non-urgent pushes)
     monkeypatch.setattr(settings_service, "in_quiet_hours", lambda dog_id, local_dt=None: True)
     robot_control._last_photo.clear()
-    with pytest.raises(HTTPException) as e:
-        robot_control.build_robot_message("take_photo", {}, CONN, "dog_t1")
-    assert e.value.detail["guard"] == "camera_quiet_hours"
+    assert robot_control.build_robot_message("take_photo", {}, CONN, "dog_t1")[0]["command"] == "take_photo"
     # the agent is not subject to the connector rule
     msg, _ = robot_control.build_robot_message("take_photo", {"with_hud": True}, AGENT, "dog_t1")
     assert msg["data"]["with_hud"] is True
+
+
+# ---- quiet hours: opt-in, narrow scope (2026-11-07) ----
+
+def test_quiet_hours_off_by_default(temp_db):
+    assert settings_service.get_value("dog_t1", "quiet_hours") == {"enabled": False, "start": "22:00", "end": "07:00"}
+    assert settings_service.in_quiet_hours("dog_t1") is False
+
+
+def test_connector_may_turn_on_or_widen_never_off_or_narrow(temp_db):
+    row = _put(CONN, "quiet_hours", {"enabled": True, "start": "23:00", "end": "06:00"})   # off -> on: ok
+    assert row["value"]["enabled"] is True
+    for bad in ({"enabled": True, "start": "23:30", "end": "06:00"},    # narrow
+                {"enabled": False, "start": "23:00", "end": "06:00"},   # turn off
+                {"enabled": False, "start": "20:00", "end": "09:00"}):  # off, even if "wider"
+        with pytest.raises(HTTPException) as e:
+            _put(CONN, "quiet_hours", bad)
+        assert e.value.detail["guard"] == "quiet_hours_widen_only"
+    assert _put(AGENT, "quiet_hours", {"enabled": True, "start": "21:00", "end": "07:00"})["value"]["start"] == "21:00"
+    assert _put(APP, "quiet_hours", {"enabled": False, "start": "21:00", "end": "07:00"})["value"]["enabled"] is False
+
+
+def test_quiet_hours_hold_back_only_non_urgent_pushes(temp_db, monkeypatch):
+    from app.services import notify_service, push_service
+    sent = []
+
+    async def fake_push(**kw):
+        sent.append(kw["app_type"])
+        return "sent"
+
+    monkeypatch.setattr(push_service, "send_push", fake_push)
+    monkeypatch.setattr(settings_service, "in_quiet_hours", lambda dog_id, local_dt=None: True)
+    bark = {"event_id": "b1", "type": "bark_episode", "dog_id": "dog_t1", "ts": "2026-11-06T03:00:00+00:00",
+            "duration_s": 120, "data": {"bark_count": 30, "severity": "high"}}
+    settle = {"event_id": "s1", "type": "settle", "dog_id": "dog_t1", "ts": "2026-11-06T03:05:00+00:00",
+              "duration_s": None, "data": {"settle_s": 300}}
+    out_b = asyncio.run(notify_service.evaluate_notify_rules(bark, "user_t1"))
+    out_s = asyncio.run(notify_service.evaluate_notify_rules(settle, "user_t1"))
+    assert [o["rule_id"] for o in out_b] == ["bark_long"] and out_b[0]["outcome"] != "suppressed_quiet"
+    assert sent == ["bark"]
+    assert out_s == [{"rule_id": "settled", "outcome": "suppressed_quiet"}]
+
+
+def test_music_refused_during_quiet_hours(temp_db, monkeypatch):
+    relay = Actor(kind="relay", id="trigger", user_id="user_t1")
+    monkeypatch.setattr(settings_service, "in_quiet_hours", lambda dog_id, local_dt=None: True)
+    with pytest.raises(HTTPException) as e:
+        robot_control.build_robot_message("play_music", {"track": "song_calm_01"}, relay, "dog_t1")
+    assert e.value.detail["guard"] == "music_quiet_hours"
+    monkeypatch.setattr(settings_service, "in_quiet_hours", lambda dog_id, local_dt=None: False)
+    assert robot_control.build_robot_message("play_music", {"track": "song_calm_01"}, relay, "dog_t1")[0]["command"] == "play_music"

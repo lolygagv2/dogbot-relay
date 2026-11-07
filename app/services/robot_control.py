@@ -33,7 +33,8 @@ ACTOR_ALLOWED: dict[str, set[str]] = {
     "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "take_photo", "standby", "run_trick"},
     "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "take_photo", "standby", "run_trick", "play_tts"},
     # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
-    # server) — never with HUD, max one per 30 s per assistant, refused during quiet hours.
+    # server) — never with HUD, max one per 30 s per assistant. (Quiet hours no longer apply:
+    # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
     "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "standby", "run_trick", "take_photo"},
     "relay":     {"start_mission", "play_music"},
 }
@@ -94,6 +95,9 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
             out = ("play_sound", {"url": url, "clip_id": str(data.get("clip_id") or "")[:64], "kind": "tts",
                                   "source": source})
         case "play_music":
+            if settings_service.in_quiet_hours(dog_id):
+                raise HTTPException(status_code=403, detail={"code": "guard_denied", "guard": "music_quiet_hours",
+                                                             "reason": "no music during quiet hours"})
             track = str(data.get("track") or "")[:64]
             sounds = Sounds.model_validate(settings_service.get_value(dog_id, "sounds"))
             song = next((s for s in sounds.sounds if s.id == track), None)
@@ -118,9 +122,6 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
             with_hud = bool(data.get("with_hud", False))
             if actor.kind == "connector":
                 with_hud = False
-                if settings_service.in_quiet_hours(dog_id):
-                    raise HTTPException(status_code=403, detail={"code": "guard_denied", "guard": "camera_quiet_hours",
-                                                                 "reason": "no new snapshots during quiet hours"})
                 last = _last_photo.get(actor.label, 0.0)
                 now_m = time.monotonic()
                 if now_m - last < PHOTO_MIN_INTERVAL_S:

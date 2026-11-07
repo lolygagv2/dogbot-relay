@@ -234,9 +234,11 @@ def register_tools(mcp: MCPServer) -> None:
     @mcp.tool(name="set_quiet_hours", annotations=CONTROL)
     @audited("set_quiet_hours")
     async def set_quiet_hours(dog_id: str, start: str, end: str) -> dict:
-        """Set the dog's quiet hours window (no pushes, no agent speech) as HH:MM 24h local times,
-        e.g. start "22:00" end "07:00". Assistants may only WIDEN the window; narrowing or
-        disabling must be done by the owner in the app."""
+        """Turn on or widen the dog's quiet hours, as HH:MM 24h local times, e.g. start "22:00"
+        end "07:00". Quiet hours are off unless the owner opts in. While on, they hold back music,
+        the robot's own greeting / low-treat announcements and non-urgent notifications; bark
+        alerts always get through. Assistants may turn quiet hours on or WIDEN the window;
+        narrowing or turning them off must be done by the owner in the app."""
         client, user_id = _client("set_quiet_hours")
         _check_dog(user_id, dog_id)
         if not (_hm_ok(start) and _hm_ok(end)):
@@ -401,7 +403,7 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("take_photo")
     async def take_photo(dog_id: str) -> list:
         """Ask WIM-Z to take a new snapshot now (no HUD) and return it. At most one every 30 seconds
-        per assistant, refused during quiet hours, and never live video. Requires the camera permission."""
+        per assistant, and never live video. Requires the camera permission."""
         client, user_id = _client("take_photo")
         _check_dog(user_id, dog_id)
         try:

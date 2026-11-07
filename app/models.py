@@ -522,7 +522,10 @@ class EventBatchResult(BaseModel):
 # ============== Settings value schemas (one per key) ==============
 
 class QuietHours(BaseModel):
-    enabled: bool = True
+    """Opt-in (2026-11-07). When enabled, suppresses ONLY: music, proactive agent speech (boot
+    greeting, low hopper) and non-urgent notifications. Bark alerts and the SG re-arm line
+    always get through."""
+    enabled: bool = False
     start: str = Field(default="22:00", pattern=r"^\d{2}:\d{2}$")
     end: str = Field(default="07:00", pattern=r"^\d{2}:\d{2}$")
 

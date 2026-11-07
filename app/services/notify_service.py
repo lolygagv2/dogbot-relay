@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
+from fastapi import HTTPException
 
 from app.config import get_settings
 from app.database import (
@@ -38,6 +39,9 @@ _departure_tasks: dict[str, list[asyncio.Task]] = {}
 # even if no departure event arrives (amendment 2026-11-06, item 3)
 _fallback_tasks: dict[tuple[str, str], asyncio.Task] = {}
 DEPARTURE_FALLBACK_S = 15 * 60
+# Quiet hours never hold these back (bark alerts); every other rule is non-urgent and is
+# suppressed during quiet hours unless the owner set override_quiet on it.
+URGENT_EVENT_TYPES = {"bark_episode"}
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +115,7 @@ async def evaluate_notify_rules(ev: dict, user_id: Optional[str]) -> list[dict]:
                               title, body, image, clip)
             outcomes.append({"rule_id": rule.id, "outcome": outcome})
 
-        if quiet and not rule.override_quiet:
+        if quiet and rule.event_type not in URGENT_EVENT_TYPES and not rule.override_quiet:
             log("suppressed_quiet")
             continue
         if rule.cooldown_s:
@@ -236,6 +240,11 @@ async def _delayed_command(dog_id: str, user_id: Optional[str], delay_s: int, co
         logger.info(f"[TRIGGER] {command} for {dog_id}: {res.get('delivered')} simulated={res.get('simulated')}")
     except asyncio.CancelledError:
         logger.info(f"[TRIGGER] {command} for {dog_id} cancelled (arrival)")
+    except HTTPException as e:
+        if isinstance(e.detail, dict) and e.detail.get("guard") == "music_quiet_hours":
+            logger.info(f"[TRIGGER] {command} for {dog_id} skipped (quiet hours)")
+        else:
+            logger.warning(f"[TRIGGER] {command} for {dog_id} failed: {e.detail}")
     except Exception as e:
         logger.warning(f"[TRIGGER] {command} for {dog_id} failed: {e}")
 
