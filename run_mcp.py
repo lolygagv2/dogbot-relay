@@ -17,4 +17,8 @@ if __name__ == "__main__":
         proxy_headers=True,
         forwarded_allow_ips="127.0.0.1",
         log_level="info",
+        # On SIGTERM uvicorn otherwise waits forever for open requests to finish; a
+        # connector request left half-open kept systemctl stop/restart hanging until
+        # systemd's 90 s SIGKILL. After 5 s, cancel what's left and shut down cleanly.
+        timeout_graceful_shutdown=5,
     )

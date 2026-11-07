@@ -6,10 +6,12 @@ Wants=network-online.target
 [Service]
 # Match the user, WorkingDirectory and venv path used by wimz-relay.service.
 User=ubuntu
-WorkingDirectory=/home/ubuntu/wimzrelay
-ExecStart=/home/ubuntu/wimzrelay/venv/bin/python run_mcp.py
+WorkingDirectory=/home/ubuntu/wimz-relay
+ExecStart=/home/ubuntu/wimz-relay/venv/bin/python run_mcp.py
 Restart=always
 RestartSec=3
+# uvicorn gives open requests 5 s (run_mcp.py timeout_graceful_shutdown); this is the backstop
+TimeoutStopSec=20
 Environment=PYTHONUNBUFFERED=1
 NoNewPrivileges=true
 PrivateTmp=true
