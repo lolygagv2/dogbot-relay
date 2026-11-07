@@ -73,3 +73,17 @@ def test_owner_or_caretaker_only(seeded):
         with pytest.raises(HTTPException) as e:
             run(call(CONN))
         assert e.value.status_code == 403 and e.value.detail["code"] == "app_only"
+
+
+def test_connections_alias_matches_per_dog_route(seeded):
+    per_dog = run(ai.list_connectors("dog_t1", actor=OWNER))
+    assert run(ai.list_connections_alias(None, actor=OWNER)) == per_dog
+    assert run(ai.list_connections_alias("dog_t1", actor=OWNER)) == per_dog
+    assert run(ai.list_connections_alias(None, actor=CARETAKER))["assistants"]
+    for args in ((None, VIEWER), ("dog_t1", VIEWER)):          # user_t2 is only a viewer
+        with pytest.raises(HTTPException) as e:
+            run(ai.list_connections_alias(args[0], actor=args[1]))
+        assert e.value.detail["code"] == "owner_or_caretaker_only"
+    with pytest.raises(HTTPException) as e:
+        run(ai.list_connections_alias(None, actor=CONN))
+    assert e.value.detail["code"] == "app_only"

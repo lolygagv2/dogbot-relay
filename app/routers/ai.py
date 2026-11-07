@@ -1,6 +1,7 @@
 """AI connectors + voice-agent transcript routes for the app (amendment 2026-11-06).
 
 GET  /api/dogs/{dog_id}/ai/connectors                     -> {connector_url, assistants[]}
+GET  /api/ai/connections[?dog_id=]                         alias of the above (the app build calls this)
 POST /api/dogs/{dog_id}/ai/connectors/{client_id}/revoke
 POST /api/dogs/{dog_id}/ai/revoke_all
 GET  /api/dogs/{dog_id}/ai/audit?limit=50
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -43,9 +45,30 @@ def _owner_or_caretaker(actor: Actor, dog_id: str) -> None:
 @router.get("/api/dogs/{dog_id}/ai/connectors")
 async def list_connectors(dog_id: str, actor: Actor = Depends(resolve_actor)):
     _owner_or_caretaker(actor, dog_id)
+    return _connectors_body(actor.user_id)
+
+
+@router.get("/api/ai/connections")
+async def list_connections_alias(dog_id: Optional[str] = Query(default=None), actor: Actor = Depends(resolve_actor)):
+    """Alias of GET /api/dogs/{dog_id}/ai/connectors. Connectors are per user, so the body is the
+    same. With dog_id: the same owner-or-caretaker check; without: owner or caretaker of any dog."""
+    if dog_id:
+        return await list_connectors(dog_id, actor=actor)
+    _app_only(actor)
+    if actor.kind == "app":
+        from app.database import db_connection
+        with db_connection() as conn:
+            ok = conn.execute("SELECT 1 FROM user_dogs WHERE user_id = ? AND role IN ('owner', 'caretaker') LIMIT 1",
+                              (actor.user_id,)).fetchone()
+        if not ok:
+            raise HTTPException(status_code=403, detail={"code": "owner_or_caretaker_only"})
+    return _connectors_body(actor.user_id)
+
+
+def _connectors_body(user_id: str) -> dict:
     s = get_settings()
     base = (s.mcp_public_base_url or s.public_base_url).rstrip("/")
-    return {"connector_url": f"{base}/mcp", "assistants": oauth_db.list_connectors_for_user(actor.user_id)}
+    return {"connector_url": f"{base}/mcp", "assistants": oauth_db.list_connectors_for_user(user_id)}
 
 
 @router.post("/api/dogs/{dog_id}/ai/connectors/{client_id}/revoke")
