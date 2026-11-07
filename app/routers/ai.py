@@ -6,6 +6,7 @@ POST /api/dogs/{dog_id}/ai/revoke_all
 GET  /api/dogs/{dog_id}/ai/audit?limit=50
 POST /api/dogs/{dog_id}/agent/transcript                  agent (internal) -> WS agent_transcript to the owner's apps
 
+App JWT, owner or caretaker of the dog (viewers get 403 owner_or_caretaker_only).
 Reads the shared oauth_clients / oauth_tokens / mcp_audit tables written by the MCP and
 agent processes (same SQLite file).
 """
@@ -30,10 +31,18 @@ def _app_only(actor: Actor) -> None:
         raise HTTPException(status_code=403, detail={"code": "app_only"})
 
 
-@router.get("/api/dogs/{dog_id}/ai/connectors")
-async def list_connectors(dog_id: str, actor: Actor = Depends(resolve_actor)):
+def _owner_or_caretaker(actor: Actor, dog_id: str) -> None:
+    """App JWT for the dog's owner or caretaker (viewers may not see or manage AI connectors)."""
+    from app.database import get_user_dog_role
     _app_only(actor)
     check_dog_access(actor, dog_id)
+    if actor.kind == "app" and get_user_dog_role(actor.user_id, dog_id) not in ("owner", "caretaker"):
+        raise HTTPException(status_code=403, detail={"code": "owner_or_caretaker_only"})
+
+
+@router.get("/api/dogs/{dog_id}/ai/connectors")
+async def list_connectors(dog_id: str, actor: Actor = Depends(resolve_actor)):
+    _owner_or_caretaker(actor, dog_id)
     s = get_settings()
     base = (s.mcp_public_base_url or s.public_base_url).rstrip("/")
     return {"connector_url": f"{base}/mcp", "assistants": oauth_db.list_connectors_for_user(actor.user_id)}
@@ -41,8 +50,7 @@ async def list_connectors(dog_id: str, actor: Actor = Depends(resolve_actor)):
 
 @router.post("/api/dogs/{dog_id}/ai/connectors/{client_id}/revoke")
 async def revoke_connector(dog_id: str, client_id: str, actor: Actor = Depends(resolve_actor)):
-    _app_only(actor)
-    check_dog_access(actor, dog_id, write=True)
+    _owner_or_caretaker(actor, dog_id)
     n = oauth_db.revoke_client_for_user(client_id, actor.user_id)
     logger.info(f"[AI] {actor.label} revoked connector {client_id}: {n} token(s)")
     return {"client_id": client_id, "revoked": n}
@@ -50,8 +58,7 @@ async def revoke_connector(dog_id: str, client_id: str, actor: Actor = Depends(r
 
 @router.post("/api/dogs/{dog_id}/ai/revoke_all")
 async def revoke_all(dog_id: str, actor: Actor = Depends(resolve_actor)):
-    _app_only(actor)
-    check_dog_access(actor, dog_id, write=True)
+    _owner_or_caretaker(actor, dog_id)
     n = oauth_db.revoke_all_for_user(actor.user_id)
     logger.info(f"[AI] {actor.label} revoked all connectors: {n} token(s)")
     return {"revoked": n}
@@ -59,8 +66,7 @@ async def revoke_all(dog_id: str, actor: Actor = Depends(resolve_actor)):
 
 @router.get("/api/dogs/{dog_id}/ai/audit")
 async def ai_audit(dog_id: str, limit: int = Query(default=50, ge=1, le=500), actor: Actor = Depends(resolve_actor)):
-    _app_only(actor)
-    check_dog_access(actor, dog_id)
+    _owner_or_caretaker(actor, dog_id)
     return {"dog_id": dog_id, "entries": oauth_db.list_audit_for_user(actor.user_id, dog_id, limit)}
 
 
