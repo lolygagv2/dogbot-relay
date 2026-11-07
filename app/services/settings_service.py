@@ -306,6 +306,32 @@ async def put_setting(dog_id: str, key: str, value: Any, actor: Actor,
     return row
 
 
+async def remove_mission_deleted_on_robot(owner_id: Optional[str], device_id: str, mission_id: str,
+                                          dog_id: Optional[str] = None) -> Optional[str]:
+    """The owner deleted a relay-made schedule in the app, which deletes it on the robot only.
+    The robot's `schedule_deleted` names the mission; drop it from the dog's `missions` setting
+    so the next push or reconnect doesn't bring it back. Only the owner's own dogs are touched.
+    Returns the dog_id it was removed from, or None. Never raises."""
+    try:
+        if not owner_id or not mission_id:
+            return None
+        from app.database import get_user_dogs
+        owned = [d["id"] for d in get_user_dogs(owner_id) if d.get("role") == "owner"]
+        for d in ([dog_id] if dog_id in owned else owned):
+            missions = (get_value(d, "missions") or {}).get("missions", [])
+            keep = [m for m in missions if m.get("id") != mission_id]
+            if len(keep) == len(missions):
+                continue
+            actor = Actor(kind="robot", id=device_id, user_id=owner_id, device_id=device_id)
+            await put_setting(d, "missions", {"missions": keep}, actor)
+            logger.info(f"[SCHEDULE] {device_id} deleted {mission_id}: removed from {d} missions")
+            return d
+        return None
+    except Exception as e:
+        logger.warning(f"[SCHEDULE] could not remove {mission_id} after robot delete: {e}")
+        return None
+
+
 async def reset_setting(dog_id: str, key: str, actor: Actor) -> dict:
     if key not in SETTING_MODELS:
         raise HTTPException(status_code=404, detail={"code": "unknown_setting", "key": key})

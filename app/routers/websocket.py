@@ -335,6 +335,20 @@ async def _send_retained_network_state(websocket: WebSocket, device_id: str) -> 
 
 # ============== B2 Session helpers ==============
 
+async def _sync_robot_schedule_delete(message: dict, device_id: str, owner_id: Optional[str]) -> None:
+    """schedule_deleted for a relay-made mission (robot sends mission_id): drop it from `missions` too."""
+    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+    if message.get("success", data.get("success", True)) is False:
+        return
+    mission_id = message.get("mission_id") or data.get("mission_id")
+    if not isinstance(mission_id, str) or not mission_id:
+        return
+    dog_id = message.get("dog_id") or data.get("dog_id")
+    from app.services import settings_service
+    await settings_service.remove_mission_deleted_on_robot(owner_id, device_id, mission_id,
+                                                           dog_id if isinstance(dog_id, str) else None)
+
+
 async def _safe_send_json(ws: WebSocket, payload: dict) -> bool:
     """Best-effort send_json — swallow errors (the socket may already be closing)."""
     try:
@@ -1172,6 +1186,8 @@ async def websocket_device_endpoint(
                 logger.info(f"[SCHEDULE] {msg_type} from {device_id}: schedule_id={schedule_id}")
 
                 maybe_store_event(device_id, owner_id, message)
+                if msg_type == "schedule_deleted":
+                    await _sync_robot_schedule_delete(message, device_id, owner_id)
                 if owner_id:
                     delivered = await manager.send_to_user_apps(owner_id, message)
                     if delivered > 0:
@@ -2047,6 +2063,8 @@ async def websocket_generic_endpoint(
                     logger.info(f"[SCHEDULE] {msg_type} from {identifier}: schedule_id={schedule_id}")
 
                     maybe_store_event(identifier, owner_id, message)
+                    if msg_type == "schedule_deleted":
+                        await _sync_robot_schedule_delete(message, identifier, owner_id)
                     if owner_id:
                         delivered = await manager.send_to_user_apps(owner_id, message)
                         if delivered > 0:

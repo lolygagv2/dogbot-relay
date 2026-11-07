@@ -282,3 +282,49 @@ def test_unsupported_type_reason_passed_through():
     assert r["robot_note"] == "unsupported: no mission program" and "will not run" in r["message"]
     g = run(st.get_schedule(c, "dog_t1"))
     assert g["missions"][0]["robot_note"] == "unsupported: no mission program"
+
+
+# ---- app deletes a relay mission on the robot -> relay drops it too ----
+
+def _seed_missions(ids):
+    from app.services import settings_service
+    value = {"missions": [MissionDef(id=i, type="silent_guardian", duration_s=1800).model_dump() for i in ids]}
+    run(settings_service.put_setting("dog_t1", "missions", value, Actor(kind="app", id="user_t1", user_id="user_t1")))
+
+
+def _mission_ids():
+    from app.services import settings_service
+    return [m["id"] for m in settings_service.get_value("dog_t1", "missions")["missions"]]
+
+
+def test_robot_delete_removes_relay_mission(temp_db):
+    from app.services import settings_service
+    _seed_missions(["m_a", "m_b"])
+    assert run(settings_service.remove_mission_deleted_on_robot("user_t1", "robot_1", "m_a", "dog_t1")) == "dog_t1"
+    assert _mission_ids() == ["m_b"]
+    # without dog_id the owner's dogs are searched
+    assert run(settings_service.remove_mission_deleted_on_robot("user_t1", "robot_1", "m_b")) == "dog_t1"
+    assert _mission_ids() == []
+
+
+def test_robot_delete_only_touches_owners_dogs(temp_db):
+    from app.services import settings_service
+    _seed_missions(["m_a"])
+    # user_t2 is only a viewer of dog_t1, so their robot cannot remove its missions
+    assert run(settings_service.remove_mission_deleted_on_robot("user_t2", "robot_2", "m_a", "dog_t1")) is None
+    assert run(settings_service.remove_mission_deleted_on_robot("user_t1", "robot_1", "m_unknown")) is None
+    assert run(settings_service.remove_mission_deleted_on_robot(None, "robot_1", "m_a")) is None
+    assert _mission_ids() == ["m_a"]
+
+
+@pytest.mark.parametrize("msg,removed", [
+    ({"type": "schedule_deleted", "success": True, "deleted": "51fda3eb", "mission_id": "m_a", "dog_id": "dog_t1"}, True),
+    ({"type": "schedule_deleted", "data": {"success": True, "mission_id": "m_a"}}, True),
+    ({"type": "schedule_deleted", "success": False, "mission_id": "m_a"}, False),        # robot failed to delete
+    ({"type": "schedule_deleted", "success": True, "deleted": "51fda3eb"}, False),        # today's shape: no mission_id
+])
+def test_ws_schedule_deleted_hook(temp_db, msg, removed):
+    from app.routers.websocket import _sync_robot_schedule_delete
+    _seed_missions(["m_a"])
+    run(_sync_robot_schedule_delete(msg, "robot_1", "user_t1"))
+    assert _mission_ids() == ([] if removed else ["m_a"])
