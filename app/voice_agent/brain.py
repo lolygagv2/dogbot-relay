@@ -8,8 +8,7 @@ the prompt:
 2. number post-check: every number in the reply must appear in the tool results, the
    data handed to the model, or the user's own words; otherwise one corrected retry,
    then a template reply built from the data
-3. health-observation blocklist: one corrected retry, then a template
-4. settings readback: after a successful settings tool the reply must quote the new value
+3. settings readback: after a successful settings tool the reply must quote the new value
 """
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ import anthropic
 
 from app.config import get_settings
 from app.voice_agent import tools as agent_tools
-from app.voice_agent.prompts import HEALTH_WORDS, SYSTEM_PROMPT
+from app.voice_agent.prompts import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -78,14 +77,6 @@ def allowed_numbers(sources: list[Any]) -> set[float]:
 
 def offending_numbers(reply: str, allowed: set[float]) -> list[float]:
     return sorted(n for n in numbers_in(reply) if n not in allowed)
-
-
-def health_hit(reply: str) -> Optional[str]:
-    low = f" {reply.lower()} "
-    for w in HEALTH_WORDS:
-        if w in low:
-            return w.strip()
-    return None
 
 
 def _tool_result_content(res: dict) -> Any:
@@ -206,20 +197,15 @@ class Brain:
         # ---- post-checks ----
         allowed = allowed_numbers([user_text, extra_data or {}, *tool_results_data])
         bad = offending_numbers(reply, allowed)
-        hw = health_hit(reply)
-        if (bad or hw) and "model_refusal" not in guard_notes:
-            note = []
-            if bad:
-                note.append(f"Your previous reply contained the number(s) {', '.join(str(int(b) if b == int(b) else b) for b in bad)}, "
-                            f"which are not in the data you were given. Rewrite it using only numbers from the tool results.")
-            if hw:
-                note.append(f"Your previous reply commented on the dog's health or wellbeing ('{hw}'). Rewrite it without any such observation.")
+        if bad and "model_refusal" not in guard_notes:
+            note = [f"Your previous reply contained the number(s) {', '.join(str(int(b) if b == int(b) else b) for b in bad)}, "
+                    f"which are not in the data you were given. Rewrite it using only numbers from the tool results."]
             messages.append({"role": "assistant", "content": reply or "..."})
             messages.append({"role": "user", "content": "[WIM-Z guard] " + " ".join(note) + " Reply with the corrected spoken sentences only."})
             try:
                 resp2 = await self._create(messages, None, extra)
                 reply2 = self._text(resp2)
-                if reply2 and not offending_numbers(reply2, allowed) and not health_hit(reply2):
+                if reply2 and not offending_numbers(reply2, allowed):
                     reply = reply2
                     guard_notes.append("regenerated")
                 else:
@@ -254,13 +240,13 @@ class Brain:
             return ""
         reply = self._text(resp)
         allowed = allowed_numbers([intent, *data_sources])
-        if offending_numbers(reply, allowed) or health_hit(reply):
+        if offending_numbers(reply, allowed):
             messages += [{"role": "assistant", "content": reply or "..."},
-                         {"role": "user", "content": "[WIM-Z guard] Rewrite using only numbers present in the data and with no health or wellbeing comments. Spoken sentences only."}]
+                         {"role": "user", "content": "[WIM-Z guard] Rewrite using only numbers present in the data. Spoken sentences only."}]
             try:
                 resp2 = await self._create(messages, None, "")
                 reply2 = self._text(resp2)
-                if reply2 and not offending_numbers(reply2, allowed) and not health_hit(reply2):
+                if reply2 and not offending_numbers(reply2, allowed):
                     return re.sub(r"\s+", " ", reply2).strip()
             except Exception:  # pragma: no cover
                 pass

@@ -37,10 +37,9 @@ INSTRUCTIONS = """WIM-Z is a home robot that keeps a dog company and coaches it 
 Use get_dogs first to learn the dog_id. Read tools return the owner's roll-ups, events and robot
 status; quote only numbers that appear in those results. Control tools are limited by the owner's
 consent scopes and by guards on the robot side: treats are capped per day, quiet hours can only be
-widened, and live video can never be turned on from here (with the photos / camera permissions you
-may fetch an event's snapshot or ask for a single new snapshot). When a tool returns
-refused=true, tell the user the reason plainly. Never make health or medical observations about
-the dog."""
+turned on or widened, and live video can never be turned on from here (with the photos / camera
+permissions you may fetch an event's snapshot or ask for a single new snapshot). When a tool returns
+refused=true, tell the user the reason plainly."""
 
 ALLOWED_ORIGINS = [
     "https://claude.ai", "https://claude.com", "https://*.claude.ai", "https://*.claude.com",

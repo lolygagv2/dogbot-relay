@@ -1,5 +1,5 @@
-"""Voice-agent guards that do not need the API: number post-check, health blocklist, templates."""
-from app.voice_agent.brain import Brain, allowed_numbers, health_hit, numbers_in, offending_numbers
+"""Voice-agent guards that do not need the API: number post-check, templates. (No topic blocklist.)"""
+from app.voice_agent.brain import Brain, allowed_numbers, numbers_in, offending_numbers
 
 
 def test_numbers_in_handles_digits_and_words():
@@ -17,9 +17,11 @@ def test_allowed_numbers_from_tool_results_with_time_variants():
     assert offending_numbers("One more thing: 5 treats.", allowed) == []   # 'one' always allowed
 
 
-def test_health_blocklist():
-    assert health_hit("Max barked twice today.") is None
-    assert health_hit("He seems anxious and might need the vet.") in ("anxious", "vet")
+def test_no_health_topic_restriction():
+    import app.voice_agent.brain as brain
+    import app.voice_agent.prompts as prompts
+    assert not hasattr(brain, "health_hit") and not hasattr(prompts, "HEALTH_WORDS")
+    assert "vet" not in prompts.SYSTEM_PROMPT.lower() and "health" not in prompts.SYSTEM_PROMPT.lower()
 
 
 def test_templates():
