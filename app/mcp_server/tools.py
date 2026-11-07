@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status
-Control tools: set_quiet_hours, set_music, draft_mission, schedule_mission, give_treat, go_to, speak
+Control tools: set_quiet_hours, set_music, draft_mission, schedule_mission, give_treat, go_to, move, speak
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
 calls the relay through RelayClient (actor `connector:<client_id>`). Relay refusals come
@@ -27,6 +27,7 @@ from mcp.types import ToolAnnotations
 from app.database import get_dog_by_id, get_user_dog_role, get_user_dogs
 from app.mcp_server.authz import audited, require_scope
 from app.services.relay_client import RelayClient, RelayError, RelayRefusal
+from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
 
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
@@ -35,6 +36,7 @@ EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", 
                "mission_run", "status"]
 MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
 GO_TO_TARGETS = ["dog", "dock"]
+MOVE_ACTIONS = list(_MOVE_SPEC)
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
 _HM = re.compile(r"^\d{2}:\d{2}$")
@@ -444,7 +446,7 @@ def register_tools(mcp: MCPServer) -> None:
     @mcp.tool(name="go_to", annotations=CONTROL)
     @audited("go_to")
     async def go_to(dog_id: str, target: str) -> dict:
-        """Send the robot toward the dog, or back to its dock."""
+        """Send the robot to the dog or back to the dock; it finishes on its own."""
         client, user_id = _client("go_to")
         _check_dog(user_id, dog_id)
         if target not in GO_TO_TARGETS:
@@ -455,3 +457,20 @@ def register_tools(mcp: MCPServer) -> None:
             return e.as_result(_status=e.status)
         return {"ok": True, "target": target, "delivered": res.get("delivered"), "simulated": res.get("simulated"),
                 "command_id": res.get("command_id")}
+
+    @mcp.tool(name="move", annotations=CONTROL)
+    @audited("move")
+    async def move(dog_id: str, action: str, amount: Optional[int] = None) -> dict:
+        """One small supervised step at creep speed; take a photo, decide one step, repeat."""
+        client, user_id = _client("move")
+        _check_dog(user_id, dog_id)
+        if action not in MOVE_ACTIONS:
+            raise ToolError(f"action must be one of: {', '.join(MOVE_ACTIONS)}")
+        data: dict[str, Any] = {"action": action}
+        if amount is not None:
+            data["amount"] = amount
+        try:
+            res = await client.command(dog_id, "move", data, wait_s=MOVE_WAIT_S)
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return _move_result(action, res)

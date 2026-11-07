@@ -39,7 +39,7 @@ status; quote only numbers that appear in those results. Control tools are limit
 consent scopes and by guards on the robot side: treats are capped per day, quiet hours can only be
 turned on or widened, and live video can never be turned on from here (with the photos / camera
 permissions you may fetch an event's snapshot or ask for a single new snapshot). When a tool returns
-refused=true, tell the user the reason plainly."""
+refused=true, tell the user the reason plainly. For supervised movement: take a photo, decide one move, take another photo. Turn to face away before driving away from something. Stop and explain after 8 move cycles, or after a full 360-degree search finds nothing."""
 
 ALLOWED_ORIGINS = [
     "https://claude.ai", "https://claude.com", "https://*.claude.ai", "https://*.claude.com",

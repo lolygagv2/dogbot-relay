@@ -18,12 +18,14 @@ from typing import Any, Callable, Optional
 from app.database import get_dog_by_id, get_user_dog_role, get_user_dogs
 from app.mcp_server import oauth_db
 from app.services.relay_client import RelayClient, RelayError, RelayRefusal
+from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, move_tool_result
 
 logger = logging.getLogger(__name__)
 
-PHYSICAL_TOOLS = {"give_treat", "go_to", "take_photo", "run_trick", "standby", "speak"}
+PHYSICAL_TOOLS = {"give_treat", "go_to", "move", "take_photo", "run_trick", "standby", "speak"}
 MISSION_TYPES = ["recall", "sit_stay", "down_stay", "place", "quiet", "find_treat", "sit", "down", "stay", "spin"]
 GO_TO_TARGETS = ["dog", "dock"]
+MOVE_ACTIONS = list(MOVE_SPEC)
 TRICKS = ["sit", "down", "stay", "spin", "place", "paw", "speak"]
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
 
@@ -79,8 +81,14 @@ TOOLS: list[dict] = [
      "strict": True},
     {"name": "give_treat", "description": "Dispense one treat now (subject to the owner's daily cap).",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
-    {"name": "go_to", "description": "Send the robot toward the dog, or back to its dock.",
+    {"name": "go_to", "description": "Send the robot to the dog or back to the dock; it finishes on its own.",
      "input_schema": _schema({"dog_id": _str("dog id"), "target": _str("target", GO_TO_TARGETS)}, ["dog_id", "target"]),
+     "strict": True},
+    {"name": "move", "description": "One small supervised step at creep speed; take a photo, decide one step, repeat.",
+     "input_schema": _schema({"dog_id": _str("dog id"), "action": _str("action", MOVE_ACTIONS),
+                              "amount": {"type": "integer",
+                                         "description": "forward/backward: 5-30 cm (use 15 if unsure); turn_left/turn_right: 15-90 degrees (use 30 if unsure)"}},
+                             ["dog_id", "action", "amount"]),
      "strict": True},
     {"name": "take_photo", "description": "Take one new snapshot with the robot camera (no HUD) and look at it. A copy is kept so the owner's app can add it to its photo gallery; don't say it is on a timeline. Describe what you see. Never live video.",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
@@ -227,6 +235,9 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
         if name == "go_to":
             res = await c.command(dog_id, "go_to", {"target": a["target"]})
             return {"ok": True, "target": a["target"], "simulated": res.get("simulated")}
+        if name == "move":
+            res = await c.command(dog_id, "move", {"action": a["action"], "amount": a["amount"]}, wait_s=MOVE_WAIT_S)
+            return move_tool_result(a["action"], res)
         if name == "take_photo":
             res = await c.command(dog_id, "take_photo", {"with_hud": False}, wait_s=10)
             r = res.get("result") or {}

@@ -156,3 +156,61 @@ def test_go_to_named_spots_rejected(temp_db, target):
         robot_control.build_robot_message("go_to", {"target": target}, AGENT, "dog_t1")
     assert e.value.status_code == 422
     assert e.value.detail["code"] == "unknown_target" and e.value.detail["allowed"] == ["dock", "dog"]
+
+
+@pytest.mark.parametrize("action,amount,unit", [
+    ("forward", 15, "cm"), ("backward", 5, "cm"), ("forward", 30, "cm"),
+    ("turn_left", 15, "deg"), ("turn_right", 90, "deg"),
+])
+def test_move_in_range(temp_db, action, amount, unit):
+    msg, _ = robot_control.build_robot_message("move", {"action": action, "amount": amount}, CONN, "dog_t1")
+    assert msg["command"] == "move"
+    assert msg["data"] == {"action": action, "amount": amount, "unit": unit, "speed": "creep",
+                           "source": "connector", "command_id": msg["command_id"]}
+
+
+@pytest.mark.parametrize("action,default", [("forward", 15), ("backward", 15), ("turn_left", 30), ("turn_right", 30)])
+def test_move_default_amount(temp_db, action, default):
+    msg, _ = robot_control.build_robot_message("move", {"action": action}, AGENT, "dog_t1")
+    assert msg["data"]["amount"] == default
+
+
+@pytest.mark.parametrize("data,code", [
+    ({"action": "spin", "amount": 10}, "unknown_move_action"),
+    ({"action": "", "amount": 10}, "unknown_move_action"),
+    ({"action": "forward", "amount": 4}, "move_amount_out_of_range"),
+    ({"action": "forward", "amount": 31}, "move_amount_out_of_range"),
+    ({"action": "turn_left", "amount": 91}, "move_amount_out_of_range"),
+    ({"action": "turn_right", "amount": 14}, "move_amount_out_of_range"),
+    ({"action": "forward", "amount": "far"}, "move_amount_out_of_range"),
+    ({"action": "forward", "amount": True}, "move_amount_out_of_range"),
+])
+def test_move_rejected(temp_db, data, code):
+    with pytest.raises(HTTPException) as e:
+        robot_control.build_robot_message("move", data, APP, "dog_t1")
+    assert e.value.status_code == 422 and e.value.detail["code"] == code
+
+
+def test_move_needs_physical_scope():
+    from app.mcp_server import authz
+    assert authz.TOOL_SCOPES["move"] == "physical" and authz.TOOL_SCOPES["go_to"] == "physical"
+
+
+def test_move_tool_result_shapes():
+    r = robot_control.move_tool_result
+    assert r("forward", {"simulated": True}) == {"ok": False, "reason": "robot_offline_demo", "simulated": True}
+    assert r("forward", {"timed_out": True, "command_id": "c"}) == {"ok": False, "reason": "move_timed_out", "command_id": "c"}
+    assert r("forward", {"command_id": "c", "result": {"ok": False, "error": "cliff",
+                                                        "result": {"blocked": True, "reason": "cliff"}}}) == \
+        {"ok": False, "action": "forward", "command_id": "c", "blocked": True, "reason": "cliff", "error": "cliff"}
+
+
+def test_tool_descriptions_and_instructions():
+    from app.mcp_server import server
+    from app.voice_agent import prompts, tools as vt
+    by_name = {t["name"]: t for t in vt.TOOLS}
+    assert by_name["go_to"]["description"] == "Send the robot to the dog or back to the dock; it finishes on its own."
+    assert by_name["move"]["description"] == "One small supervised step at creep speed; take a photo, decide one step, repeat."
+    assert by_name["go_to"]["input_schema"]["properties"]["target"]["enum"] == ["dog", "dock"]
+    rule = "Stop and explain after 8 move cycles, or after a full 360-degree search finds nothing."
+    assert rule in prompts.SYSTEM_PROMPT and rule in server.INSTRUCTIONS

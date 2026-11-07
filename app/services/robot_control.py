@@ -26,19 +26,43 @@ SAFE_MODES = {"idle", "silent_guardian", "coach", "mission"}  # never "manual" (
 KNOWN_MISSION_TYPES = {"recall", "sit_stay", "find_treat", "place", "quiet", "down_stay", "spin", "sit", "down", "stay"}
 KNOWN_TRICKS = {"sit", "down", "stay", "spin", "place", "paw", "speak"}
 KNOWN_TARGETS = {"dog", "dock"}   # go_to: drive toward the detected dog, or return to dock
+# move: one small supervised step at creep speed. action -> (unit, min, max, default)
+MOVE_ACTIONS: dict[str, tuple[str, int, int, int]] = {
+    "forward": ("cm", 5, 30, 15), "backward": ("cm", 5, 30, 15),
+    "turn_left": ("deg", 15, 90, 30), "turn_right": ("deg", 15, 90, 30),
+}
 
 # What each actor kind may ask for. "relay" = departure triggers (not reachable over HTTP).
 ACTOR_ALLOWED: dict[str, set[str]] = {
-    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "take_photo", "standby", "run_trick"},
-    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "take_photo", "standby", "run_trick"},
-    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "take_photo", "standby", "run_trick", "play_tts"},
+    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick"},
+    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick"},
+    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts"},
     # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
     # server) — never with HUD, max one per 30 s per assistant. (Quiet hours no longer apply:
     # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
-    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "standby", "run_trick", "take_photo"},
+    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo"},
     # play_tts for "relay" = speak(): the URL is always a relay-made WIM-Z voice clip.
     "relay":     {"start_mission", "play_music", "play_tts"},
 }
+
+MOVE_WAIT_S = 8   # callers wait this long for the step's command_result
+
+
+def move_tool_result(action: str, res: dict) -> dict:
+    """Shape a dispatch() result for the MCP and voice-agent move tools."""
+    if res.get("simulated"):
+        return {"ok": False, "reason": "robot_offline_demo", "simulated": True}
+    if res.get("timed_out"):
+        return {"ok": False, "reason": "move_timed_out", "command_id": res.get("command_id")}
+    r = res.get("result") or {}
+    inner = r.get("result") if isinstance(r.get("result"), dict) else {}
+    out = {"ok": bool(r.get("ok", True)), "action": action, "command_id": res.get("command_id")}
+    for k in ("amount", "unit", "blocked", "reason"):
+        if isinstance(inner.get(k), (str, int, float, bool)):
+            out[k] = inner[k]
+    if r.get("error"):
+        out["error"] = str(r["error"])[:120]
+    return out
 
 PHOTO_MIN_INTERVAL_S = 30.0
 _last_photo: dict[str, float] = {}   # actor label -> monotonic time of last connector snapshot
@@ -136,6 +160,23 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
                 raise HTTPException(status_code=422, detail={"code": "unknown_target", "target": target,
                                                              "allowed": sorted(KNOWN_TARGETS)})
             out = ("go_to", {"target": target, "source": source})
+        case "move":
+            action = str(data.get("action") or "")[:32]
+            spec = MOVE_ACTIONS.get(action)
+            if spec is None:
+                raise HTTPException(status_code=422, detail={"code": "unknown_move_action", "action": action,
+                                                             "allowed": sorted(MOVE_ACTIONS)})
+            unit, lo, hi, default = spec
+            raw = data.get("amount")
+            try:
+                amount = default if raw is None else int(raw)
+            except (TypeError, ValueError):
+                amount = None
+            if amount is None or isinstance(raw, bool) or not lo <= amount <= hi:
+                raise HTTPException(status_code=422, detail={"code": "move_amount_out_of_range", "action": action,
+                                                             "amount": raw, "min": lo, "max": hi, "unit": unit})
+            out = ("move", {"action": action, "amount": amount, "unit": unit, "speed": "creep",
+                            "source": source, "command_id": command_id})
         case "run_trick":
             trick = str(data.get("trick") or "")[:64]
             if trick not in KNOWN_TRICKS:

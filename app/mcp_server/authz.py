@@ -41,7 +41,7 @@ TOOL_SCOPES = {
     "get_missions": "read", "get_robot_status": "read",
     "set_quiet_hours": "settings", "set_music": "settings",
     "draft_mission": "missions", "schedule_mission": "missions",
-    "give_treat": "physical", "go_to": "physical", "speak": "physical",
+    "give_treat": "physical", "go_to": "physical", "move": "physical", "speak": "physical",
     "get_event_photo": "photos", "take_photo": "camera",
 }
 
