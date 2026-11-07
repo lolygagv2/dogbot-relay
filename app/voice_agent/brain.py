@@ -129,7 +129,8 @@ class Brain:
         if extra_system:
             system.append({"type": "text", "text": extra_system})
         kwargs: dict[str, Any] = dict(
-            model=self.model, max_tokens=300,  # hard ceiling: 3 short sentences ~ 80 tokens; headroom for tool calls system=system, messages=messages,
+            # max_tokens is a hard ceiling: 3 short sentences ~ 80 tokens, plus headroom for tool calls
+            model=self.model, max_tokens=300, system=system, messages=messages,
             output_config={"effort": "low"},
             betas=["server-side-fallback-2026-07-01"], fallbacks="default",
         )
