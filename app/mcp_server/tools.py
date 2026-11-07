@@ -421,7 +421,7 @@ def register_tools(mcp: MCPServer) -> None:
     @mcp.tool(name="take_photo", annotations=CONTROL)
     @audited("take_photo")
     async def take_photo(dog_id: str) -> list:
-        """Ask WIM-Z to take a new snapshot now (no HUD) and return it. At most one every 30 seconds
+        """Ask WIM-Z to take a new snapshot now (no HUD) and return it. At most one every 0.5 seconds
         per assistant, and never live video. Requires the camera permission."""
         client, user_id = _client("take_photo")
         _check_dog(user_id, dog_id)

@@ -38,7 +38,7 @@ ACTOR_ALLOWED: dict[str, set[str]] = {
     "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick"},
     "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts"},
     # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
-    # server) — never with HUD, max one per 30 s per assistant. (Quiet hours no longer apply:
+    # server) — never with HUD, max one per 0.5 s per assistant. (Quiet hours no longer apply:
     # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
     "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo"},
     # play_tts for "relay" = speak(): the URL is always a relay-made WIM-Z voice clip.
@@ -64,7 +64,7 @@ def move_tool_result(action: str, res: dict) -> dict:
         out["error"] = str(r["error"])[:120]
     return out
 
-PHOTO_MIN_INTERVAL_S = 30.0
+PHOTO_MIN_INTERVAL_S = 0.5   # connectors: snapshot-move-snapshot loops need fast stills
 _last_photo: dict[str, float] = {}   # actor label -> monotonic time of last connector snapshot
 
 # Belt and braces: these can never be the outgoing command name.
