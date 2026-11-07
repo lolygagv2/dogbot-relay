@@ -5,6 +5,11 @@ The robot answers every relay command with
 `robot_control.dispatch` registers the command_id before sending; the WS handler calls
 `resolve`; HTTP callers can wait (`wait_s`) or poll the stored result (kept 10 minutes).
 In-process only (single relay worker).
+
+Deferred results (2026-11-07): a robot that needs longer (e.g. a take_photo capture over 8 s)
+may send an interim command_result with `result.deferred: true`; it is stored and forwarded but
+does NOT wake waiters. The final result comes later as a normal command_result or as a
+`photo_ready` frame {command_id, photo_id, image_url}, which the WS handler turns into one.
 """
 from __future__ import annotations
 
@@ -45,16 +50,34 @@ def resolve(command_id: str, payload: dict) -> Optional[dict]:
     }
     meta = _meta.get(command_id) or {}
     result.update({k: meta.get(k) for k in ("dog_id", "device_id", "command")})
+    result["interim"] = is_interim(payload)
     _results[command_id] = result
+    if result["interim"]:
+        return meta or None   # keep waiters waiting for the final result
     fut = _pending.pop(command_id, None)
     if fut and not fut.done():
         fut.set_result(result)
     return meta or None
 
 
+def is_interim(payload: dict) -> bool:
+    r = payload.get("result")
+    return isinstance(r, dict) and r.get("deferred") is True
+
+
+def from_photo_ready(message: dict) -> dict:
+    """photo_ready {command_id, photo_id, image_url} -> the final command_result payload."""
+    image_url = message.get("image_url")
+    return {"type": "command_result", "command_id": message.get("command_id"), "ok": bool(image_url),
+            "result": {"image_url": image_url, "photo_id": message.get("photo_id"), "deferred": False},
+            "error": None if image_url else (message.get("error") or "no_image_url"),
+            "timestamp": message.get("timestamp")}
+
+
 async def wait(command_id: str, timeout_s: float) -> Optional[dict]:
-    if command_id in _results:
-        return _results[command_id]
+    done = _results.get(command_id)
+    if done and not done.get("interim"):
+        return done
     fut = _pending.get(command_id)
     if fut is None:
         return None

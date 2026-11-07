@@ -1058,6 +1058,12 @@ async def websocket_device_endpoint(
             # Phase 3 / A3 — Activity event ingest (persist + forward to user's apps)
             # Robot reply to a relay-issued command (amendment 2026-11-06): resolve the
             # awaitable, forward to the owner's apps.
+            if msg_type == "photo_ready":
+                # Deferred take_photo (capture > 8 s): the final result for that command_id.
+                from app.services import command_results
+                message = command_results.from_photo_ready(message)
+                msg_type = "command_result"
+
             if msg_type == "command_result":
                 from app.services import command_results
                 cid = str(message.get("command_id") or "")
