@@ -3,6 +3,7 @@
 POST /events                      robot (HMAC) or admin: batch ingest
 GET  /summary/{dog_id}/{date}     daily roll-up (date = YYYY-MM-DD | today | yesterday)
 GET  /summary/{dog_id}/week/{date} weekly roll-up for the Monday-Sunday week containing date
+GET  /api/dogs/{dog_id}/tricks/history   per-trick record from trick_attempt events
 GET  /api/dogs/{dog_id}/events    raw events (status excluded unless requested)
 GET  /api/dogs/{dog_id}/status    latest robot status + treat/quiet-hours context
 """
@@ -77,6 +78,14 @@ async def get_week_summary(dog_id: str, date: str, refresh: bool = Query(default
     check_dog_access(actor, dog_id)
     date_str = event_store.resolve_date(dog_id, date)
     return event_store.get_weekly_summary(dog_id, date_str, refresh=refresh)
+
+
+@router.get("/api/dogs/{dog_id}/tricks/history")
+async def get_trick_history(dog_id: str, days: int = Query(default=30, ge=1, le=730),
+                            recent: int = Query(default=10, ge=0, le=50),
+                            actor: Actor = Depends(resolve_actor)):
+    check_dog_access(actor, dog_id)
+    return event_store.trick_history(dog_id, days=days, recent=recent)
 
 
 @router.get("/api/dogs/{dog_id}/events")

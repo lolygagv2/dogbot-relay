@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
-Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status, get_schedule
-Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, speak
+Read tools: get_dogs, get_day_summary, get_events, get_trend, get_trick_history, get_missions, get_robot_status, get_schedule
+Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_coach, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, speak
 Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
@@ -29,8 +29,9 @@ from app.mcp_server.authz import audited, require_scope
 from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
-from app.services.robot_control import sg_mode_command, sg_mode_tool_result
+from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
 from app.services import schedule_tools, settings_tools
+from app.services.event_store import cue_rates as event_store_rates
 
 
 class TreatWindowArg(TypedDict):
@@ -42,13 +43,13 @@ READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_h
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 
 EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", "arrival", "treat", "music",
-               "mission_run", "status"]
+               "mission_run", "status", "coach_session", "trick_attempt"]
 GO_TO_TARGETS = ["dog", "dock"]
 SG_LEVELS = ["low", "medium", "high"]
 TREND_DAILY_MAX_DAYS = 90     # up to this many days: one row per day
 TREND_MAX_DAYS = 730          # beyond 90: one row per week (Monday-Sunday), up to two years
 TREND_METRICS = ["treats", "bark_episodes", "bark_s", "interventions", "pacing_s", "alone_s",
-                 "missions_success", "missions_fail", "sg_s", "coach_s"]
+                 "missions_success", "missions_fail", "sg_s", "coach_s", "coach_sessions", "cues", "cue_successes"]
 MOVE_ACTIONS = list(_MOVE_SPEC)
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
 _HM = re.compile(r"^\d{2}:\d{2}$")
@@ -112,7 +113,10 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("get_day_summary")
     async def get_day_summary(dog_id: str, date: str = "today") -> dict:
         """Daily roll-up for one dog: counts per event type, totals (bark seconds, treats vs cap,
-        alone time, music), time-to-settle stats and the top 3 bark episodes.
+        alone time, music, sg_s / coach_s, and coaching: cues = trick cues given, cue_successes,
+        success_rate 0-1 and success_pct, cues_by_trick = per-trick {cues, successes}), time-to-settle
+        stats and the top 3 bark episodes. coach_s is the day's Coach sessions when the robot
+        reports them, otherwise time in Coach mode.
         date: YYYY-MM-DD, "today" or "yesterday" (in the dog's timezone)."""
         client, user_id = _client("get_day_summary")
         _check_dog(user_id, dog_id)
@@ -158,7 +162,9 @@ def register_tools(mcp: MCPServer) -> None:
     async def get_trend(dog_id: str, days: int = 7, compare_dog_id: Optional[str] = None) -> dict:
         """Trend series over the last `days` days (1-730, default 7; today is in the last row):
         treats, bark episodes, bark seconds, interventions, pacing, alone time, missions, median
-        time-to-settle, and sg_s / coach_s (seconds the robot spent in Silent Guardian / Coach mode).
+        time-to-settle, sg_s / coach_s (seconds the robot spent in Silent Guardian / Coach), and
+        coaching: coach_sessions, cues, cue_successes and success_rate per row; totals add
+        success_rate / success_pct over the whole period and cues_by_trick (per-trick cues, successes).
         Up to 90 days there is one row per day (granularity "day"). Over 90 days there is one row
         per week, Monday to Sunday (granularity "week", `date` = the week's Monday, `weeks` = row
         count); the last week is the current one and is partial, and a weekly settle_median_s is
@@ -207,13 +213,26 @@ def register_tools(mcp: MCPServer) -> None:
                     "pacing_s": t.get("pacing_s", 0), "alone_s": t.get("alone_s", 0),
                     "missions_success": t.get("missions_success", 0), "missions_fail": t.get("missions_fail", 0),
                     "sg_s": t.get("sg_s", 0), "coach_s": t.get("coach_s", 0),
-                    "settle_median_s": tts.get("median_s")}
+                    "coach_sessions": c.get("coach_session", 0), "cues": t.get("cues", 0),
+                    "cue_successes": t.get("cue_successes", 0), "success_rate": t.get("success_rate"),
+                    "settle_median_s": tts.get("median_s"), "_by_trick": t.get("cues_by_trick") or {}}
 
         def totals(rs: list[dict]) -> dict:
             out = {m: sum((r.get(m) or 0) for r in rs) for m in TREND_METRICS}
             med = [r["settle_median_s"] for r in rs if r.get("settle_median_s") is not None]
             out["settle_median_s_avg"] = round(sum(med) / len(med)) if med else None
+            out.update(event_store_rates(out["cues"], out["cue_successes"]))
+            by: dict[str, dict] = {}
+            for r in rs:
+                for trick, v in (r.get("_by_trick") or {}).items():
+                    b = by.setdefault(trick, {"cues": 0, "successes": 0})
+                    b["cues"] += v.get("cues", 0)
+                    b["successes"] += v.get("successes", 0)
+            out["cues_by_trick"] = {k: {**v, **event_store_rates(v["cues"], v["successes"])} for k, v in sorted(by.items())}
             return out
+
+        def rate_delta(a: Optional[float], b: Optional[float]) -> Optional[float]:
+            return None if a is None or b is None else round(a - b, 2)
 
         jobs = [one(dog_id, d) for d in keys]
         if compare_dog_id:
@@ -225,6 +244,9 @@ def register_tools(mcp: MCPServer) -> None:
         current, previous = list(reversed(rows[:n])), list(reversed(rows[n:]))
         cur_t, prev_t = totals(current), totals(previous)
         delta = {m: (cur_t[m] - prev_t[m]) for m in TREND_METRICS}
+        delta["success_rate"] = rate_delta(cur_t["success_rate"], prev_t["success_rate"])
+        for r in current + previous:
+            r.pop("_by_trick", None)
         out = {"dog_id": dog_id, "days": days, "granularity": "week" if weekly else "day",
                "from": current[0]["date"], "to": today.isoformat() if weekly else current[-1]["date"],
                "series": current, "totals": cur_t, "previous_period_totals": prev_t, "delta": delta}
@@ -235,13 +257,15 @@ def register_tools(mcp: MCPServer) -> None:
             for r, d in zip(other, reversed(keys[:n])):
                 r["date"] = d   # same dates as `series`, even for a bucket the relay could not summarise
             other_t = totals(other)
+            for r in other:
+                r.pop("_by_trick", None)
             comparison = {}
-            for m in [*TREND_METRICS, "settle_median_s_avg"]:
+            for m in [*TREND_METRICS, "settle_median_s_avg", "success_rate"]:
                 a, b = cur_t[m], other_t[m]
                 if a is None or b is None:
                     comparison[m] = {"dog": a, "compare": b, "difference": None, "pct_difference": None}
                 else:
-                    comparison[m] = {"dog": a, "compare": b, "difference": a - b,
+                    comparison[m] = {"dog": a, "compare": b, "difference": round(a - b, 2),
                                      "pct_difference": round((a - b) / b * 100) if b else None}
             out["compare"] = {"dog_id": compare_dog_id, "series": other, "totals": other_t}
             out["comparison"] = comparison
@@ -378,6 +402,35 @@ def register_tools(mcp: MCPServer) -> None:
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return sg_mode_tool_result(bool(on), res)
+
+    @mcp.tool(name="set_coach", annotations=CONTROL)
+    @audited("set_coach")
+    async def set_coach(dog_id: str, on: bool) -> dict:
+        """Turn Coach mode (active trick training) on or off right now. on=true puts the robot into
+        Coach mode; on=false puts it in standby (idle). To run Coach at a set time, use
+        schedule_mission with type coach. The robot does not confirm the change, so report it as
+        sent, and use get_robot_status to check the mode."""
+        client, user_id = _client("set_coach")
+        _check_dog(user_id, dog_id)
+        try:
+            res = await client.command(dog_id, "set_mode", coach_mode_command(bool(on)))
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return coach_mode_tool_result(bool(on), res)
+
+    @mcp.tool(name="get_trick_history", annotations=READ)
+    @audited("get_trick_history")
+    async def get_trick_history(dog_id: str, days: int = 30, recent: int = 10) -> dict:
+        """The dog's trick record from Coach cues over the last `days` days (1-730, default 30; today
+        included): per trick attempts, successes, success_rate (0-1) / success_pct, avg_latency_ms
+        and the last attempt; `recent` newest attempts (0-50, default 10); overall totals.
+        Numbers only."""
+        client, user_id = _client("get_trick_history")
+        _check_dog(user_id, dog_id)
+        try:
+            return await client.trick_history(dog_id, max(1, min(int(days), 730)), max(0, min(int(recent), 50)))
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
 
     @mcp.tool(name="set_treat_schedule", annotations=CONTROL)
     @audited("set_treat_schedule")

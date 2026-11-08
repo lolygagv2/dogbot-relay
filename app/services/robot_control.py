@@ -81,6 +81,21 @@ def sg_mode_tool_result(on: bool, res: dict) -> dict:
                       f"Sent to the robot: Silent Guardian {out['silent_guardian']}.")
     return out
 
+def coach_mode_command(on: bool) -> dict:
+    """set_coach: on -> coach, off -> idle (standby). Nothing else is reachable."""
+    return {"mode": "coach" if on else "idle"}
+
+
+def coach_mode_tool_result(on: bool, res: dict) -> dict:
+    """Shape a dispatch() result for the set_coach tools (the robot does not confirm mode changes)."""
+    out = {"ok": True, "coach": "on" if on else "off", "mode": coach_mode_command(on)["mode"],
+           "delivered": bool(res.get("delivered")), "simulated": bool(res.get("simulated")),
+           "command_id": res.get("command_id")}
+    out["message"] = ("Simulated (demo dog, no live robot)." if out["simulated"] else
+                      f"Sent to the robot: Coach mode {out['coach']}.")
+    return out
+
+
 def listen_tool_result(res: dict) -> tuple[dict, Optional[str]]:
     """Shape a dispatch() result for the listen tools: (fields, clip_url or None).
     fields: ok, labels (list of str), db (number), plus seconds/peak_db/clip_expires_in_s when given."""

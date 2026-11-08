@@ -20,7 +20,7 @@ from app.mcp_server import oauth_db
 from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, move_tool_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
-from app.services.robot_control import sg_mode_command, sg_mode_tool_result
+from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
 from app.services import schedule_tools, settings_tools
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ TOOLS: list[dict] = [
      "input_schema": _schema({"dog_id": _str("dog id"), "date": _str("YYYY-MM-DD | today | yesterday")}, ["dog_id", "date"]),
      "strict": True},
     {"name": "get_events",
-     "description": "Recent events for a dog, newest first. type is one of bark_episode, intervention, settle, pacing, departure, arrival, treat, music, mission_run, status or empty for all.",
+     "description": "Recent events for a dog, newest first. type is one of bark_episode, intervention, settle, pacing, departure, arrival, treat, music, mission_run, coach_session, trick_attempt, status or empty for all.",
      "input_schema": _schema({"dog_id": _str("dog id"), "type": _str("event type or empty string"),
                               "limit": {"type": "integer", "description": "1-50"}}, ["dog_id", "type", "limit"]),
      "strict": True},
@@ -84,6 +84,16 @@ TOOLS: list[dict] = [
      "input_schema": _schema({"dog_id": _str("dog id"), "on": {"type": "boolean", "description": "true = on, false = off"}},
                              ["dog_id", "on"]), "strict": True},
     # Not strict (the API caps strict tools at 20): optional fields may simply be omitted.
+    {"name": "set_coach",
+     "description": "Turn Coach mode (active trick training) on or off right now. on=true starts Coach mode; on=false puts the robot in standby. To run it at a set time use schedule_mission with type coach. The robot does not confirm the change, so say it was sent.",
+     "input_schema": {"type": "object", "properties": {
+         "dog_id": _str("dog id"), "on": {"type": "boolean", "description": "true = on, false = off (standby)"}},
+         "required": ["dog_id", "on"]}},
+    {"name": "get_trick_history",
+     "description": "The dog's trick record from Coach cues: per trick attempts, successes, success_pct, avg latency and last attempt, plus recent attempts and totals. days 1-730 (default 30).",
+     "input_schema": {"type": "object", "properties": {
+         "dog_id": _str("dog id"), "days": {"type": "integer", "description": "1-730, default 30"}},
+         "required": ["dog_id"]}},
     {"name": "set_treat_schedule",
      "description": "Replace the treat-time windows. windows: list of {start, end, multiplier}; start/end HH:MM 24h local (may wrap midnight, no overlaps, at most 12); multiplier 0-3 scales treat frequency inside the window. Empty list clears them. default_multiplier (0-3, optional) applies outside windows. The daily treat cap is owner-only and never changes here. Say back the saved windows.",
      "input_schema": {"type": "object", "properties": {
@@ -264,6 +274,16 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             on = bool(a.get("on"))
             res = await c.command(dog_id, "set_mode", sg_mode_command(on))
             return sg_mode_tool_result(on, res)
+        if name == "set_coach":
+            on = bool(a.get("on"))
+            res = await c.command(dog_id, "set_mode", coach_mode_command(on))
+            return coach_mode_tool_result(on, res)
+        if name == "get_trick_history":
+            h = await c.trick_history(dog_id, max(1, min(int(a.get("days") or 30), 730)), 5)
+            for t in h.get("tricks", []):
+                t.pop("success_rate", None)            # speak percents: success_pct
+            h.get("totals", {}).pop("success_rate", None)
+            return h
         if name == "set_treat_schedule":
             return await settings_tools.set_treat_schedule(c, dog_id, a.get("windows"), a.get("default_multiplier"))
         if name == "set_notify_rule":

@@ -187,7 +187,7 @@ class Brain:
                 if res.get("refused"):
                     refused.append(str(res.get("reason")))
                 if tu.name in ("set_quiet_hours", "set_music", "set_sg_sensitivity", "set_silent_guardian", "schedule_mission", "cancel_mission",
-                               "set_treat_schedule", "set_notify_rule") and res.get("ok"):
+                               "set_treat_schedule", "set_notify_rule", "set_coach") and res.get("ok"):
                     settings_changes.append({"tool": tu.name, "result": res})
                 blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": _tool_result_content(res)})
             messages.append({"role": "user", "content": blocks})
@@ -284,6 +284,13 @@ class Brain:
             return [v, f"{h}:{v[3:]}", f"{h % 12 or 12}:{v[3:]}"] + ([str(h % 12 or 12)] if v[3:] == "00" else [])
         if change["tool"] == "cancel_mission":
             return [t for t in (r.get("name"), "cancel", "Cancel", "removed", "deleted") if t]
+        if change["tool"] == "set_coach":
+            state = "on" if r.get("coach") == "on" else "off"
+            toks = [f"Coach mode {state}", f"{state} Coach mode", f"Coach mode is {state}", f"Coach mode is now {state}",
+                    f"Coach {state}", f"{state} Coach"]
+            verbs = ["start Coach", "started Coach", "starting Coach"] if state == "on" else \
+                ["stop Coach", "stopped Coach", "stopping Coach", "standby"]
+            return toks + verbs
         if change["tool"] == "set_treat_schedule":
             ws = r.get("windows") or []
             if not ws:
@@ -323,6 +330,11 @@ class Brain:
         if change["tool"] == "cancel_mission":
             tail = "" if r.get("confirmed_by_robot") else ", but the robot hasn't confirmed yet"
             return f"I've cancelled {r.get('name') or r.get('mission_id')}{tail}."
+        if change["tool"] == "set_coach":
+            if r.get("simulated"):
+                return f"Coach mode {r.get('coach')} was simulated, because no live robot is connected."
+            return ("I've told the robot to start Coach mode." if r.get("coach") == "on"
+                    else "I've told the robot to stop Coach mode and go to standby.")
         if change["tool"] == "set_treat_schedule":
             ws = r.get("windows") or []
             dm = r.get("default_multiplier")

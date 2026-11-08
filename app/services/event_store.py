@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 MEDIA_PREFIX = "/api/media/download/"
 SETTLE_WINDOW_S = 600  # a settle within episode end + 10 min counts for that episode
 LOW_HOPPER_THRESHOLD = 3
+TRICK_RESULTS = ("success", "fail", "no_response")
 # mode time (2026-11-07): totals.<key> = seconds the robot spent in that mode on the local day
 MODE_TOTALS = {"silent_guardian": "sg_s", "coach": "coach_s"}
 HEARTBEAT_GRACE_S = 120  # a mode period ends this long after the robot's last status heartbeat
@@ -143,6 +144,35 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
             return None, "mission_run requires data.mission_id or data.mission_type"
         if data.get("result") not in ("success", "fail", "aborted"):
             return None, "mission_run requires data.result in success|fail|aborted"
+    elif etype == "coach_session":
+        # one Coach session for one dog: ts = start, duration_s = length. data.cues /
+        # data.successes are the robot's own tally (informational; roll-ups count trick_attempt).
+        if duration is None:
+            return None, "coach_session requires duration_s"
+        for k in ("cues", "successes"):
+            if k in data:
+                try:
+                    data[k] = max(0, int(data[k]))
+                except (TypeError, ValueError):
+                    return None, f"coach_session data.{k} must be an integer"
+    elif etype == "trick_attempt":
+        # one cue: data.trick (e.g. "sit") and the outcome, as data.result success|fail|no_response
+        # or data.success (bool). Optional: latency_ms, session_id (the coach_session event_id), treat.
+        trick = data.get("trick")
+        if not isinstance(trick, str) or not trick.strip() or len(trick) > 64:
+            return None, "trick_attempt requires data.trick"
+        data["trick"] = trick.strip().lower()
+        result = data.get("result")
+        if result is None and isinstance(data.get("success"), bool):
+            result = "success" if data["success"] else "fail"
+        if result not in TRICK_RESULTS:
+            return None, "trick_attempt requires data.result in success|fail|no_response (or data.success)"
+        data["result"], data["success"] = result, result == "success"
+        if "latency_ms" in data:
+            try:
+                data["latency_ms"] = max(0, int(data["latency_ms"]))
+            except (TypeError, ValueError):
+                data.pop("latency_ms", None)
     elif etype == "mode_change":
         mode = data.get("mode")
         if not isinstance(mode, str) or not mode.strip() or len(mode) > 32:
@@ -536,6 +566,13 @@ def mode_seconds(dog_id: str, start: datetime, end_of_day: datetime, now: dateti
     return out, running
 
 
+def cue_rates(cues: int, successes: int) -> dict:
+    """success_rate (0-1, 2 dp) and success_pct (whole percent) for a cue tally; None with no cues."""
+    if not cues:
+        return {"success_rate": None, "success_pct": None}
+    return {"success_rate": round(successes / cues, 2), "success_pct": round(100 * successes / cues)}
+
+
 def compute_daily_summary(dog_id: str, date_str: str) -> dict:
     tz = settings_service.get_timezone(dog_id)
     rows = list_events(dog_id, local_date=date_str, limit=20000, order="asc")
@@ -545,7 +582,9 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
     totals: dict[str, Any] = {
         "bark_s": 0.0, "pacing_s": 0.0, "music_s": 0.0, "treats": 0, "alone_s": 0.0,
         "interventions_by_kind": {}, "missions_success": 0, "missions_fail": 0,
+        "cues": 0, "cue_successes": 0, "cues_by_trick": {},
     }
+    session_s = 0.0
     for r in rows:
         counts[r["type"]] = counts.get(r["type"], 0) + 1
         d, dur = r["data"], r["duration_s"] or 0.0
@@ -565,6 +604,15 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
                 totals["missions_success"] += 1
             elif d.get("result") == "fail":
                 totals["missions_fail"] += 1
+        elif r["type"] == "coach_session":
+            session_s += dur
+        elif r["type"] == "trick_attempt":
+            per = totals["cues_by_trick"].setdefault(str(d.get("trick")), {"cues": 0, "successes": 0})
+            per["cues"] += 1
+            totals["cues"] += 1
+            if d.get("success"):
+                per["successes"] += 1
+                totals["cue_successes"] += 1
 
     # alone time: departure -> next arrival, clipped to the local day
     day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=tz)
@@ -645,6 +693,10 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
     mode_s, mode_running = mode_seconds(dog_id, day_start.astimezone(timezone.utc),
                                         day_end.astimezone(timezone.utc), now)
     totals.update(mode_s)
+    if counts.get("coach_session"):
+        # explicit Coach sessions are the coaching time; otherwise time in Coach mode (mode_change)
+        totals["coach_s"] = round(session_s)
+    totals.update(cue_rates(totals["cues"], totals["cue_successes"]))
     for k in ("bark_s", "pacing_s", "music_s", "alone_s"):
         totals[k] = round(totals[k])
 
@@ -706,6 +758,7 @@ def combine_daily_summaries(dog_id: str, week_start: str, dailies: list[dict], t
         _sum_into(counts, s.get("counts") or {})
         t = dict(s.get("totals") or {})
         caps.append(t.pop("treat_cap", None))
+        t.pop("success_rate", None), t.pop("success_pct", None)     # ratios: recomputed below
         _sum_into(totals, t)
         top.extend(s.get("top_episodes") or [])
         tts = s.get("time_to_settle") or {}
@@ -721,6 +774,7 @@ def combine_daily_summaries(dog_id: str, week_start: str, dailies: list[dict], t
         if tts.get("max_s") is not None:
             maxs.append(tts["max_s"])
     totals["treat_cap"] = next((c for c in reversed(caps) if c is not None), None)
+    totals.update(cue_rates(totals.get("cues", 0), totals.get("cue_successes", 0)))
     top.sort(key=lambda x: (-(x.get("duration_s") or 0), -(x.get("bark_count") or 0), x.get("ts") or ""))
     firsts = [s["first_event_ts"] for s in dailies if s.get("first_event_ts")]
     lasts = [s["last_event_ts"] for s in dailies if s.get("last_event_ts")]
@@ -765,3 +819,45 @@ def get_weekly_summary(dog_id: str, date_str: str, refresh: bool = False) -> dic
     if complete:
         upsert_weekly_summary(dog_id, week_start, tz, summary, summary["event_count"], summary["last_event_ts"])
     return summary
+
+
+# ---- trick history (2026-11-08) ----
+
+def trick_history(dog_id: str, days: int = 30, recent: int = 10) -> dict:
+    """Per-trick record from trick_attempt events over the last `days` local days (today included):
+    attempts, successes, success_rate / success_pct, average latency and the last attempt; plus
+    the `recent` newest attempts and overall totals."""
+    days = max(1, min(int(days), 730))
+    recent = max(0, min(int(recent), 50))
+    tz = settings_service.get_timezone(dog_id)
+    today = datetime.now(timezone.utc).astimezone(tz).date()
+    first = today - timedelta(days=days - 1)
+    since = datetime(first.year, first.month, first.day, tzinfo=tz).astimezone(timezone.utc).isoformat()
+    rows = list_events(dog_id, since=since, types=["trick_attempt"], limit=50000, order="asc")
+    per: dict[str, dict] = {}
+    for r in rows:
+        d = r["data"]
+        t = per.setdefault(str(d.get("trick")), {"trick": str(d.get("trick")), "attempts": 0, "successes": 0,
+                                                 "_lat": []})
+        t["attempts"] += 1
+        t["successes"] += 1 if d.get("success") else 0
+        if isinstance(d.get("latency_ms"), int):
+            t["_lat"].append(d["latency_ms"])
+        t["last_attempt_ts"], t["last_result"] = r["ts"], d.get("result")
+    tricks = []
+    for t in per.values():
+        lat = t.pop("_lat")
+        t.update(cue_rates(t["attempts"], t["successes"]))
+        t["avg_latency_ms"] = round(sum(lat) / len(lat)) if lat else None
+        tricks.append(t)
+    tricks.sort(key=lambda x: (-x["attempts"], x["trick"]))
+    attempts = sum(t["attempts"] for t in tricks)
+    successes = sum(t["successes"] for t in tricks)
+    return {
+        "dog_id": dog_id, "days": days, "from": first.isoformat(), "to": today.isoformat(), "tz": str(tz.key),
+        "tricks": tricks,
+        "recent": [{"event_id": r["event_id"], "ts": r["ts"], "trick": r["data"].get("trick"),
+                    "result": r["data"].get("result"), "latency_ms": r["data"].get("latency_ms"),
+                    "session_id": r["data"].get("session_id")} for r in reversed(rows[-recent:] if recent else [])],
+        "totals": {"attempts": attempts, "successes": successes, **cue_rates(attempts, successes)},
+    }

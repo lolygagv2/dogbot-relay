@@ -484,6 +484,7 @@ class ScheduleListResponse(BaseModel):
 EVENT_TYPES = (
     "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
     "treat", "music", "mission_run", "status", "mode_change",
+    "coach_session", "trick_attempt",
 )
 
 
@@ -492,7 +493,9 @@ class EventIn(BaseModel):
     type: Literal[
         "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
         "treat", "music", "mission_run", "status", "mode_change",
+        "coach_session", "trick_attempt",
     ]
+    # coach_session / trick_attempt (2026-11-08): see event_store.validate_event for the shapes.
     # mode_change (2026-11-07): device-scoped like status; data.mode is the mode just entered.
     # With dog_id it counts toward that dog only (e.g. a Coach session), without it toward all
     # of the owner's dogs. Rolled up as totals.sg_s / totals.coach_s.
