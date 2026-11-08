@@ -21,7 +21,7 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, move_tool_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import sg_mode_command, sg_mode_tool_result
-from app.services import schedule_tools
+from app.services import schedule_tools, settings_tools
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,26 @@ TOOLS: list[dict] = [
      "description": "Turn Silent Guardian (bark watch and intervention) on or off right now. on=true starts Silent Guardian mode; on=false puts the robot in standby. To run it at a set time use schedule_mission with type silent_guardian. The robot does not confirm the change, so say it was sent.",
      "input_schema": _schema({"dog_id": _str("dog id"), "on": {"type": "boolean", "description": "true = on, false = off"}},
                              ["dog_id", "on"]), "strict": True},
+    # Not strict (the API caps strict tools at 20): optional fields may simply be omitted.
+    {"name": "set_treat_schedule",
+     "description": "Replace the treat-time windows. windows: list of {start, end, multiplier}; start/end HH:MM 24h local (may wrap midnight, no overlaps, at most 12); multiplier 0-3 scales treat frequency inside the window. Empty list clears them. default_multiplier (0-3, optional) applies outside windows. The daily treat cap is owner-only and never changes here. Say back the saved windows.",
+     "input_schema": {"type": "object", "properties": {
+         "dog_id": _str("dog id"),
+         "windows": {"type": "array", "items": {"type": "object", "properties": {
+             "start": _str("HH:MM"), "end": _str("HH:MM"), "multiplier": {"type": "number", "description": "0-3"}},
+             "required": ["start", "end", "multiplier"]}},
+         "default_multiplier": {"type": "number", "description": "0-3; omit to keep"}},
+         "required": ["dog_id", "windows"]}},
+    {"name": "set_notify_rule",
+     "description": "Add a phone notification rule. event_type: bark_episode, intervention, settle, pacing, departure, arrival, treat, music or mission_run. Optional: min_duration_s; severity (bark_episode only) low|med|high meaning at least that severe; attach none|still|clip; cooldown_s between pushes. At most 10 rules per dog; edits and removals are done in the app.",
+     "input_schema": {"type": "object", "properties": {
+         "dog_id": _str("dog id"),
+         "event_type": _str("event type", settings_tools.NOTIFY_EVENT_TYPES),
+         "min_duration_s": {"type": "number", "description": "seconds; omit for any length"},
+         "severity": _str("bark severity at least", settings_tools.SEVERITIES),
+         "attach": _str("what to attach", settings_tools.ATTACH),
+         "cooldown_s": {"type": "integer", "description": "0-86400 seconds"}},
+         "required": ["dog_id", "event_type"]}},
     {"name": "get_schedule",
      "description": "List scheduled missions and ask the robot what it has loaded: each has id, name, type, time (local HH:MM), days, duration_min and, when the robot confirms, next_fire_at. confirmed_by_robot false means it is the relay's copy only.",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
@@ -244,6 +264,11 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             on = bool(a.get("on"))
             res = await c.command(dog_id, "set_mode", sg_mode_command(on))
             return sg_mode_tool_result(on, res)
+        if name == "set_treat_schedule":
+            return await settings_tools.set_treat_schedule(c, dog_id, a.get("windows"), a.get("default_multiplier"))
+        if name == "set_notify_rule":
+            return await settings_tools.set_notify_rule(c, dog_id, str(a.get("event_type") or ""), a.get("min_duration_s"),
+                                                        a.get("severity"), a.get("attach"), a.get("cooldown_s"))
         if name == "get_schedule":
             return await schedule_tools.get_schedule(c, dog_id)
         if name == "schedule_mission":

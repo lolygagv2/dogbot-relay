@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_missions, get_robot_status, get_schedule
-Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, schedule_mission, cancel_mission, give_treat, go_to, move, speak
+Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, speak
 Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
@@ -16,7 +16,7 @@ import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 from zoneinfo import ZoneInfo
 
 from mcp.server import MCPServer
@@ -30,7 +30,13 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import sg_mode_command, sg_mode_tool_result
-from app.services import schedule_tools
+from app.services import schedule_tools, settings_tools
+
+
+class TreatWindowArg(TypedDict):
+    start: str          # HH:MM 24h local
+    end: str            # HH:MM 24h local
+    multiplier: float   # 0-3
 
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
@@ -372,6 +378,44 @@ def register_tools(mcp: MCPServer) -> None:
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return sg_mode_tool_result(bool(on), res)
+
+    @mcp.tool(name="set_treat_schedule", annotations=CONTROL)
+    @audited("set_treat_schedule")
+    async def set_treat_schedule(dog_id: str, windows: list[TreatWindowArg],
+                                 default_multiplier: Optional[float] = None) -> dict:
+        """Replace the dog's treat-time windows. Each window is {start, end, multiplier}: start/end
+        HH:MM 24h local (a window may wrap past midnight, e.g. 22:00-02:00; windows may not overlap,
+        at most 12), multiplier 0-3 scales treat frequency inside the window. An empty list clears
+        the windows. default_multiplier (0-3) applies outside any window; omit it to keep the
+        current value. The daily treat cap and hourly limit are owner-only and never change here.
+        The result reads back the saved windows; quote them to the user."""
+        client, user_id = _client("set_treat_schedule")
+        _check_dog(user_id, dog_id)
+        try:
+            return await settings_tools.set_treat_schedule(
+                client, dog_id, [dict(w) for w in windows], default_multiplier)
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+
+    @mcp.tool(name="set_notify_rule", annotations=CONTROL)
+    @audited("set_notify_rule")
+    async def set_notify_rule(dog_id: str, event_type: str, min_duration_s: Optional[float] = None,
+                              severity: Optional[str] = None, attach: str = "none",
+                              cooldown_s: Optional[int] = None) -> dict:
+        """Add a phone notification rule for the dog. event_type: bark_episode, intervention, settle,
+        pacing, departure, arrival, treat, music or mission_run. min_duration_s: only events at least
+        this long. severity (bark_episode only): low, med or high, meaning at least that severe.
+        attach: none, still (snapshot) or clip. cooldown_s: minimum seconds between pushes from this
+        rule (0-86400). The push category (app_type) follows the event type. At most 10 rules per
+        dog, counting the owner's own; editing or removing rules is done in the app. Rules never
+        override quiet hours."""
+        client, user_id = _client("set_notify_rule")
+        _check_dog(user_id, dog_id)
+        try:
+            return await settings_tools.set_notify_rule(client, dog_id, event_type, min_duration_s, severity,
+                                                        attach, cooldown_s)
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
 
     @mcp.tool(name="get_schedule", annotations=READ)
     @audited("get_schedule")

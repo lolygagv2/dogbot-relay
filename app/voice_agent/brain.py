@@ -186,7 +186,8 @@ class Brain:
                 tool_results_data.append(res)
                 if res.get("refused"):
                     refused.append(str(res.get("reason")))
-                if tu.name in ("set_quiet_hours", "set_music", "set_sg_sensitivity", "set_silent_guardian", "schedule_mission", "cancel_mission") and res.get("ok"):
+                if tu.name in ("set_quiet_hours", "set_music", "set_sg_sensitivity", "set_silent_guardian", "schedule_mission", "cancel_mission",
+                               "set_treat_schedule", "set_notify_rule") and res.get("ok"):
                     settings_changes.append({"tool": tu.name, "result": res})
                 blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": _tool_result_content(res)})
             messages.append({"role": "user", "content": blocks})
@@ -283,6 +284,19 @@ class Brain:
             return [v, f"{h}:{v[3:]}", f"{h % 12 or 12}:{v[3:]}"] + ([str(h % 12 or 12)] if v[3:] == "00" else [])
         if change["tool"] == "cancel_mission":
             return [t for t in (r.get("name"), "cancel", "Cancel", "removed", "deleted") if t]
+        if change["tool"] == "set_treat_schedule":
+            ws = r.get("windows") or []
+            if not ws:
+                return ["no treat windows", "cleared", "removed"]
+            toks = []
+            for w in ws:
+                v = w["start"]
+                h = int(v[:2])
+                toks += [v, f"{h}:{v[3:]}", f"{h % 12 or 12}:{v[3:]}"] + ([str(h % 12 or 12)] if v[3:] == "00" else [])
+            return toks
+        if change["tool"] == "set_notify_rule":
+            rule = r.get("rule") or {}
+            return [t for t in (rule.get("event_type", "").replace("_", " ").split(" ")[0], "notif", "alert") if t]
         return []
 
     @staticmethod
@@ -309,6 +323,29 @@ class Brain:
         if change["tool"] == "cancel_mission":
             tail = "" if r.get("confirmed_by_robot") else ", but the robot hasn't confirmed yet"
             return f"I've cancelled {r.get('name') or r.get('mission_id')}{tail}."
+        if change["tool"] == "set_treat_schedule":
+            ws = r.get("windows") or []
+            dm = r.get("default_multiplier")
+            outside = f" and {dm:g}x the rest of the day" if dm is not None else ""
+            if not ws:
+                return f"There are no treat windows now; treats run at {dm:g}x all day." if dm is not None \
+                    else "There are no treat windows now."
+            parts = [f"{w['start']} to {w['end']} at {w['multiplier']:g}x" for w in ws]
+            return f"Treat windows are now {', '.join(parts)}{outside}."
+        if change["tool"] == "set_notify_rule":
+            rule = r.get("rule") or {}
+            what = (rule.get("event_type") or "event").replace("_", " ")
+            w = rule.get("when") or {}
+            bits = []
+            if w.get("severity_in"):
+                bits.append(f"{w['severity_in'][0]} severity or higher")
+            if w.get("min_duration_s"):
+                bits.append(f"at least {w['min_duration_s']:g} seconds")
+            if rule.get("cooldown_s"):
+                bits.append(f"at most once every {rule['cooldown_s']} seconds")
+            if rule.get("attach") in ("still", "clip"):
+                bits.append("with a photo" if rule["attach"] == "still" else "with a clip")
+            return f"You'll now get a notification for each {what}" + (f", {', '.join(bits)}" if bits else "") + "."
         return ""
 
     def _template(self, changes: list[dict], results: list[Any], refused: list[str]) -> str:
@@ -319,6 +356,8 @@ class Brain:
                 "treat_rate": "treats are limited per hour",
                 "quiet_hours_widen_only": "quiet hours can only be widened from here",
                 "robot_offline": "the robot is offline",
+                "notify_rules_limit": "the dog already has the maximum of 10 notification rules",
+                "windows_overlap": "those treat windows overlap",
             }
             parts.append("I couldn't do that because " + reasons.get(refused[0], refused[0].replace("_", " ")) + ".")
         if not parts:
