@@ -3294,6 +3294,18 @@ def last_notify_sent(dog_id: str, rule_id: str) -> Optional[str]:
     return row["created_at"] if row else None
 
 
+def last_notify_sent_event_ts(dog_id: str, rule_id: str, at_or_before: str) -> Optional[str]:
+    """Event time (not send time) of the latest event at or before `at_or_before` that sent a
+    push for this rule. Replay cooldowns run on this clock."""
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT MAX(e.ts) AS ts FROM notify_log n JOIN events e ON e.event_id = n.event_id "
+            "WHERE n.dog_id = ? AND n.rule_id = ? AND n.outcome = 'sent' AND e.ts <= ?",
+            (dog_id, rule_id, at_or_before),
+        ).fetchone()
+    return row["ts"] if row else None
+
+
 def list_notify_log(dog_id: str, limit: int = 50) -> list[dict]:
     with db_connection() as conn:
         rows = conn.execute(

@@ -36,7 +36,7 @@ from app.database import (
     upsert_weekly_summary,
 )
 from app.config import get_settings
-from app.models import EVENT_TYPES, TreatSchedule
+from app.models import EVENT_TYPES, NotifyRules, TreatSchedule
 from app.services import settings_service
 
 logger = logging.getLogger(__name__)
@@ -321,28 +321,116 @@ async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], sourc
 
 def _agent_hooks(ev: dict, user_id: Optional[str]) -> None:
     """Fire voice-agent hooks for sg_rearm / low_hopper. Fire-and-forget."""
-    from app.services import notify_service
-
     if ev["type"] != "status":
         return
-    dog_id = ev["dog_id"]  # None for device-scoped status; the agent resolves the robot's dog
     mode = str(ev["data"].get("mode") or "")
     prev = _last_mode.get(ev["device_id"])
     _last_mode[ev["device_id"]] = mode
     if mode == "silent_guardian" and prev is not None and prev != "silent_guardian":
-        notify_service.notify_agent("sg_rearm", ev["device_id"], user_id, dog_id,
-                                    {"previous_mode": prev, "armed_at": ev["ts"]}, ev["event_id"])
+        _fire_sg_rearm(ev, prev, user_id)
     tr = ev["data"].get("treats_remaining")
     if isinstance(tr, (int, float)) and tr <= LOW_HOPPER_THRESHOLD:
-        cap = None
+        _fire_low_hopper(ev, user_id)
+
+
+def _fire_sg_rearm(ev: dict, prev_mode: str, user_id: Optional[str]) -> None:
+    from app.services import notify_service
+    # dog_id is None for device-scoped status; the agent resolves the robot's dog
+    notify_service.notify_agent("sg_rearm", ev["device_id"], user_id, ev["dog_id"],
+                                {"previous_mode": prev_mode, "armed_at": ev["ts"]}, ev["event_id"])
+
+
+def _fire_low_hopper(ev: dict, user_id: Optional[str]) -> None:
+    from app.services import notify_service
+    dog_id = ev["dog_id"]
+    cap = None
+    try:
+        if not dog_id:
+            raise ValueError("no dog")
+        cap = TreatSchedule.model_validate(settings_service.get_value(dog_id, "treat_schedule")).daily_cap
+    except Exception:
+        pass
+    notify_service.notify_agent("low_hopper", ev["device_id"], user_id, dog_id,
+                                {"treats_remaining": int(ev["data"]["treats_remaining"]), "treat_daily_cap": cap},
+                                ev["event_id"])
+
+
+def set_last_mode(device_id: str, mode: Optional[str]) -> None:
+    """Reset the remembered robot mode (replay jumps), so the next status compares correctly."""
+    if mode is None:
+        _last_mode.pop(device_id, None)
+    else:
+        _last_mode[device_id] = mode
+
+
+def _status_mode(ev: dict) -> Optional[str]:
+    m = (ev.get("data") or {}).get("mode")
+    return str(m).strip().lower() if m else None
+
+
+async def catch_up_skipped(skipped: list[dict], prior: list[dict], *, device_id: str,
+                           user_id: Optional[str]) -> list[dict]:
+    """After a silent replay jump, fire what the newest skipped events would have fired.
+
+    skipped: the events just stored (chronological); prior: events before them (chronological).
+    - notify rules: for each enabled rule, its newest matching skipped event (one push per rule;
+      the rule's attach still/clip comes from that event).
+    - sg_rearm: the last switch into silent_guardian, only if the robot is still in it at the
+      landing point.
+    - low_hopper: only if treats_remaining crossed down to the threshold in the skipped span
+      and is still at or below it at the landing point.
+    Also leaves the remembered robot mode at the landing point. Returns what was fired."""
+    from app.services import notify_service
+
+    fired: list[dict] = []
+    picks: dict[str, tuple[dict, set[str]]] = {}
+    for dog_id in {e["dog_id"] for e in skipped if e.get("dog_id") and e["type"] != "status"}:
+        evs = [e for e in skipped if e.get("dog_id") == dog_id and e["type"] != "status"]
+        rules = NotifyRules.model_validate(settings_service.get_value(dog_id, "notify_rules"))
+        for rule in rules.rules:
+            if not rule.enabled:
+                continue
+            ev = next((e for e in reversed(evs) if e["type"] == rule.event_type
+                       and notify_service._matches(rule, e)), None)
+            if ev is not None:
+                picks.setdefault(ev["event_id"], (ev, set()))[1].add(rule.id)
+    for ev, rule_ids in sorted(picks.values(), key=lambda p: p[0]["ts"]):
         try:
-            if not dog_id:
-                raise ValueError("no dog")
-            cap = TreatSchedule.model_validate(settings_service.get_value(dog_id, "treat_schedule")).daily_cap
-        except Exception:
-            pass
-        notify_service.notify_agent("low_hopper", ev["device_id"], user_id, dog_id,
-                                    {"treats_remaining": int(tr), "treat_daily_cap": cap}, ev["event_id"])
+            outcomes = await notify_service.evaluate_notify_rules(ev, user_id, only_rule_ids=rule_ids)
+        except Exception as e:  # pragma: no cover
+            logger.error(f"[EVENTS] catch-up notify failed for {ev['event_id']}: {e}")
+            continue
+        fired.append({"kind": "notify", "event_id": ev["event_id"], "type": ev["type"], "outcomes": outcomes})
+
+    statuses = [e for e in skipped if e["type"] == "status"]
+    if not statuses:
+        return fired
+    prior_status = [e for e in prior if e.get("type") == "status"]
+    mode = next((m for m in (_status_mode(e) for e in reversed(prior_status)) if m), None) \
+        if prior_status else _last_mode.get(device_id)
+    tr_prev = next((e["data"]["treats_remaining"] for e in reversed(prior_status)
+                    if isinstance((e.get("data") or {}).get("treats_remaining"), (int, float))), None)
+    rearm: Optional[tuple[dict, str]] = None
+    crossed, last_tr_ev = False, None
+    for e in statuses:
+        m = _status_mode(e)
+        if m:
+            if m == "silent_guardian" and mode is not None and mode != "silent_guardian":
+                rearm = (e, mode)
+            mode = m
+        tr = e["data"].get("treats_remaining")
+        if isinstance(tr, (int, float)):
+            if tr <= LOW_HOPPER_THRESHOLD and (tr_prev is None or tr_prev > LOW_HOPPER_THRESHOLD):
+                crossed = True
+            tr_prev, last_tr_ev = tr, e
+    set_last_mode(device_id, mode)
+    if rearm and mode == "silent_guardian":
+        _fire_sg_rearm({**rearm[0], "device_id": device_id}, rearm[1], user_id)
+        fired.append({"kind": "sg_rearm", "event_id": rearm[0]["event_id"], "previous_mode": rearm[1]})
+    if crossed and last_tr_ev is not None and tr_prev is not None and tr_prev <= LOW_HOPPER_THRESHOLD:
+        _fire_low_hopper({**last_tr_ev, "device_id": device_id}, user_id)
+        fired.append({"kind": "low_hopper", "event_id": last_tr_ev["event_id"], "treats_remaining": int(tr_prev)})
+    return fired
 
 
 async def _forward(ev: dict, user_id: str, mirrored: Optional[tuple[str, dict]]) -> None:

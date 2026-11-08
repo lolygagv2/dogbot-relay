@@ -40,6 +40,7 @@ from app.database import (
     delete_notify_log_for_dog,
     delete_treat_ledger_for_dog,
     get_dog_by_id,
+    get_event,
     get_user_dog_role,
     put_dog_setting,
 )
@@ -231,6 +232,7 @@ class Replayer:
         if offset_s is None:
             raise HTTPException(status_code=422, detail={"code": "jump_target_required"})
         offset_s = max(0.0, float(offset_s))
+        catch_up: list[dict] = []
         was_running = self._running
         self._running = False
         self._anchor()
@@ -243,12 +245,22 @@ class Replayer:
             delete_notify_log_by_event_ids(ids)
             delete_daily_summaries(self.dog_id)
             self.emitted = max(0, self.emitted - len(ids))
+            # the robot's remembered mode goes back to what it was at the new cursor
+            event_store.set_last_mode(self.device_id, next(
+                (m for m in (str((e["event"]["data"] or {}).get("mode") or "").strip().lower()
+                             for e in reversed(self.events[:k]) if e["event"]["type"] == "status") if m), None))
         elif k > self.cursor:
-            # forward: insert silently (no push, no per-event WS frames)
+            # forward: insert silently (no per-event push or WS frames), then fire only what the
+            # newest skipped events would have fired, so the jump lands with the right push
+            # and spoken line instead of silence
             batch = [e["event"] for e in self.events[self.cursor:k]]
             res = await event_store.ingest_events(batch, device_id=self.device_id, user_id=self.user_id,
                                                   source="replay", notify=False, forward=False)
             self.emitted += len(res["accepted"])
+            stored = [ev for ev in (get_event(i) for i in res["accepted"]) if ev]
+            catch_up = await event_store.catch_up_skipped(
+                stored, [e["event"] for e in self.events[:self.cursor]],
+                device_id=self.device_id, user_id=self.user_id)
         self.cursor = k
         self._anchor(offset_s)
         self.status = "done" if self.cursor >= len(self.events) and not was_running else ("running" if was_running else "paused")
@@ -260,7 +272,9 @@ class Replayer:
             if self._task is None or self._task.done():
                 self._task = asyncio.create_task(self._run())
         self._wake.set()
-        return self.state()
+        if catch_up:
+            logger.info(f"[REPLAY] jump catch-up: {[c['kind'] + ':' + c.get('type', '') for c in catch_up]}")
+        return {**self.state(), "catch_up": catch_up}
 
     async def reset(self, delete_data: bool = True) -> dict:
         self._running = False

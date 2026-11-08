@@ -27,6 +27,7 @@ from app.database import (
     get_latest_event,
     insert_notify_log,
     last_notify_sent,
+    last_notify_sent_event_ts,
 )
 from app.models import Missions, MusicPlan, NotifyRule, NotifyRules
 from app.services import settings_service
@@ -87,8 +88,10 @@ def _matches(rule: NotifyRule, ev: dict) -> bool:
     return True
 
 
-async def evaluate_notify_rules(ev: dict, user_id: Optional[str]) -> list[dict]:
-    """Evaluate the dog's rules against one event. Returns the per-rule outcomes."""
+async def evaluate_notify_rules(ev: dict, user_id: Optional[str],
+                                only_rule_ids: Optional[set[str]] = None) -> list[dict]:
+    """Evaluate the dog's rules against one event. Returns the per-rule outcomes.
+    only_rule_ids limits it to those rules (replay jump catch-up)."""
     from app.services import push_service
 
     dog_id = ev["dog_id"]
@@ -100,9 +103,13 @@ async def evaluate_notify_rules(ev: dict, user_id: Optional[str]) -> list[dict]:
     dog_name = (dog or {}).get("name") or "Your dog"
     local_ts = (datetime.fromisoformat(ev["ts"]).astimezone(settings_service.get_timezone(dog_id)))
     quiet = settings_service.in_quiet_hours(dog_id, local_ts)
+    from app.services.replayer import get_replayer
+    replay_clock = ev.get("source") == "replay" or get_replayer().handles(dog_id)
 
     for rule in rules.rules:
         if not rule.enabled or rule.event_type != ev["type"] or not _matches(rule, ev):
+            continue
+        if only_rule_ids is not None and rule.id not in only_rule_ids:
             continue
         image = ev["data"].get("image_url") if rule.attach == "still" else None
         clip = ev["data"].get("clip_url") if rule.attach == "clip" else None
@@ -119,12 +126,17 @@ async def evaluate_notify_rules(ev: dict, user_id: Optional[str]) -> list[dict]:
             log("suppressed_quiet")
             continue
         if rule.cooldown_s:
-            last = last_notify_sent(dog_id, rule.id)
-            if last:
-                age = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
-                if age < rule.cooldown_s:
-                    log("suppressed_cooldown")
-                    continue
+            if replay_clock:
+                # demo replay: cooldown runs on the replay clock (event time), so a jump or a
+                # fast replay pushes what a real day would have, not what wall time allows
+                last = last_notify_sent_event_ts(dog_id, rule.id, ev["ts"])
+                age = (datetime.fromisoformat(ev["ts"]) - datetime.fromisoformat(last)).total_seconds() if last else None
+            else:
+                last = last_notify_sent(dog_id, rule.id)
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() if last else None
+            if age is not None and age < rule.cooldown_s:
+                log("suppressed_cooldown")
+                continue
         if not user_id:
             log("no_tokens")
             continue
