@@ -43,9 +43,13 @@ def _str(desc: str, enum: Optional[list[str]] = None) -> dict:
     return d
 
 
+# The Anthropic API rejects a request with more than 20 strict tools (400 "Too many strict
+# tools"). Keep strict on tools with tricky or physical inputs; leave it off trivial ones.
+MAX_STRICT_TOOLS = 20
+
 TOOLS: list[dict] = [
     {"name": "get_dogs", "description": "List the owner's dogs (dog_id, name, breed).",
-     "input_schema": _schema({}, []), "strict": True},
+     "input_schema": _schema({}, [])},
     {"name": "get_day_summary",
      "description": "Daily roll-up for a dog: counts per event type, totals (bark seconds, treats vs cap, alone time), time-to-settle stats, top bark episodes. date: YYYY-MM-DD, today or yesterday.",
      "input_schema": _schema({"dog_id": _str("dog id"), "date": _str("YYYY-MM-DD | today | yesterday")}, ["dog_id", "date"]),
@@ -59,7 +63,7 @@ TOOLS: list[dict] = [
      "description": "Robot status: online, mode, battery, treats today vs daily cap, quiet hours.",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
     {"name": "get_missions", "description": "Configured missions for a dog and their last run.",
-     "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
+     "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"])},
     {"name": "set_quiet_hours",
      "description": "Set quiet hours (HH:MM 24h local). The agent may only widen the window; narrowing is refused.",
      "input_schema": _schema({"dog_id": _str("dog id"), "start": _str("HH:MM"), "end": _str("HH:MM")},
@@ -122,7 +126,7 @@ TOOLS: list[dict] = [
      "input_schema": _schema({"dog_id": _str("dog id"), "text": _str("what the robot should say, <= 280 characters")},
                              ["dog_id", "text"]), "strict": True},
     {"name": "standby", "description": "Put the robot into standby (idle mode).",
-     "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
+     "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"])},
 ]
 
 
