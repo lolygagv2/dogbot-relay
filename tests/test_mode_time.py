@@ -145,9 +145,16 @@ class FakeClient:
 
     async def get_summary(self, dog_id, date):
         self.calls.append((dog_id, date))
+        return self._summary(dog_id, date)
+
+    def _summary(self, dog_id, date):
         t = dict(self.per_dog[dog_id])
         return {"date": date, "counts": {"bark_episode": t.pop("bark_episodes", 0)}, "totals": t,
                 "time_to_settle": {"median_s": t.pop("settle", None)}}
+
+    async def get_week_summary(self, dog_id, date):
+        self.calls.append((dog_id, "week", date))
+        return self._summary(dog_id, date)
 
 
 def _trend(monkeypatch, per_dog, **kw):
@@ -177,10 +184,11 @@ def test_trend_90_days_with_mode_time_and_comparison(monkeypatch):
     assert len([x for x in c.calls if x[0] == "dog_a"]) == 180     # plus the previous period
 
 
-@pytest.mark.parametrize("asked,got", [(0, 1), (1, 1), (30, 30), (500, 90)])
+@pytest.mark.parametrize("asked,got", [(0, 1), (1, 1), (30, 30), (90, 90)])
 def test_trend_days_clamped(monkeypatch, asked, got):
     r, _ = _trend(monkeypatch, {"dog_a": {"treats": 1}}, dog_id="dog_a", days=asked)
     assert r["days"] == got and len(r["series"]) == got and "comparison" not in r
+    assert r["granularity"] == "day" and "weeks" not in r
 
 
 def test_trend_compare_same_dog_refused(monkeypatch):
@@ -192,4 +200,4 @@ def test_trend_compare_same_dog_refused(monkeypatch):
 def test_trend_docstring_mentions_new_fields():
     from app.mcp_server import tools as mt
     src = inspect.getsource(mt)
-    assert "compare_dog_id" in src and "sg_s / coach_s" in src and "TREND_MAX_DAYS = 90" in src
+    assert "compare_dog_id" in src and "sg_s / coach_s" in src and "TREND_DAILY_MAX_DAYS = 90" in src

@@ -2,6 +2,7 @@
 
 POST /events                      robot (HMAC) or admin: batch ingest
 GET  /summary/{dog_id}/{date}     daily roll-up (date = YYYY-MM-DD | today | yesterday)
+GET  /summary/{dog_id}/week/{date} weekly roll-up for the Monday-Sunday week containing date
 GET  /api/dogs/{dog_id}/events    raw events (status excluded unless requested)
 GET  /api/dogs/{dog_id}/status    latest robot status + treat/quiet-hours context
 """
@@ -68,6 +69,14 @@ async def get_summary(dog_id: str, date: str, refresh: bool = Query(default=Fals
     check_dog_access(actor, dog_id)
     date_str = event_store.resolve_date(dog_id, date)
     return event_store.get_summary(dog_id, date_str, refresh=refresh)
+
+
+@router.get("/summary/{dog_id}/week/{date}")
+async def get_week_summary(dog_id: str, date: str, refresh: bool = Query(default=False),
+                           actor: Actor = Depends(resolve_actor)):
+    check_dog_access(actor, dog_id)
+    date_str = event_store.resolve_date(dog_id, date)
+    return event_store.get_weekly_summary(dog_id, date_str, refresh=refresh)
 
 
 @router.get("/api/dogs/{dog_id}/events")

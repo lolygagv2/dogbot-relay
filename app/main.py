@@ -116,7 +116,10 @@ async def debug_latency(client_ts: int = Query(None, description="Client timesta
 
 
 def _run_retention_cleanup():
-    """Apply retention policy: 30d device_events + dedup ledger, 90d activity_events."""
+    """Apply retention policy: 30d device_events + dedup ledger, 90d activity_events.
+
+    The event store (`events`) is never pruned: long-range trends are served from
+    daily_summary / weekly_summary, which are rebuilt from it (2026-11-08)."""
     from app.database import (
         delete_old_activity_events,
         delete_old_events,
@@ -133,11 +136,8 @@ def _run_retention_cleanup():
 
     delete_old_processed_events(days=30)
 
-    # Dec 9 demo build (2026-11-06): event store 365d, notify log 30d
-    from app.database import delete_old_notify_log, delete_old_store_events
-    pruned_events = delete_old_store_events(days=365)
-    if pruned_events:
-        logger.info(f"Retention cleanup: removed {pruned_events} old store events")
+    # Dec 9 demo build (2026-11-06): notify log 30d. Store events are kept forever.
+    from app.database import delete_old_notify_log
     delete_old_notify_log(days=30)
 
 

@@ -84,6 +84,9 @@ class RelayClient:
     async def get_summary(self, dog_id: str, date: str = "today", refresh: bool = False) -> dict:
         return await self.request("GET", f"/summary/{dog_id}/{date}", params={"refresh": "1"} if refresh else None)
 
+    async def get_week_summary(self, dog_id: str, date: str = "today", refresh: bool = False) -> dict:
+        return await self.request("GET", f"/summary/{dog_id}/week/{date}", params={"refresh": "1"} if refresh else None)
+
     async def list_events(self, dog_id: str, since: Optional[str] = None, until: Optional[str] = None,
                           types: Optional[list[str]] = None, limit: int = 50, order: str = "desc") -> dict:
         params: dict[str, Any] = {"limit": limit, "order": order}

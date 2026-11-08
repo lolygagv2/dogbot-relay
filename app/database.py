@@ -569,6 +569,21 @@ def init_db():
                 PRIMARY KEY (dog_id, date)
             )
         """)
+        # Weekly roll-up (2026-11-08): same shape as daily_summary, keyed on the Monday
+        # (local) that starts the week; built from that week's daily summaries.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS weekly_summary (
+                dog_id        TEXT NOT NULL,
+                week_start    TEXT NOT NULL,
+                tz            TEXT NOT NULL,
+                summary       TEXT NOT NULL,
+                event_count   INTEGER NOT NULL,
+                last_event_ts TEXT,
+                dirty         INTEGER NOT NULL DEFAULT 0,
+                computed_at   TEXT NOT NULL,
+                PRIMARY KEY (dog_id, week_start)
+            )
+        """)
 
         # Shared settings (app, MCP connector, voice agent). One JSON value per key.
         cursor.execute("""
@@ -1176,6 +1191,8 @@ def _merge_dog_rows(cursor, user_id: str, survivor: str, losers: list[str]) -> d
             cursor.execute(f"DELETE FROM {table} WHERE dog_id = ?", (loser,))
         cursor.execute("DELETE FROM daily_summary WHERE dog_id = ?", (loser,))
         cursor.execute("UPDATE daily_summary SET dirty = 1 WHERE dog_id = ?", (survivor,))
+        cursor.execute("DELETE FROM weekly_summary WHERE dog_id = ?", (loser,))
+        cursor.execute("UPDATE weekly_summary SET dirty = 1 WHERE dog_id = ?", (survivor,))
 
         cursor.execute("DELETE FROM dogs WHERE id = ?", (loser,))
     return stats
@@ -3005,14 +3022,6 @@ def delete_events_by_source(dog_id: str, source: str) -> list[str]:
     return ids
 
 
-def delete_old_store_events(days: int = 365) -> int:
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    with db_connection() as conn:
-        cur = conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
-        conn.commit()
-        return cur.rowcount
-
-
 def delete_activity_events_by_ids(event_ids: list[str]) -> int:
     if not event_ids:
         return 0
@@ -3108,10 +3117,61 @@ def mark_summary_dirty(dog_id: str, date_str: str) -> None:
 
 
 def delete_daily_summaries(dog_id: str) -> int:
+    """Drop a dog's cached roll-ups (daily and weekly). Returns daily rows deleted."""
     with db_connection() as conn:
         cur = conn.execute("DELETE FROM daily_summary WHERE dog_id = ?", (dog_id,))
+        conn.execute("DELETE FROM weekly_summary WHERE dog_id = ?", (dog_id,))
         conn.commit()
         return cur.rowcount
+
+
+# ---- weekly_summary cache ----
+
+def get_weekly_summary_row(dog_id: str, week_start: str) -> Optional[dict]:
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM weekly_summary WHERE dog_id = ? AND week_start = ?", (dog_id, week_start)
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "dog_id": row["dog_id"],
+        "week_start": row["week_start"],
+        "tz": row["tz"],
+        "summary": json.loads(row["summary"]),
+        "event_count": row["event_count"],
+        "last_event_ts": row["last_event_ts"],
+        "dirty": bool(row["dirty"]),
+        "computed_at": row["computed_at"],
+    }
+
+
+def upsert_weekly_summary(dog_id: str, week_start: str, tz: str, summary: dict,
+                          event_count: int, last_event_ts: Optional[str]) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            """INSERT INTO weekly_summary (dog_id, week_start, tz, summary, event_count, last_event_ts, dirty, computed_at)
+               VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+               ON CONFLICT(dog_id, week_start) DO UPDATE SET
+                 tz = excluded.tz, summary = excluded.summary, event_count = excluded.event_count,
+                 last_event_ts = excluded.last_event_ts, dirty = 0, computed_at = excluded.computed_at""",
+            (dog_id, week_start, tz, json.dumps(summary), event_count, last_event_ts,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def daily_rows_fresh_for_week(dog_id: str, first_date: str, last_date: str, since: str) -> bool:
+    """True when every day in [first_date, last_date] has a clean daily_summary row computed
+    no later than `since` -- i.e. a weekly row computed at `since` still matches its days."""
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(dirty), 0) AS dirty, MAX(computed_at) AS latest "
+            "FROM daily_summary WHERE dog_id = ? AND date >= ? AND date <= ?",
+            (dog_id, first_date, last_date),
+        ).fetchone()
+    want = (datetime.strptime(last_date, "%Y-%m-%d") - datetime.strptime(first_date, "%Y-%m-%d")).days + 1
+    return row["n"] == want and row["dirty"] == 0 and (row["latest"] or "") <= since
 
 
 # ---- dog_settings ----

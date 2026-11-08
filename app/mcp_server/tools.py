@@ -39,7 +39,8 @@ EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", 
                "mission_run", "status"]
 GO_TO_TARGETS = ["dog", "dock"]
 SG_LEVELS = ["low", "medium", "high"]
-TREND_MAX_DAYS = 90
+TREND_DAILY_MAX_DAYS = 90     # up to this many days: one row per day
+TREND_MAX_DAYS = 730          # beyond 90: one row per week (Monday-Sunday), up to two years
 TREND_METRICS = ["treats", "bark_episodes", "bark_s", "interventions", "pacing_s", "alone_s",
                  "missions_success", "missions_fail", "sg_s", "coach_s"]
 MOVE_ACTIONS = list(_MOVE_SPEC)
@@ -149,9 +150,13 @@ def register_tools(mcp: MCPServer) -> None:
     @mcp.tool(name="get_trend", annotations=READ)
     @audited("get_trend")
     async def get_trend(dog_id: str, days: int = 7, compare_dog_id: Optional[str] = None) -> dict:
-        """Day-by-day series over the last `days` days (1-90, default 7; today is the last day):
+        """Trend series over the last `days` days (1-730, default 7; today is in the last row):
         treats, bark episodes, bark seconds, interventions, pacing, alone time, missions, median
         time-to-settle, and sg_s / coach_s (seconds the robot spent in Silent Guardian / Coach mode).
+        Up to 90 days there is one row per day (granularity "day"). Over 90 days there is one row
+        per week, Monday to Sunday (granularity "week", `date` = the week's Monday, `weeks` = row
+        count); the last week is the current one and is partial, and a weekly settle_median_s is
+        a median of the daily medians.
         Returns totals and the delta versus the previous period of the same length.
         compare_dog_id: a second dog on the same dates; adds `compare` (its series and totals) and
         `comparison` (per metric: dog, compare, difference = dog - compare, pct_difference vs compare).
@@ -170,13 +175,22 @@ def register_tools(mcp: MCPServer) -> None:
             return e.as_result(_status=e.status)
         tz = ZoneInfo(status.get("timezone") or "UTC")
         today = datetime.now(timezone.utc).astimezone(tz).date()
-        dates = [(today - timedelta(days=i)).isoformat() for i in range(2 * days)]   # newest first
+        weekly = days > TREND_DAILY_MAX_DAYS
+        if weekly:
+            n = -(-days // 7)   # weeks, rounded up
+            this_monday = today - timedelta(days=today.weekday())
+            keys = [(this_monday - timedelta(weeks=i)).isoformat() for i in range(2 * n)]   # newest first
+            fetch = client.get_week_summary
+        else:
+            n = days
+            keys = [(today - timedelta(days=i)).isoformat() for i in range(2 * n)]          # newest first
+            fetch = client.get_summary
         sem = asyncio.Semaphore(8)
 
         async def one(dog: str, d: str) -> dict:
             async with sem:
                 try:
-                    return await client.get_summary(dog, d)
+                    return await fetch(dog, d)
                 except (RelayRefusal, RelayError):
                     return {"date": d, "counts": {}, "totals": {}, "time_to_settle": {}}
 
@@ -195,20 +209,25 @@ def register_tools(mcp: MCPServer) -> None:
             out["settle_median_s_avg"] = round(sum(med) / len(med)) if med else None
             return out
 
-        jobs = [one(dog_id, d) for d in dates]
+        jobs = [one(dog_id, d) for d in keys]
         if compare_dog_id:
-            jobs += [one(compare_dog_id, d) for d in dates[:days]]
+            jobs += [one(compare_dog_id, d) for d in keys[:n]]
         summaries = await asyncio.gather(*jobs)
-        rows = [row(s) for s in summaries[:2 * days]]
-        current, previous = list(reversed(rows[:days])), list(reversed(rows[days:]))
+        rows = [row(s) for s in summaries[:2 * n]]
+        for r, d in zip(rows, keys):
+            r["date"] = d
+        current, previous = list(reversed(rows[:n])), list(reversed(rows[n:]))
         cur_t, prev_t = totals(current), totals(previous)
         delta = {m: (cur_t[m] - prev_t[m]) for m in TREND_METRICS}
-        out = {"dog_id": dog_id, "days": days, "from": current[0]["date"], "to": current[-1]["date"],
+        out = {"dog_id": dog_id, "days": days, "granularity": "week" if weekly else "day",
+               "from": current[0]["date"], "to": today.isoformat() if weekly else current[-1]["date"],
                "series": current, "totals": cur_t, "previous_period_totals": prev_t, "delta": delta}
+        if weekly:
+            out["weeks"] = n
         if compare_dog_id:
-            other = list(reversed([row(s) for s in summaries[2 * days:]]))
-            for r, d in zip(other, reversed(dates[:days])):
-                r["date"] = d   # same dates as `series`, even for a day the relay could not summarise
+            other = list(reversed([row(s) for s in summaries[2 * n:]]))
+            for r, d in zip(other, reversed(keys[:n])):
+                r["date"] = d   # same dates as `series`, even for a bucket the relay could not summarise
             other_t = totals(other)
             comparison = {}
             for m in [*TREND_METRICS, "settle_median_s_avg"]:

@@ -17,7 +17,9 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from app.database import (
+    daily_rows_fresh_for_week,
     get_daily_summary_row,
+    get_weekly_summary_row,
     get_dog_owner,
     get_event,
     get_user_dogs,
@@ -31,6 +33,7 @@ from app.database import (
     mark_summaries_dirty_from,
     mark_summary_dirty,
     upsert_daily_summary,
+    upsert_weekly_summary,
 )
 from app.config import get_settings
 from app.models import EVENT_TYPES, TreatSchedule
@@ -575,4 +578,102 @@ def get_summary(dog_id: str, date_str: str, refresh: bool = False) -> dict:
     summary = compute_daily_summary(dog_id, date_str)
     upsert_daily_summary(dog_id, date_str, summary["tz"], summary, summary["event_count"],
                          summary["last_event_ts"])
+    return summary
+
+
+# ---- weekly roll-up (2026-11-08) ----
+
+def week_start_of(date_str: str) -> str:
+    """The Monday (local date) of the week containing date_str."""
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def _sum_into(acc: dict, add: dict) -> None:
+    for k, v in add.items():
+        if isinstance(v, bool) or v is None:
+            continue
+        if isinstance(v, (int, float)):
+            acc[k] = acc.get(k, 0) + v
+        elif isinstance(v, dict):
+            _sum_into(acc.setdefault(k, {}), v)
+
+
+def combine_daily_summaries(dog_id: str, week_start: str, dailies: list[dict], tz: str) -> dict:
+    """Add up a week's daily summaries into one summary of the same shape.
+
+    counts and totals are summed (interventions_by_kind per kind); treat_cap stays the
+    per-day cap (latest day's). time_to_settle: n, unresolved and min/max are exact and
+    mean_s is the n-weighted mean; median_s is the n-weighted median of the daily medians
+    (daily summaries do not keep every settle time). top_episodes: the week's top 3."""
+    ws = datetime.strptime(week_start, "%Y-%m-%d").date()
+    counts: dict = {}
+    totals: dict = {}
+    top: list[dict] = []
+    medians: list[float] = []
+    n = unresolved = 0
+    mean_acc = 0.0
+    mins, maxs, caps = [], [], []
+    for s in dailies:
+        _sum_into(counts, s.get("counts") or {})
+        t = dict(s.get("totals") or {})
+        caps.append(t.pop("treat_cap", None))
+        _sum_into(totals, t)
+        top.extend(s.get("top_episodes") or [])
+        tts = s.get("time_to_settle") or {}
+        dn = tts.get("n") or 0
+        n += dn
+        unresolved += tts.get("unresolved") or 0
+        if dn and tts.get("mean_s") is not None:
+            mean_acc += tts["mean_s"] * dn
+        if dn and tts.get("median_s") is not None:
+            medians.extend([tts["median_s"]] * dn)
+        if tts.get("min_s") is not None:
+            mins.append(tts["min_s"])
+        if tts.get("max_s") is not None:
+            maxs.append(tts["max_s"])
+    totals["treat_cap"] = next((c for c in reversed(caps) if c is not None), None)
+    top.sort(key=lambda x: (-(x.get("duration_s") or 0), -(x.get("bark_count") or 0), x.get("ts") or ""))
+    firsts = [s["first_event_ts"] for s in dailies if s.get("first_event_ts")]
+    lasts = [s["last_event_ts"] for s in dailies if s.get("last_event_ts")]
+    return {
+        "dog_id": dog_id, "week_start": week_start, "date": week_start,
+        "week_end": (ws + timedelta(days=6)).isoformat(),
+        "days": [s.get("date") for s in dailies], "tz": tz,
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "counts": counts, "totals": totals,
+        "time_to_settle": {"n": n, "unresolved": unresolved,
+                           "median_s": round(statistics.median(medians)) if medians else None,
+                           "mean_s": round(mean_acc / n) if n else None,
+                           "min_s": min(mins) if mins else None, "max_s": max(maxs) if maxs else None},
+        "top_episodes": top[:3],
+        "event_count": sum(s.get("event_count") or 0 for s in dailies),
+        "mode_running": any(s.get("mode_running") for s in dailies),
+        "first_event_ts": min(firsts) if firsts else None,
+        "last_event_ts": max(lasts) if lasts else None,
+    }
+
+
+def get_weekly_summary(dog_id: str, date_str: str, refresh: bool = False) -> dict:
+    """Weekly roll-up for the week (Monday-Sunday, local) containing date_str.
+
+    Built from get_summary() for each day of the week up to today (the current week is
+    partial). Cached in weekly_summary once the week is over, and served from the cache
+    while every daily row of that week is clean and no newer than the weekly row."""
+    week_start = week_start_of(date_str)
+    ws = datetime.strptime(week_start, "%Y-%m-%d").date()
+    week_end = (ws + timedelta(days=6)).isoformat()
+    today = settings_service.local_now(dog_id).date()
+    complete = ws + timedelta(days=6) < today
+    if complete and not refresh:
+        row = get_weekly_summary_row(dog_id, week_start)
+        if (row and not row["dirty"] and not row["summary"].get("mode_running")
+                and daily_rows_fresh_for_week(dog_id, week_start, week_end, row["computed_at"])):
+            return row["summary"]
+    days = [(ws + timedelta(days=i)).isoformat() for i in range(7) if ws + timedelta(days=i) <= today]
+    dailies = [get_summary(dog_id, d, refresh=refresh) for d in days]
+    tz = dailies[0]["tz"] if dailies else str(settings_service.get_timezone(dog_id).key)
+    summary = combine_daily_summaries(dog_id, week_start, dailies, tz)
+    if complete:
+        upsert_weekly_summary(dog_id, week_start, tz, summary, summary["event_count"], summary["last_event_ts"])
     return summary
