@@ -297,6 +297,8 @@ class Brain:
                              or r.get("max_per_hour") != r.get("previous_max_per_hour"))
             if limit_changed:
                 if r.get("daily_cap") != r.get("previous_daily_cap"):
+                    if r.get("daily_cap") is None:
+                        return ["no daily", "unlimited", "no limit"]
                     return [f"{r.get('daily_cap')} a day", f"{r.get('daily_cap')} treats", f"{r.get('daily_cap')} per day"]
                 h = r.get("max_per_hour")
                 return ["no hourly limit"] if h == 0 else [f"{h} an hour", f"{h} per hour", f"{h} treats an hour"]
@@ -347,7 +349,8 @@ class Brain:
                 or r.get("max_per_hour") != r.get("previous_max_per_hour")):
             hourly = r.get("max_per_hour")
             per_hour = "no hourly limit" if hourly == 0 else f"at most {hourly} an hour"
-            return f"The treat limit is now {r.get('daily_cap')} a day, {per_hour}."
+            daily = "no daily treat limit" if r.get("daily_cap") is None else f"{r.get('daily_cap')} a day"
+            return f"The treat limit is now {daily}, {per_hour}."
         if change["tool"] == "set_treat_schedule":
             ws = r.get("windows") or []
             dm = r.get("default_multiplier")

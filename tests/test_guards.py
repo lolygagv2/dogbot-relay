@@ -86,7 +86,7 @@ def _limit_msg(n, enabled=True):
 
 def test_app_settings_daily_limit_mirrored_debounced(temp_db):
     """The app's Settings slider sends mission_config {daily_limit_enabled, daily_limit} per step;
-    only the final value lands in every owned dog's treat_schedule. Toggle off = 100."""
+    only the final value lands in every owned dog's treat_schedule. Toggle off = unlimited."""
     import app.database as db
     db.create_dog(dog_id="dog_t2", name="Bea", user_id="user_t1")
     db.add_user_dog("user_t1", "dog_t2", "owner")
@@ -102,14 +102,33 @@ def test_app_settings_daily_limit_mirrored_debounced(temp_db):
         row = settings_service.get_setting(dog, "treat_schedule")
         assert row["value"]["daily_cap"] == 35 and row["version"] == 1        # one write, final value
         assert row["value"]["max_per_hour"] == 3                              # untouched
-    asyncio.run(drag([35], enabled=False))
-    assert settings_service.get_value("dog_t1", "treat_schedule")["daily_cap"] == 100
-    asyncio.run(drag([35]))
-    assert settings_service.get_value("dog_t2", "treat_schedule")["daily_cap"] == 35
+    asyncio.run(drag([35], enabled=False))                                    # toggle off
+    off = settings_service.get_value("dog_t1", "treat_schedule")
+    assert off["daily_cap_enabled"] is False and off["daily_cap"] == 35       # number kept for "on"
+    assert settings_service.effective_daily_cap(off) is None
+    asyncio.run(drag([35]))                                                   # toggle back on
+    on = settings_service.get_value("dog_t2", "treat_schedule")
+    assert on["daily_cap_enabled"] is True and settings_service.effective_daily_cap(on) == 35
     # real missions (no daily_limit fields) are ignored
     assert settings_service.sync_app_daily_limit("user_t1", {"command": "mission_config",
                                                              "data": {"mission_id": "m1", "max_treats": 5}}) is None
-    assert settings_service.app_daily_limit_from_message(_limit_msg(500)) == 100
+    assert settings_service.app_daily_limit_from_message(_limit_msg(500)) == {"daily_cap_enabled": True, "daily_cap": 100}
+
+
+def test_unlimited_daily_cap_enforces_nothing_but_hourly(temp_db, pushes):
+    _put(APP, "treat_schedule", {**TS, "daily_cap": 2, "max_per_hour": 0})
+    settings_service.check_treat_cap("dog_t1", AGENT)
+    settings_service.check_treat_cap("dog_t1", AGENT)
+    with pytest.raises(HTTPException):
+        settings_service.check_treat_cap("dog_t1", AGENT)                    # capped at 2
+    _put(APP, "treat_schedule", {**TS, "daily_cap": 2, "daily_cap_enabled": False, "max_per_hour": 0})
+    for _ in range(5):
+        g = settings_service.check_treat_cap("dog_t1", AGENT)                # unlimited
+    assert g["treat_cap"] is None and g["treats_used"] == 7
+    # an assistant turning the cap off counts as raising it: owner alerted
+    _put(APP, "treat_schedule", {**TS, "daily_cap": 2, "max_per_hour": 0})
+    _put(CONN, "treat_schedule", {**TS, "daily_cap": 2, "daily_cap_enabled": False, "max_per_hour": 0})
+    assert "daily treat cap 2 → unlimited" in pushes[-1]["body"]
 
 
 def test_treat_cap_enforced(temp_db):

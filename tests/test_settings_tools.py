@@ -223,3 +223,21 @@ def test_agent_dispatch_sets_cap(temp_db):
     r = run(vt.dispatch(ctx, "set_treat_schedule", {"dog_id": "dog_t1", "daily_cap": 30}))
     assert r["ok"] and r["daily_cap"] == 30 and r["previous_daily_cap"] == 10
     assert settings_service.get_value("dog_t1", "treat_schedule")["daily_cap"] == 30
+
+
+def test_tool_unlimited_and_back(temp_db, monkeypatch):
+    sent = []
+
+    async def fake_push(**kw):
+        sent.append(kw)
+        return "sent"
+    from app.services import push_service
+    monkeypatch.setattr(push_service, "send_push", fake_push)
+    r = caps(daily_cap_enabled=False)
+    assert r["ok"] and r["daily_cap"] is None and r["previous_daily_cap"] == 10 and r["owner_alerted"]
+    assert "10 → unlimited" in sent[-1]["body"]
+    r = caps(daily_cap=40)                         # naming a number turns the cap back on
+    assert r["daily_cap"] == 40 and r["previous_daily_cap"] is None and "owner_alerted" not in r
+    from app.voice_agent.brain import Brain
+    ch = {"tool": "set_treat_schedule", "result": {**caps(daily_cap_enabled=False)}}
+    assert Brain._readback_sentence(ch).startswith("The treat limit is now no daily treat limit")

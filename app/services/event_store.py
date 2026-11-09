@@ -377,7 +377,7 @@ def _fire_low_hopper(ev: dict, user_id: Optional[str]) -> None:
     try:
         if not dog_id:
             raise ValueError("no dog")
-        cap = TreatSchedule.model_validate(settings_service.get_value(dog_id, "treat_schedule")).daily_cap
+        cap = settings_service.effective_daily_cap(settings_service.get_value(dog_id, "treat_schedule"))
     except Exception:
         pass
     notify_service.notify_agent("low_hopper", ev["device_id"], user_id, dog_id,
@@ -686,8 +686,8 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
            "max_s": round(max(settle_times)) if settle_times else None}
 
     try:
-        totals["treat_cap"] = TreatSchedule.model_validate(
-            settings_service.get_value(dog_id, "treat_schedule")).daily_cap
+        totals["treat_cap"] = settings_service.effective_daily_cap(   # None = unlimited
+            settings_service.get_value(dog_id, "treat_schedule"))
     except Exception:
         totals["treat_cap"] = None
     mode_s, mode_running = mode_seconds(dog_id, day_start.astimezone(timezone.utc),

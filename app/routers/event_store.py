@@ -142,7 +142,7 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         candidates = [*candidates, replay_device]
     last = get_latest_status_for_devices(candidates)
     used, _ = settings_service.treats_used_today(dog_id)
-    cap = settings_service.get_value(dog_id, "treat_schedule").get("daily_cap")
+    cap = settings_service.effective_daily_cap(settings_service.get_value(dog_id, "treat_schedule"))
     qh = QuietHours.model_validate(settings_service.get_value(dog_id, "quiet_hours"))
     return {
         "dog_id": dog_id,

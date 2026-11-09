@@ -4,8 +4,8 @@ Both tools sit in the `settings` scope and write through the relay's settings AP
 caller's internal actor, so the relay's own guards still apply on top of the checks here.
 
 set_treat_schedule replaces `treat_schedule.windows` and/or sets default_multiplier, the
-daily treat cap (0-100) and the hourly treat limit (0-60); anything omitted keeps its current
-value. Raising either limit is allowed (since 2026-11-09) and pushes the owner an alert.
+daily treat cap (0-100, or daily_cap_enabled=false for no daily cap) and the hourly treat limit
+(0-60); anything omitted keeps its current value. Raising either limit is allowed (since 2026-11-09) and pushes the owner an alert.
 The result reads back the saved schedule and the previous limits.
 
 set_notify_rule appends one rule to `notify_rules`, with the app_type that matches its event
@@ -17,7 +17,8 @@ import re
 import secrets
 from typing import Any, Optional
 
-from app.models import NotifyRule
+from app.models import NotifyRule, TreatSchedule
+from app.services import settings_service
 from app.services.relay_client import RelayClient
 from app.services.settings_service import minute_set
 
@@ -95,7 +96,8 @@ def _int_in(v: Any, lo: int, hi: int) -> Optional[int]:
 
 async def set_treat_schedule(client: RelayClient, dog_id: str, windows: Any = None,
                              default_multiplier: Optional[float] = None,
-                             daily_cap: Any = None, max_per_hour: Any = None) -> dict:
+                             daily_cap: Any = None, max_per_hour: Any = None,
+                             daily_cap_enabled: Optional[bool] = None) -> dict:
     """windows=None keeps the current windows; [] clears them."""
     new_windows = None
     if windows is not None:
@@ -114,8 +116,12 @@ async def set_treat_schedule(client: RelayClient, dog_id: str, windows: Any = No
         hourly = _int_in(max_per_hour, HOURLY_MIN, HOURLY_MAX)
         if hourly is None:
             return _refuse("invalid_max_per_hour", min=HOURLY_MIN, max=HOURLY_MAX, requested=max_per_hour)
-    if new_windows is None and default_multiplier is None and daily_cap is None and max_per_hour is None:
-        return _refuse("nothing_to_change", hint="pass windows, default_multiplier, daily_cap or max_per_hour")
+    if daily_cap_enabled is not None and not isinstance(daily_cap_enabled, bool):
+        return _refuse("invalid_daily_cap_enabled", hint="true or false")
+    if (new_windows is None and default_multiplier is None and daily_cap is None and max_per_hour is None
+            and daily_cap_enabled is None):
+        return _refuse("nothing_to_change",
+                       hint="pass windows, default_multiplier, daily_cap, daily_cap_enabled or max_per_hour")
     cur_row = await client.get_setting(dog_id, "treat_schedule")
     cur = dict(cur_row.get("value") or {})
     new = dict(cur)
@@ -125,14 +131,20 @@ async def set_treat_schedule(client: RelayClient, dog_id: str, windows: Any = No
         new["default_multiplier"] = dm
     if daily_cap is not None:
         new["daily_cap"] = cap
+        if daily_cap_enabled is None:
+            new["daily_cap_enabled"] = True        # naming a number means "cap at that number"
+    if daily_cap_enabled is not None:
+        new["daily_cap_enabled"] = daily_cap_enabled
     if max_per_hour is not None:
         new["max_per_hour"] = hourly
     row = await client.put_setting(dog_id, "treat_schedule", new, expected_version=cur_row.get("version"))
     v = row["value"]
-    raised = (v.get("daily_cap", 0) > cur.get("daily_cap", 0)) or (v.get("max_per_hour", 0) > cur.get("max_per_hour", 0))
+    raised = bool(settings_service.treat_limits_raised(cur, v))
     out = {"ok": True, "windows": v.get("windows", []), "default_multiplier": v.get("default_multiplier"),
-           "daily_cap": v.get("daily_cap"), "max_per_hour": v.get("max_per_hour"),
-           "previous_daily_cap": cur.get("daily_cap"), "previous_max_per_hour": cur.get("max_per_hour"),
+           # daily_cap None = unlimited (no daily cap)
+           "daily_cap": settings_service.effective_daily_cap(v), "max_per_hour": v.get("max_per_hour"),
+           "previous_daily_cap": settings_service.effective_daily_cap(cur),
+           "previous_max_per_hour": TreatSchedule.model_validate(cur).max_per_hour,
            "previous_windows": cur.get("windows", []), "version": row.get("version")}
     if raised:
         out["owner_alerted"] = True

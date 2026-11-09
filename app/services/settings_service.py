@@ -380,12 +380,19 @@ async def push_settings_to_robot(dog_id: str, key: str, row: dict) -> int:
 # Treat cap (relay-issued dispenses)
 # ---------------------------------------------------------------------------
 
+def effective_daily_cap(value: Any) -> Optional[int]:
+    """The daily treat cap in force for a treat_schedule value; None = unlimited."""
+    ts = value if isinstance(value, TreatSchedule) else TreatSchedule.model_validate(value or {})
+    return ts.daily_cap if ts.daily_cap_enabled else None
+
+
 def treat_limits_raised(old: Any, new: Any) -> list[str]:
     """Human phrases for each treat limit that went UP between two treat_schedule values."""
     o, n = TreatSchedule.model_validate(old or {}), TreatSchedule.model_validate(new or {})
+    oc, nc = effective_daily_cap(o), effective_daily_cap(n)
     out = []
-    if n.daily_cap > o.daily_cap:
-        out.append(f"daily treat cap {o.daily_cap} → {n.daily_cap}")
+    if oc is not None and (nc is None or nc > oc):
+        out.append(f"daily treat cap {oc} → {'unlimited' if nc is None else nc}")
     if n.max_per_hour > o.max_per_hour:
         out.append(f"hourly treat limit {o.max_per_hour} → {n.max_per_hour}")
     return out
@@ -421,40 +428,43 @@ async def _alert_owner_if_treat_limits_raised(dog_id: str, actor: Actor, old: An
 # ---- the app's Settings -> "Daily treat limit" (toggle + slider, global per user) ----
 # The app sends it to the robot as `mission_config` {data: {daily_limit_enabled, daily_limit}}
 # (seen on the wire 2026-11-09), one message per slider step. The relay mirrors the FINAL value
-# into treat_schedule.daily_cap of every dog the user owns: toggle off = the maximum (100).
+# into treat_schedule of every dog the user owns: toggle off = unlimited (daily_cap_enabled
+# false, daily_cap keeps the slider number).
 APP_LIMIT_DEBOUNCE_S = 1.0
 _pending_app_limit: dict[str, asyncio.Task] = {}
 
 
-def app_daily_limit_from_message(message: dict) -> Optional[int]:
-    """The daily cap an app `mission_config` treat-limit message asks for, else None."""
+def app_daily_limit_from_message(message: dict) -> Optional[dict]:
+    """The treat_schedule fields an app `mission_config` treat-limit message asks for, else None:
+    {"daily_cap_enabled": bool, "daily_cap"?: int 0-100}."""
     data = message.get("data") if isinstance(message.get("data"), dict) else {}
     if "daily_limit" not in data and "daily_limit_enabled" not in data:
         return None
-    cap_max = TreatSchedule.model_fields["daily_cap"].metadata
-    hi = next((m.le for m in cap_max if getattr(m, "le", None) is not None), 100)
-    if data.get("daily_limit_enabled") is False:
-        return hi
+    out: dict = {"daily_cap_enabled": data.get("daily_limit_enabled") is not False}
     v = data.get("daily_limit")
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return None
-    return max(0, min(hi, int(v)))
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        out["daily_cap"] = max(0, min(100, int(v)))
+    elif out["daily_cap_enabled"]:
+        return None                       # "on" with no usable number: nothing to apply
+    return out
 
 
-async def apply_app_daily_limit(user_id: str, cap: int) -> list[dict]:
-    """Write daily_cap=cap into treat_schedule for every dog the user owns (skip unchanged)."""
+async def apply_app_daily_limit(user_id: str, fields: dict) -> list[dict]:
+    """Merge the fields into treat_schedule for every dog the user owns (skip unchanged)."""
     from app.database import get_owned_dog_ids
     actor = Actor(kind="app", id=user_id, user_id=user_id)
     rows = []
     for dog_id in get_owned_dog_ids(user_id):
         try:
             cur = get_setting(dog_id, "treat_schedule")
-            if cur["value"].get("daily_cap") == cap:
+            new = TreatSchedule.model_validate({**cur["value"], **fields}).model_dump()
+            if new == TreatSchedule.model_validate(cur["value"]).model_dump():
                 continue
-            row = await put_setting(dog_id, "treat_schedule", {**cur["value"], "daily_cap": cap}, actor)
+            row = await put_setting(dog_id, "treat_schedule", new, actor)
             rows.append(row)
-            logger.info(f"[TREAT-SYNC] {dog_id} daily_cap {cur['value'].get('daily_cap')} -> {cap} "
-                        f"(v{row['version']}) from app Settings")
+            before, after = effective_daily_cap(cur["value"]), effective_daily_cap(row["value"])
+            logger.info(f"[TREAT-SYNC] {dog_id} daily cap {before if before is not None else 'unlimited'} -> "
+                        f"{after if after is not None else 'unlimited'} (v{row['version']}) from app Settings")
         except Exception as e:
             logger.warning(f"[TREAT-SYNC] {dog_id} write failed: {e}")
     return rows
@@ -462,7 +472,7 @@ async def apply_app_daily_limit(user_id: str, cap: int) -> list[dict]:
 
 def sync_app_daily_limit(user_id: str, message: dict, delay_s: Optional[float] = None) -> Optional[int]:
     """Called for each app `mission_config`. A slider drag sends a burst; only the last value
-    (after delay_s of quiet) is written. Returns the cap scheduled, or None. Never raises."""
+    (after delay_s of quiet) is written. Returns the fields scheduled, or None. Never raises."""
     try:
         cap = app_daily_limit_from_message(message)
         if cap is None:
@@ -512,7 +522,8 @@ def check_treat_cap(dog_id: str, actor: Actor, n: int = 1) -> dict:
     now_local = local_now(dog_id)
     used, today = treats_used_today(dog_id)
 
-    if used + n > schedule.daily_cap:
+    cap = effective_daily_cap(schedule)
+    if cap is not None and used + n > cap:
         raise HTTPException(status_code=429, detail={
             "code": "treat_cap_reached", "used": used, "cap": schedule.daily_cap,
             "resets_at": _next_local_midnight_utc(now_local),
@@ -537,7 +548,7 @@ def check_treat_cap(dog_id: str, actor: Actor, n: int = 1) -> dict:
     insert_treat_ledger(command_id, dog_id, actor.label, today)
     return {
         "treats_used": used + n,
-        "treat_cap": schedule.daily_cap,
+        "treat_cap": cap,                  # None = unlimited
         "multiplier": multiplier,
         "command_id": command_id,
     }

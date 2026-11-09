@@ -437,12 +437,15 @@ def register_tools(mcp: MCPServer) -> None:
     async def set_treat_schedule(dog_id: str, windows: Optional[list[TreatWindowArg]] = None,
                                  default_multiplier: Optional[float] = None,
                                  daily_cap: Optional[int] = None,
-                                 max_per_hour: Optional[int] = None) -> dict:
+                                 max_per_hour: Optional[int] = None,
+                                 daily_cap_enabled: Optional[bool] = None) -> dict:
         """Change the dog's treat schedule and limits; any field you omit keeps its current value.
         windows: list of {start, end, multiplier}: start/end HH:MM 24h local (a window may wrap past
         midnight, e.g. 22:00-02:00; windows may not overlap, at most 12), multiplier 0-3 scales
         treat frequency inside the window; an empty list clears the windows. default_multiplier
         (0-3) applies outside any window. daily_cap (0-100) is the most treats per local day;
+        daily_cap_enabled=false removes the daily cap (unlimited; daily_cap null in results),
+        true puts it back;
         max_per_hour (0-60, 0 = no hourly limit) is the most per rolling hour. Only change a limit
         when the user asks for that number. Raising a limit sends the owner a phone alert. The
         result reads back the saved schedule and the previous limits; quote them to the user."""
@@ -451,7 +454,7 @@ def register_tools(mcp: MCPServer) -> None:
         try:
             return await settings_tools.set_treat_schedule(
                 client, dog_id, None if windows is None else [dict(w) for w in windows], default_multiplier,
-                daily_cap, max_per_hour)
+                daily_cap, max_per_hour, daily_cap_enabled)
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
 
