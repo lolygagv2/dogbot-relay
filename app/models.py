@@ -548,7 +548,7 @@ class TreatSchedule(BaseModel):
     # last number so switching back on restores it. Hourly limit and windows still apply.
     daily_cap_enabled: bool = True
     default_multiplier: float = Field(default=1.0, ge=0, le=3)
-    max_per_hour: int = Field(default=3, ge=0, le=60)
+    max_per_hour: int = Field(default=0, ge=0, le=60)   # 0 = no hourly limit (no app control for it)
     windows: list[TreatWindow] = Field(default_factory=list)
 
 

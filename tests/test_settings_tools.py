@@ -78,13 +78,13 @@ def test_tool_raises_and_lowers_caps_keeping_windows(temp_db, monkeypatch):
     from app.services import push_service
     monkeypatch.setattr(push_service, "send_push", fake_push)
     treat([{"start": "08:00", "end": "09:00", "multiplier": 2}])
-    r = caps(daily_cap=100, max_per_hour=0)                       # from the defaults 10 / 3
-    assert r["ok"] and r["daily_cap"] == 100 and r["max_per_hour"] == 0
-    assert r["previous_daily_cap"] == 10 and r["previous_max_per_hour"] == 3 and r["owner_alerted"]
+    r = caps(daily_cap=100, max_per_hour=5)                       # from the defaults 10 / 0 (off)
+    assert r["ok"] and r["daily_cap"] == 100 and r["max_per_hour"] == 5
+    assert r["previous_daily_cap"] == 10 and r["previous_max_per_hour"] == 0 and r["owner_alerted"]
     assert r["windows"] == [{"start": "08:00", "end": "09:00", "multiplier": 2.0}]   # windows kept
     assert len(sent) == 1 and "10 → 100" in sent[0]["body"] and sent[0]["user_id"] == "user_t1"
     r = caps(daily_cap=20)                                        # lowering: no alert
-    assert r["ok"] and r["daily_cap"] == 20 and r["max_per_hour"] == 0 and "owner_alerted" not in r
+    assert r["ok"] and r["daily_cap"] == 20 and r["max_per_hour"] == 5 and "owner_alerted" not in r
     assert len(sent) == 1
 
 

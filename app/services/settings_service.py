@@ -393,8 +393,9 @@ def treat_limits_raised(old: Any, new: Any) -> list[str]:
     out = []
     if oc is not None and (nc is None or nc > oc):
         out.append(f"daily treat cap {oc} → {'unlimited' if nc is None else nc}")
-    if n.max_per_hour > o.max_per_hour:
-        out.append(f"hourly treat limit {o.max_per_hour} → {n.max_per_hour}")
+    oh, nh = o.max_per_hour or None, n.max_per_hour or None          # 0 = no hourly limit
+    if oh is not None and (nh is None or nh > oh):
+        out.append(f"hourly treat limit {oh} → {'unlimited' if nh is None else nh}")
     return out
 
 

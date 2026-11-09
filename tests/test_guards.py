@@ -101,7 +101,7 @@ def test_app_settings_daily_limit_mirrored_debounced(temp_db):
     for dog in ("dog_t1", "dog_t2"):
         row = settings_service.get_setting(dog, "treat_schedule")
         assert row["value"]["daily_cap"] == 35 and row["version"] == 1        # one write, final value
-        assert row["value"]["max_per_hour"] == 3                              # untouched
+        assert row["value"]["max_per_hour"] == 0                              # untouched (default: off)
     asyncio.run(drag([35], enabled=False))                                    # toggle off
     off = settings_service.get_value("dog_t1", "treat_schedule")
     assert off["daily_cap_enabled"] is False and off["daily_cap"] == 35       # number kept for "on"
@@ -129,6 +129,13 @@ def test_unlimited_daily_cap_enforces_nothing_but_hourly(temp_db, pushes):
     _put(APP, "treat_schedule", {**TS, "daily_cap": 2, "max_per_hour": 0})
     _put(CONN, "treat_schedule", {**TS, "daily_cap": 2, "daily_cap_enabled": False, "max_per_hour": 0})
     assert "daily treat cap 2 → unlimited" in pushes[-1]["body"]
+    # hourly: 0 means no limit, so 0 -> 5 is a lowering (no alert) and 5 -> 0 is a raise
+    n = len(pushes)
+    _put(APP, "treat_schedule", {**TS, "daily_cap": 2, "max_per_hour": 0})
+    _put(CONN, "treat_schedule", {**TS, "daily_cap": 2, "max_per_hour": 5})
+    assert len(pushes) == n
+    _put(CONN, "treat_schedule", {**TS, "daily_cap": 2, "max_per_hour": 0})
+    assert len(pushes) == n + 1 and "hourly treat limit 5 → unlimited" in pushes[-1]["body"]
 
 
 def test_treat_cap_enforced(temp_db):
