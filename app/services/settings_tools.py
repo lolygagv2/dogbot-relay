@@ -5,7 +5,8 @@ caller's internal actor, so the relay's own guards still apply on top of the che
 
 set_treat_schedule replaces `treat_schedule.windows` and/or sets default_multiplier, the
 daily treat cap (0-100, or daily_cap_enabled=false for no daily cap) and the hourly treat limit
-(0-60); anything omitted keeps its current value. Raising either limit is allowed (since 2026-11-09) and pushes the owner an alert.
+(0-60); anything omitted keeps its current value. The limits are account-wide: the relay copies
+them to all the owner's dogs; windows and default_multiplier stay per dog. Raising either limit is allowed (since 2026-11-09) and pushes the owner an alert.
 The result reads back the saved schedule and the previous limits.
 
 set_notify_rule appends one rule to `notify_rules`, with the app_type that matches its event

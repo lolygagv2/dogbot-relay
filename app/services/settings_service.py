@@ -290,8 +290,10 @@ async def put_setting(dog_id: str, key: str, value: Any, actor: Actor,
         raise HTTPException(status_code=409, detail={"code": "version_mismatch", "current_version": current["version"]})
     insert_settings_audit(dog_id, key, actor.label, "put", current["value"], new_value, None)
     await push_settings_to_robot(dog_id, key, row)
-    if key == "treat_schedule" and actor.is_internal:
-        await _alert_owner_if_treat_limits_raised(dog_id, actor, current["value"], row["value"])
+    if key == "treat_schedule":
+        await _propagate_treat_limits(dog_id, actor, row["value"])
+        if actor.is_internal:
+            await _alert_owner_if_treat_limits_raised(dog_id, actor, current["value"], row["value"])
     if key == "missions":
         # amendment 2026-11-06 (3): a new/changed departure mission starts within 15 min
         # even if no departure event arrives
@@ -386,6 +388,42 @@ def effective_daily_cap(value: Any) -> Optional[int]:
     return ts.daily_cap if ts.daily_cap_enabled else None
 
 
+# The treat LIMITS are account-wide (the app has one Settings control for all dogs): a change
+# for one dog is copied to every other dog of the same owner. Windows stay per dog.
+ACCOUNT_WIDE_TREAT_FIELDS = ("daily_cap", "daily_cap_enabled", "max_per_hour")
+
+
+async def _propagate_treat_limits(dog_id: str, actor: Actor, value: dict) -> int:
+    """Copy the account-wide treat limit fields to the owner's other dogs. Never raises."""
+    from app.auth import check_dog_access
+    from app.database import get_owned_dog_ids
+    copied = 0
+    try:
+        owner = get_dog_owner(dog_id)
+        limits = {k: value[k] for k in ACCOUNT_WIDE_TREAT_FIELDS if k in value}
+        for other in (get_owned_dog_ids(owner) if owner else []):
+            if other == dog_id:
+                continue
+            try:
+                check_dog_access(actor, other, write=True)
+            except HTTPException:
+                continue                      # e.g. a shared editor without access to this dog
+            cur = get_setting(other, "treat_schedule")
+            new = TreatSchedule.model_validate({**cur["value"], **limits}).model_dump()
+            if new == TreatSchedule.model_validate(cur["value"]).model_dump():
+                continue
+            row = put_dog_setting(other, "treat_schedule", new, actor.label, None)
+            if row is None:
+                continue
+            insert_settings_audit(other, "treat_schedule", actor.label, "put", cur["value"], new,
+                                  f"account-wide treat limit (set on {dog_id})")
+            await push_settings_to_robot(other, "treat_schedule", row)
+            copied += 1
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[SETTINGS] treat limit propagation from {dog_id} failed: {e}")
+    return copied
+
+
 def treat_limits_raised(old: Any, new: Any) -> list[str]:
     """Human phrases for each treat limit that went UP between two treat_schedule values."""
     o, n = TreatSchedule.model_validate(old or {}), TreatSchedule.model_validate(new or {})
@@ -409,12 +447,12 @@ async def _alert_owner_if_treat_limits_raised(dog_id: str, actor: Actor, old: An
         owner = get_dog_owner(dog_id)
         if not owner:
             return "no_owner"
-        from app.database import get_dog_by_id
+        from app.database import get_owned_dog_ids
         from app.services import push_service
-        dog = get_dog_by_id(dog_id) or {}
-        name = dog.get("name") or "your dog"
         who = "The voice assistant" if actor.kind == "agent" else "A connected AI assistant"
-        body = f"{who} raised {name}'s {' and '.join(raised)}. Open WIM-Z to change it back."
+        body = (f"{who} raised your {' and '.join(raised)} (applies to all your dogs). "
+                f"Open WIM-Z to change it back.") if len(get_owned_dog_ids(owner)) > 1 else (
+                f"{who} raised your {' and '.join(raised)}. Open WIM-Z to change it back.")
         outcome = await push_service.send_push(
             user_id=owner, app_type="alert", title="Treat limit raised", body=body,
             data={"type": "alert", "dog_id": dog_id, "kind": "treat_limit_raised", "actor": actor.label},

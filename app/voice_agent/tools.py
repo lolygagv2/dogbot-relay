@@ -95,7 +95,7 @@ TOOLS: list[dict] = [
          "dog_id": _str("dog id"), "days": {"type": "integer", "description": "1-730, default 30"}},
          "required": ["dog_id"]}},
     {"name": "set_treat_schedule",
-     "description": "Change treat windows and limits; omitted fields keep their value. windows: list of {start, end, multiplier}; start/end HH:MM 24h local (may wrap midnight, no overlaps, at most 12); multiplier 0-3 scales treat frequency inside the window. Empty list clears them. default_multiplier (0-3) applies outside windows. daily_cap (0-100) = most treats per day; daily_cap_enabled false = no daily cap (unlimited), true = back on; max_per_hour (0-60, 0 = no hourly limit). Only change a limit when the owner says the number. Raising a limit alerts the owner. Say back what was saved.",
+     "description": "Change treat windows and limits; omitted fields keep their value. windows: list of {start, end, multiplier}; start/end HH:MM 24h local (may wrap midnight, no overlaps, at most 12); multiplier 0-3 scales treat frequency inside the window. Empty list clears them. default_multiplier (0-3) applies outside windows. daily_cap (0-100) = most treats per day; daily_cap_enabled false = no daily cap (unlimited), true = back on; max_per_hour (0-60, 0 = no hourly limit). The limits apply to all the owner's dogs; windows are per dog. Only change a limit when the owner says the number. Raising a limit alerts the owner. Say back what was saved.",
      "input_schema": {"type": "object", "properties": {
          "dog_id": _str("dog id"),
          "windows": {"type": "array", "items": {"type": "object", "properties": {
