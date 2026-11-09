@@ -1651,10 +1651,10 @@ async def websocket_app_endpoint(
                     # Build 48: treat_counter_set routing verification
                     if cmd_type == "treat_counter_set":
                         logger.info(f"RELAY: Routing treat_counter_set to device {target_device}")
-                    # 2026-11-09: the app saves its treat limit inside sg_config (sent to the robot);
-                    # mirror it into the relay's treat_schedule, which the robot and AI assistants read.
-                    if cmd_type in ("sg_config", "treat_config", "treat_schedule", "treat_settings"):
-                        await settings_service.sync_treat_limits_from_app_message(user_id, target_device, message)
+                    # 2026-11-09: the app's Settings treat limit rides in mission_config {daily_limit_enabled,
+                    # daily_limit}; mirror the final value into treat_schedule (robot + AI assistants read it).
+                    if cmd_type == "mission_config":
+                        settings_service.sync_app_daily_limit(user_id, message)
                 else:
                     # Check why it failed
                     if not manager.is_robot_online(target_device):
@@ -2279,10 +2279,10 @@ async def websocket_generic_endpoint(
                             # Build 48: treat_counter_set routing verification
                             if cmd_type == "treat_counter_set":
                                 logger.info(f"RELAY: Routing treat_counter_set to device {target_device}")
-                            # 2026-11-09: the app saves its treat limit inside sg_config (sent to the robot);
-                            # mirror it into the relay's treat_schedule, which the robot and AI assistants read.
-                            if cmd_type in ("sg_config", "treat_config", "treat_schedule", "treat_settings"):
-                                await settings_service.sync_treat_limits_from_app_message(identifier, target_device, message)
+                            # 2026-11-09: the app's Settings treat limit rides in mission_config {daily_limit_enabled,
+                            # daily_limit}; mirror the final value into treat_schedule (robot + AI assistants read it).
+                            if cmd_type == "mission_config":
+                                settings_service.sync_app_daily_limit(identifier, message)
                         else:
                             logger.warning(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type} FAILED")
                     else:

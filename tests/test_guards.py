@@ -79,23 +79,37 @@ def test_robot_may_write_treat_schedule_only(temp_db):
     assert e.value.detail["code"] == "dog_not_owned_by_device_owner"
 
 
-def _sync(msg, device_id="wimz_t1", user_id="user_t1"):
-    return asyncio.run(settings_service.sync_treat_limits_from_app_message(user_id, device_id, msg))
+def _limit_msg(n, enabled=True):
+    return {"type": "command", "command": "mission_config", "timestamp": 1,
+            "data": {"daily_limit_enabled": enabled, "daily_limit": n}}
 
 
-def test_app_sg_config_mirrors_treat_limit(temp_db):
+def test_app_settings_daily_limit_mirrored_debounced(temp_db):
+    """The app's Settings slider sends mission_config {daily_limit_enabled, daily_limit} per step;
+    only the final value lands in every owned dog's treat_schedule. Toggle off = 100."""
     import app.database as db
-    db.create_device_pairing("user_t1", "wimz_t1")
-    db.link_device_dog("wimz_t1", "dog_t1")
-    row = _sync({"type": "sg_config", "data": {"max_treats_per_day": 100}})      # dog from the robot's pairing
-    assert row["value"]["daily_cap"] == 100 and row["value"]["max_per_hour"] == 3
-    assert _sync({"type": "sg_config", "data": {"max_treats_per_day": 100}}) is None   # unchanged: no write
-    row = _sync({"type": "sg_config", "dog_id": "dog_t1", "config": {"treat_limit": "25", "max_treats_per_hour": 6}})
-    assert row["value"]["daily_cap"] == 25 and row["value"]["max_per_hour"] == 6 and row["version"] == 2
-    assert _sync({"type": "sg_config", "data": {"sensitivity": "high"}}) is None     # no treat field
-    assert _sync({"type": "sg_config", "data": {"daily_cap": 500}}) is None           # out of bounds: ignored
-    assert _sync({"type": "sg_config", "data": {"daily_cap": 50}}, user_id="stranger") is None   # not their dog
-    assert settings_service.get_value("dog_t1", "treat_schedule")["daily_cap"] == 25
+    db.create_dog(dog_id="dog_t2", name="Bea", user_id="user_t1")
+    db.add_user_dog("user_t1", "dog_t2", "owner")
+
+    async def drag(values, enabled=True):
+        for v in values:
+            settings_service.sync_app_daily_limit("user_t1", _limit_msg(v, enabled), delay_s=0.05)
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.2)
+
+    asyncio.run(drag([70, 65, 60, 55, 50, 45, 40, 35]))
+    for dog in ("dog_t1", "dog_t2"):
+        row = settings_service.get_setting(dog, "treat_schedule")
+        assert row["value"]["daily_cap"] == 35 and row["version"] == 1        # one write, final value
+        assert row["value"]["max_per_hour"] == 3                              # untouched
+    asyncio.run(drag([35], enabled=False))
+    assert settings_service.get_value("dog_t1", "treat_schedule")["daily_cap"] == 100
+    asyncio.run(drag([35]))
+    assert settings_service.get_value("dog_t2", "treat_schedule")["daily_cap"] == 35
+    # real missions (no daily_limit fields) are ignored
+    assert settings_service.sync_app_daily_limit("user_t1", {"command": "mission_config",
+                                                             "data": {"mission_id": "m1", "max_treats": 5}}) is None
+    assert settings_service.app_daily_limit_from_message(_limit_msg(500)) == 100
 
 
 def test_treat_cap_enforced(temp_db):

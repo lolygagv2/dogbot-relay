@@ -102,7 +102,7 @@ CLOUDFLARE_TURN_API_TOKEN=your_turn_api_token
 | POST /events | Robot (HMAC) typed event ingest → `events` table (Dec 9 build) |
 | GET /summary/{dog}/{date} | Daily roll-up per dog (today / yesterday / YYYY-MM-DD) |
 | GET /api/dogs/{dog}/events, /status | Raw events; latest robot status + treat/quiet-hours context |
-| GET/PUT /api/dogs/{dog}/settings/{key} | Shared settings with guards (app, connector, agent; robot reads all, writes only `treat_schedule`). Treat cap/hourly limit: changeable by every actor (0-100 / 0-60); an AI raising one pushes the owner an alert; the app's `sg_config` is mirrored into `treat_schedule` |
+| GET/PUT /api/dogs/{dog}/settings/{key} | Shared settings with guards (app, connector, agent; robot reads all, writes only `treat_schedule`). Treat cap/hourly limit: changeable by every actor (0-100 / 0-60); an AI raising one pushes the owner an alert; the app's Settings treat limit (`mission_config` `data.daily_limit` / `daily_limit_enabled`, off = 100) is mirrored, debounced 1 s, into every owned dog's `treat_schedule` |
 | POST /api/dogs/{dog}/command | Allowlisted robot control (+ `wait_s` for command_result) |
 | /api/dogs/{dog}/missions/drafts | Assistant-proposed missions, owner approves in app |
 | /api/dogs/{dog}/ai/* | Connector list / revoke / audit for the app |

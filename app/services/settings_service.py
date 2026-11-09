@@ -7,7 +7,8 @@ voice agent through the same HTTP routes, so every guard lives here:
 - connectors/agents may only *widen* quiet hours, never narrow or disable them
 - the treat daily cap and hourly limit can be changed by the app, the robot
   (treat_schedule is the one key a robot may write) and connectors/agents, within the
-  TreatSchedule bounds (2026-11-09); an AI raising either one pushes an alert to the owner
+  TreatSchedule bounds (2026-11-09); an AI raising either one pushes an alert to the owner;
+  the app's Settings treat limit (mission_config daily_limit) is mirrored, debounced
 - connectors/agents may not set `override_quiet` on notify rules, reset notify
   rules, or edit the sound list (reset to builtins is allowed)
 
@@ -417,77 +418,75 @@ async def _alert_owner_if_treat_limits_raised(dog_id: str, actor: Actor, old: An
         return "error"
 
 
-# Field names an app `sg_config` message may carry the treat limits under. The relay
-# does not own that payload's schema, so it accepts any of these (top level or nested
-# one level under data/payload/config/settings/treats).
-_APP_DAILY_CAP_KEYS = ("daily_cap", "treat_daily_cap", "daily_treat_cap", "daily_treat_limit", "treat_limit",
-                       "treat_cap", "max_treats_per_day", "max_daily_treats", "treats_per_day",
-                       "max_treats", "treat_limit_per_day", "daily_treats_max")
-_APP_HOURLY_KEYS = ("max_per_hour", "treat_max_per_hour", "max_treats_per_hour", "treats_per_hour",
-                    "hourly_treat_limit", "treat_hourly_limit")
-_NEST_KEYS = ("data", "payload", "config", "settings", "treats", "treat", "treat_schedule")
+# ---- the app's Settings -> "Daily treat limit" (toggle + slider, global per user) ----
+# The app sends it to the robot as `mission_config` {data: {daily_limit_enabled, daily_limit}}
+# (seen on the wire 2026-11-09), one message per slider step. The relay mirrors the FINAL value
+# into treat_schedule.daily_cap of every dog the user owns: toggle off = the maximum (100).
+APP_LIMIT_DEBOUNCE_S = 1.0
+_pending_app_limit: dict[str, asyncio.Task] = {}
 
 
-def _find_int(msg: dict, keys: tuple[str, ...]) -> Optional[int]:
-    layers = [msg] + [msg[k] for k in _NEST_KEYS if isinstance(msg.get(k), dict)]
-    for layer in list(layers):
-        layers += [layer[k] for k in _NEST_KEYS if isinstance(layer.get(k), dict) and layer[k] not in layers]
-    for layer in layers:
-        for k in keys:
-            v = layer.get(k)
-            if isinstance(v, bool):
-                continue
-            if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit()):
-                return int(float(v))
-    return None
-
-
-def _payload_shape(msg: Any, depth: int = 0) -> Any:
-    """Keys (and nested keys) of a message, without values - safe to log."""
-    if isinstance(msg, dict) and depth < 3:
-        return {k: _payload_shape(v, depth + 1) for k, v in msg.items()}
-    return type(msg).__name__
-
-
-async def sync_treat_limits_from_app_message(user_id: str, device_id: Optional[str], message: dict) -> Optional[dict]:
-    """The app saves its treat limit by sending `sg_config` straight to the robot. Mirror any
-    daily cap / hourly limit found in it into the dog's relay `treat_schedule` (as the app
-    user), so the relay - which the robot and the AI assistants read - stays the one source
-    of truth. Writes only when a value actually changes. Never raises; returns the new row."""
-    try:
-        logger.info(f"[TREAT-SYNC] {message.get('type') or message.get('command')} from {user_id} "
-                    f"shape={_payload_shape(message)}")
-        cap = _find_int(message, _APP_DAILY_CAP_KEYS)
-        hourly = _find_int(message, _APP_HOURLY_KEYS)
-        if cap is None and hourly is None:
-            return None
-        sub = message.get("data") if isinstance(message.get("data"), dict) else {}
-        dog_ids = [message.get("dog_id") or sub.get("dog_id")] if (message.get("dog_id") or sub.get("dog_id")) else []
-        if not dog_ids and device_id:
-            from app.database import get_device_dog_ids
-            dog_ids = get_device_dog_ids(device_id)
-        if len(dog_ids) != 1:
-            logger.warning(f"[TREAT-SYNC] cap={cap} hourly={hourly} but dog is ambiguous for {device_id}: {dog_ids}")
-            return None
-        dog_id = dog_ids[0]
-        from app.auth import check_dog_access
-        actor = Actor(kind="app", id=user_id, user_id=user_id)
-        check_dog_access(actor, dog_id, write=True)
-        cur = get_setting(dog_id, "treat_schedule")
-        new = dict(cur["value"])
-        if cap is not None:
-            new["daily_cap"] = cap
-        if hourly is not None:
-            new["max_per_hour"] = hourly
-        if new == cur["value"]:
-            return None
-        row = await put_setting(dog_id, "treat_schedule", new, actor)
-        logger.info(f"[TREAT-SYNC] {dog_id} treat_schedule daily_cap={row['value']['daily_cap']} "
-                    f"max_per_hour={row['value']['max_per_hour']} (v{row['version']}) from app sg_config")
-        return row
-    except Exception as e:
-        logger.warning(f"[TREAT-SYNC] failed for {user_id}/{device_id}: {e}")
+def app_daily_limit_from_message(message: dict) -> Optional[int]:
+    """The daily cap an app `mission_config` treat-limit message asks for, else None."""
+    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+    if "daily_limit" not in data and "daily_limit_enabled" not in data:
         return None
+    cap_max = TreatSchedule.model_fields["daily_cap"].metadata
+    hi = next((m.le for m in cap_max if getattr(m, "le", None) is not None), 100)
+    if data.get("daily_limit_enabled") is False:
+        return hi
+    v = data.get("daily_limit")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return max(0, min(hi, int(v)))
+
+
+async def apply_app_daily_limit(user_id: str, cap: int) -> list[dict]:
+    """Write daily_cap=cap into treat_schedule for every dog the user owns (skip unchanged)."""
+    from app.database import get_owned_dog_ids
+    actor = Actor(kind="app", id=user_id, user_id=user_id)
+    rows = []
+    for dog_id in get_owned_dog_ids(user_id):
+        try:
+            cur = get_setting(dog_id, "treat_schedule")
+            if cur["value"].get("daily_cap") == cap:
+                continue
+            row = await put_setting(dog_id, "treat_schedule", {**cur["value"], "daily_cap": cap}, actor)
+            rows.append(row)
+            logger.info(f"[TREAT-SYNC] {dog_id} daily_cap {cur['value'].get('daily_cap')} -> {cap} "
+                        f"(v{row['version']}) from app Settings")
+        except Exception as e:
+            logger.warning(f"[TREAT-SYNC] {dog_id} write failed: {e}")
+    return rows
+
+
+def sync_app_daily_limit(user_id: str, message: dict, delay_s: Optional[float] = None) -> Optional[int]:
+    """Called for each app `mission_config`. A slider drag sends a burst; only the last value
+    (after delay_s of quiet) is written. Returns the cap scheduled, or None. Never raises."""
+    try:
+        cap = app_daily_limit_from_message(message)
+        if cap is None:
+            return None
+        prev = _pending_app_limit.pop(user_id, None)
+        if prev and not prev.done():
+            prev.cancel()
+        wait = APP_LIMIT_DEBOUNCE_S if delay_s is None else delay_s
+
+        async def _later():
+            try:
+                await asyncio.sleep(wait)
+                await apply_app_daily_limit(user_id, cap)
+            finally:
+                if _pending_app_limit.get(user_id) is task:
+                    _pending_app_limit.pop(user_id, None)
+
+        task = asyncio.get_running_loop().create_task(_later())
+        _pending_app_limit[user_id] = task
+        return cap
+    except Exception as e:
+        logger.warning(f"[TREAT-SYNC] schedule failed for {user_id}: {e}")
+        return None
+
 
 def treats_used_today(dog_id: str) -> tuple[int, str]:
     """(count, local_date) of treats today: robot treat events + in-flight ledger rows."""
