@@ -27,6 +27,7 @@ from app.database import (
 )
 from app.routers.device import get_device_data, update_device_online_status
 from app.services import push_service, settings_service
+from app.services.treat_watchdog import get_treat_watchdog
 from app.services.turn_service import turn_service
 
 logger = logging.getLogger(__name__)
@@ -1226,6 +1227,8 @@ async def websocket_device_endpoint(
                         )
                 elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                     logger.info(f"[EVENT] {event_name} from {device_id}: {message.get('data', {})}")
+                if event_name == "treat_dispensed":
+                    get_treat_watchdog().treat_dispensed(device_id)
 
                 # Store event for offline retrieval
                 maybe_store_event(device_id, owner_id, message)
@@ -1655,6 +1658,9 @@ async def websocket_app_endpoint(
                     # daily_limit}; mirror the final value into treat_schedule (robot + AI assistants read it).
                     if cmd_type == "mission_config":
                         settings_service.sync_app_daily_limit(user_id, message)
+                    # Tell the app if the robot never confirms the treat (silent robot-side refusal)
+                    if cmd_type == "dispense_treat":
+                        get_treat_watchdog().app_treat_sent(user_id, target_device, message, manager.send_to_user_apps)
                 else:
                     # Check why it failed
                     if not manager.is_robot_online(target_device):
@@ -2108,6 +2114,8 @@ async def websocket_generic_endpoint(
                             )
                     elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                         logger.info(f"[EVENT] {event_name} from {identifier}: {message.get('data', {})}")
+                    if event_name == "treat_dispensed":
+                        get_treat_watchdog().treat_dispensed(identifier)
 
                     # Store event for offline retrieval
                     maybe_store_event(identifier, owner_id, message)
@@ -2283,6 +2291,9 @@ async def websocket_generic_endpoint(
                             # daily_limit}; mirror the final value into treat_schedule (robot + AI assistants read it).
                             if cmd_type == "mission_config":
                                 settings_service.sync_app_daily_limit(identifier, message)
+                            # Tell the app if the robot never confirms the treat (silent robot-side refusal)
+                            if cmd_type == "dispense_treat":
+                                get_treat_watchdog().app_treat_sent(identifier, target_device, message, manager.send_to_user_apps)
                         else:
                             logger.warning(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type} FAILED")
                     else:
