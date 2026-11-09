@@ -434,19 +434,24 @@ def register_tools(mcp: MCPServer) -> None:
 
     @mcp.tool(name="set_treat_schedule", annotations=CONTROL)
     @audited("set_treat_schedule")
-    async def set_treat_schedule(dog_id: str, windows: list[TreatWindowArg],
-                                 default_multiplier: Optional[float] = None) -> dict:
-        """Replace the dog's treat-time windows. Each window is {start, end, multiplier}: start/end
-        HH:MM 24h local (a window may wrap past midnight, e.g. 22:00-02:00; windows may not overlap,
-        at most 12), multiplier 0-3 scales treat frequency inside the window. An empty list clears
-        the windows. default_multiplier (0-3) applies outside any window; omit it to keep the
-        current value. The daily treat cap and hourly limit are owner-only and never change here.
-        The result reads back the saved windows; quote them to the user."""
+    async def set_treat_schedule(dog_id: str, windows: Optional[list[TreatWindowArg]] = None,
+                                 default_multiplier: Optional[float] = None,
+                                 daily_cap: Optional[int] = None,
+                                 max_per_hour: Optional[int] = None) -> dict:
+        """Change the dog's treat schedule and limits; any field you omit keeps its current value.
+        windows: list of {start, end, multiplier}: start/end HH:MM 24h local (a window may wrap past
+        midnight, e.g. 22:00-02:00; windows may not overlap, at most 12), multiplier 0-3 scales
+        treat frequency inside the window; an empty list clears the windows. default_multiplier
+        (0-3) applies outside any window. daily_cap (0-100) is the most treats per local day;
+        max_per_hour (0-60, 0 = no hourly limit) is the most per rolling hour. Only change a limit
+        when the user asks for that number. Raising a limit sends the owner a phone alert. The
+        result reads back the saved schedule and the previous limits; quote them to the user."""
         client, user_id = _client("set_treat_schedule")
         _check_dog(user_id, dog_id)
         try:
             return await settings_tools.set_treat_schedule(
-                client, dog_id, [dict(w) for w in windows], default_multiplier)
+                client, dog_id, None if windows is None else [dict(w) for w in windows], default_multiplier,
+                daily_cap, max_per_hour)
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
 

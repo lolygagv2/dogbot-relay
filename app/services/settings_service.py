@@ -5,7 +5,9 @@ voice agent through the same HTTP routes, so every guard lives here:
 
 - treat daily cap (and hourly rate / closed windows) on relay-issued dispenses
 - connectors/agents may only *widen* quiet hours, never narrow or disable them
-- connectors/agents may only *lower* the treat daily cap
+- the treat daily cap and hourly limit can be changed by the app, the robot
+  (treat_schedule is the one key a robot may write) and connectors/agents, within the
+  TreatSchedule bounds (2026-11-09); an AI raising either one pushes an alert to the owner
 - connectors/agents may not set `override_quiet` on notify rules, reset notify
   rules, or edit the sound list (reset to builtins is allowed)
 
@@ -254,14 +256,6 @@ def _guard_put(actor: Actor, key: str, old: Any, new: Any) -> None:
         if o.enabled and not minute_set(o.start, o.end) <= minute_set(n.start, n.end):
             raise GuardDenied("quiet_hours_widen_only",
                               f"connector may only widen quiet hours (current {o.start}-{o.end})")
-    elif key == "treat_schedule":
-        o, n = TreatSchedule.model_validate(old), TreatSchedule.model_validate(new)
-        if n.daily_cap > o.daily_cap:
-            raise GuardDenied("treat_cap_lower_only",
-                              f"connector may only lower the daily treat cap (current {o.daily_cap})")
-        if n.max_per_hour > o.max_per_hour:
-            raise GuardDenied("treat_cap_lower_only",
-                              f"connector may only lower the hourly treat limit (current {o.max_per_hour})")
     elif key == "notify_rules":
         n = NotifyRules.model_validate(new)
         if any(r.override_quiet for r in n.rules):
@@ -295,6 +289,8 @@ async def put_setting(dog_id: str, key: str, value: Any, actor: Actor,
         raise HTTPException(status_code=409, detail={"code": "version_mismatch", "current_version": current["version"]})
     insert_settings_audit(dog_id, key, actor.label, "put", current["value"], new_value, None)
     await push_settings_to_robot(dog_id, key, row)
+    if key == "treat_schedule" and actor.is_internal:
+        await _alert_owner_if_treat_limits_raised(dog_id, actor, current["value"], row["value"])
     if key == "missions":
         # amendment 2026-11-06 (3): a new/changed departure mission starts within 15 min
         # even if no departure event arrives
@@ -382,6 +378,116 @@ async def push_settings_to_robot(dog_id: str, key: str, row: dict) -> int:
 # ---------------------------------------------------------------------------
 # Treat cap (relay-issued dispenses)
 # ---------------------------------------------------------------------------
+
+def treat_limits_raised(old: Any, new: Any) -> list[str]:
+    """Human phrases for each treat limit that went UP between two treat_schedule values."""
+    o, n = TreatSchedule.model_validate(old or {}), TreatSchedule.model_validate(new or {})
+    out = []
+    if n.daily_cap > o.daily_cap:
+        out.append(f"daily treat cap {o.daily_cap} → {n.daily_cap}")
+    if n.max_per_hour > o.max_per_hour:
+        out.append(f"hourly treat limit {o.max_per_hour} → {n.max_per_hour}")
+    return out
+
+
+async def _alert_owner_if_treat_limits_raised(dog_id: str, actor: Actor, old: Any, new: Any) -> str:
+    """Push the owner a heads-up when an assistant (connector/agent) raises a treat limit,
+    so a misheard or mistaken change is visible and can be undone in the app. Never raises."""
+    try:
+        raised = treat_limits_raised(old, new)
+        if not raised:
+            return "not_raised"
+        owner = get_dog_owner(dog_id)
+        if not owner:
+            return "no_owner"
+        from app.database import get_dog_by_id
+        from app.services import push_service
+        dog = get_dog_by_id(dog_id) or {}
+        name = dog.get("name") or "your dog"
+        who = "The voice assistant" if actor.kind == "agent" else "A connected AI assistant"
+        body = f"{who} raised {name}'s {' and '.join(raised)}. Open WIM-Z to change it back."
+        outcome = await push_service.send_push(
+            user_id=owner, app_type="alert", title="Treat limit raised", body=body,
+            data={"type": "alert", "dog_id": dog_id, "kind": "treat_limit_raised", "actor": actor.label},
+        )
+        logger.info(f"[SETTINGS] treat limit raised by {actor.label} for {dog_id}: {raised} (push={outcome})")
+        return outcome
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[SETTINGS] treat-limit alert failed for {dog_id}: {e}")
+        return "error"
+
+
+# Field names an app `sg_config` message may carry the treat limits under. The relay
+# does not own that payload's schema, so it accepts any of these (top level or nested
+# one level under data/payload/config/settings/treats).
+_APP_DAILY_CAP_KEYS = ("daily_cap", "treat_daily_cap", "daily_treat_cap", "daily_treat_limit", "treat_limit",
+                       "treat_cap", "max_treats_per_day", "max_daily_treats", "treats_per_day",
+                       "max_treats", "treat_limit_per_day", "daily_treats_max")
+_APP_HOURLY_KEYS = ("max_per_hour", "treat_max_per_hour", "max_treats_per_hour", "treats_per_hour",
+                    "hourly_treat_limit", "treat_hourly_limit")
+_NEST_KEYS = ("data", "payload", "config", "settings", "treats", "treat", "treat_schedule")
+
+
+def _find_int(msg: dict, keys: tuple[str, ...]) -> Optional[int]:
+    layers = [msg] + [msg[k] for k in _NEST_KEYS if isinstance(msg.get(k), dict)]
+    for layer in list(layers):
+        layers += [layer[k] for k in _NEST_KEYS if isinstance(layer.get(k), dict) and layer[k] not in layers]
+    for layer in layers:
+        for k in keys:
+            v = layer.get(k)
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float)) or (isinstance(v, str) and v.strip().isdigit()):
+                return int(float(v))
+    return None
+
+
+def _payload_shape(msg: Any, depth: int = 0) -> Any:
+    """Keys (and nested keys) of a message, without values - safe to log."""
+    if isinstance(msg, dict) and depth < 3:
+        return {k: _payload_shape(v, depth + 1) for k, v in msg.items()}
+    return type(msg).__name__
+
+
+async def sync_treat_limits_from_app_message(user_id: str, device_id: Optional[str], message: dict) -> Optional[dict]:
+    """The app saves its treat limit by sending `sg_config` straight to the robot. Mirror any
+    daily cap / hourly limit found in it into the dog's relay `treat_schedule` (as the app
+    user), so the relay - which the robot and the AI assistants read - stays the one source
+    of truth. Writes only when a value actually changes. Never raises; returns the new row."""
+    try:
+        logger.info(f"[TREAT-SYNC] {message.get('type') or message.get('command')} from {user_id} "
+                    f"shape={_payload_shape(message)}")
+        cap = _find_int(message, _APP_DAILY_CAP_KEYS)
+        hourly = _find_int(message, _APP_HOURLY_KEYS)
+        if cap is None and hourly is None:
+            return None
+        sub = message.get("data") if isinstance(message.get("data"), dict) else {}
+        dog_ids = [message.get("dog_id") or sub.get("dog_id")] if (message.get("dog_id") or sub.get("dog_id")) else []
+        if not dog_ids and device_id:
+            from app.database import get_device_dog_ids
+            dog_ids = get_device_dog_ids(device_id)
+        if len(dog_ids) != 1:
+            logger.warning(f"[TREAT-SYNC] cap={cap} hourly={hourly} but dog is ambiguous for {device_id}: {dog_ids}")
+            return None
+        dog_id = dog_ids[0]
+        from app.auth import check_dog_access
+        actor = Actor(kind="app", id=user_id, user_id=user_id)
+        check_dog_access(actor, dog_id, write=True)
+        cur = get_setting(dog_id, "treat_schedule")
+        new = dict(cur["value"])
+        if cap is not None:
+            new["daily_cap"] = cap
+        if hourly is not None:
+            new["max_per_hour"] = hourly
+        if new == cur["value"]:
+            return None
+        row = await put_setting(dog_id, "treat_schedule", new, actor)
+        logger.info(f"[TREAT-SYNC] {dog_id} treat_schedule daily_cap={row['value']['daily_cap']} "
+                    f"max_per_hour={row['value']['max_per_hour']} (v{row['version']}) from app sg_config")
+        return row
+    except Exception as e:
+        logger.warning(f"[TREAT-SYNC] failed for {user_id}/{device_id}: {e}")
+        return None
 
 def treats_used_today(dog_id: str) -> tuple[int, str]:
     """(count, local_date) of treats today: robot treat events + in-flight ledger rows."""

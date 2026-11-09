@@ -3,9 +3,10 @@
 Both tools sit in the `settings` scope and write through the relay's settings API as the
 caller's internal actor, so the relay's own guards still apply on top of the checks here.
 
-set_treat_schedule replaces `treat_schedule.windows` (and optionally default_multiplier).
-daily_cap and max_per_hour are owner-only from these tools: they are copied unchanged from
-the current value, never taken as input. The result reads back the saved windows.
+set_treat_schedule replaces `treat_schedule.windows` and/or sets default_multiplier, the
+daily treat cap (0-100) and the hourly treat limit (0-60); anything omitted keeps its current
+value. Raising either limit is allowed (since 2026-11-09) and pushes the owner an alert.
+The result reads back the saved schedule and the previous limits.
 
 set_notify_rule appends one rule to `notify_rules`, with the app_type that matches its event
 type, up to MAX_NOTIFY_RULES rules per dog (the owner's existing rules count).
@@ -22,6 +23,8 @@ from app.services.settings_service import minute_set
 
 MAX_TREAT_WINDOWS = 12
 MULTIPLIER_MIN, MULTIPLIER_MAX = 0.0, 3.0
+DAILY_CAP_MIN, DAILY_CAP_MAX = 0, 100      # = TreatSchedule.daily_cap bounds
+HOURLY_MIN, HOURLY_MAX = 0, 60             # = TreatSchedule.max_per_hour bounds
 MAX_NOTIFY_RULES = 10
 MAX_SECONDS = 86400
 NOTIFY_EVENT_TYPES: list[str] = list(NotifyRule.model_fields["event_type"].annotation.__args__)
@@ -85,26 +88,55 @@ def normalise_windows(windows: Any) -> tuple[Optional[list[dict]], Optional[dict
     return sorted(out, key=lambda x: x["start"]), None
 
 
-async def set_treat_schedule(client: RelayClient, dog_id: str, windows: Any,
-                             default_multiplier: Optional[float] = None) -> dict:
-    new_windows, bad = normalise_windows(windows)
-    if bad:
-        return bad
+def _int_in(v: Any, lo: int, hi: int) -> Optional[int]:
+    n = _num(v)
+    return int(n) if n is not None and n == int(n) and lo <= n <= hi else None
+
+
+async def set_treat_schedule(client: RelayClient, dog_id: str, windows: Any = None,
+                             default_multiplier: Optional[float] = None,
+                             daily_cap: Any = None, max_per_hour: Any = None) -> dict:
+    """windows=None keeps the current windows; [] clears them."""
+    new_windows = None
+    if windows is not None:
+        new_windows, bad = normalise_windows(windows)
+        if bad:
+            return bad
     if default_multiplier is not None:
         dm = _num(default_multiplier)
         if dm is None or not MULTIPLIER_MIN <= dm <= MULTIPLIER_MAX:
             return _refuse("invalid_multiplier", field="default_multiplier", min=MULTIPLIER_MIN, max=MULTIPLIER_MAX)
+    if daily_cap is not None:
+        cap = _int_in(daily_cap, DAILY_CAP_MIN, DAILY_CAP_MAX)
+        if cap is None:
+            return _refuse("invalid_daily_cap", min=DAILY_CAP_MIN, max=DAILY_CAP_MAX, requested=daily_cap)
+    if max_per_hour is not None:
+        hourly = _int_in(max_per_hour, HOURLY_MIN, HOURLY_MAX)
+        if hourly is None:
+            return _refuse("invalid_max_per_hour", min=HOURLY_MIN, max=HOURLY_MAX, requested=max_per_hour)
+    if new_windows is None and default_multiplier is None and daily_cap is None and max_per_hour is None:
+        return _refuse("nothing_to_change", hint="pass windows, default_multiplier, daily_cap or max_per_hour")
     cur_row = await client.get_setting(dog_id, "treat_schedule")
     cur = dict(cur_row.get("value") or {})
-    new = dict(cur)                      # daily_cap / max_per_hour carried over untouched
-    new["windows"] = new_windows
+    new = dict(cur)
+    if new_windows is not None:
+        new["windows"] = new_windows
     if default_multiplier is not None:
         new["default_multiplier"] = dm
+    if daily_cap is not None:
+        new["daily_cap"] = cap
+    if max_per_hour is not None:
+        new["max_per_hour"] = hourly
     row = await client.put_setting(dog_id, "treat_schedule", new, expected_version=cur_row.get("version"))
     v = row["value"]
-    return {"ok": True, "windows": v.get("windows", []), "default_multiplier": v.get("default_multiplier"),
-            "daily_cap": v.get("daily_cap"), "daily_cap_note": "unchanged; only the owner can change it in the app",
-            "previous_windows": cur.get("windows", []), "version": row.get("version")}
+    raised = (v.get("daily_cap", 0) > cur.get("daily_cap", 0)) or (v.get("max_per_hour", 0) > cur.get("max_per_hour", 0))
+    out = {"ok": True, "windows": v.get("windows", []), "default_multiplier": v.get("default_multiplier"),
+           "daily_cap": v.get("daily_cap"), "max_per_hour": v.get("max_per_hour"),
+           "previous_daily_cap": cur.get("daily_cap"), "previous_max_per_hour": cur.get("max_per_hour"),
+           "previous_windows": cur.get("windows", []), "version": row.get("version")}
+    if raised:
+        out["owner_alerted"] = True
+    return out
 
 
 def build_notify_rule(event_type: str, min_duration_s: Any = None, severity: Optional[str] = None,

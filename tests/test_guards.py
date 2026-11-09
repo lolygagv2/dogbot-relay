@@ -1,4 +1,4 @@
-"""Settings guards: quiet-hours widen-only, treat cap lower-only, treat cap enforcement, command allowlist."""
+"""Settings guards: quiet-hours widen-only, treat caps changeable by every actor, treat cap enforcement, command allowlist."""
 import asyncio
 
 import pytest
@@ -30,12 +30,72 @@ def test_quiet_hours_widen_only(temp_db):
     audit = settings_service.list_settings_audit("dog_t1") if hasattr(settings_service, "list_settings_audit") else None
 
 
-def test_treat_cap_lower_only_for_connectors(temp_db):
-    _put(APP, "treat_schedule", {"daily_cap": 5, "default_multiplier": 1.0, "max_per_hour": 3, "windows": []})
+TS = {"default_multiplier": 1.0, "windows": []}
+
+
+@pytest.fixture()
+def pushes(monkeypatch):
+    sent = []
+
+    async def fake_push(**kw):
+        sent.append(kw)
+        return "sent"
+    from app.services import push_service
+    monkeypatch.setattr(push_service, "send_push", fake_push)
+    return sent
+
+
+def test_treat_caps_changeable_by_app_connector_and_agent(temp_db, pushes):
+    """2026-11-09: no actor is stuck with the default 10/day; AIs raising a limit alert the owner."""
+    assert _put(APP, "treat_schedule", {**TS, "daily_cap": 5, "max_per_hour": 3})["value"]["daily_cap"] == 5
+    assert pushes == []                                            # the owner's own change: no alert
+    assert _put(CONN, "treat_schedule", {**TS, "daily_cap": 8, "max_per_hour": 3})["value"]["daily_cap"] == 8
+    assert len(pushes) == 1 and "5 → 8" in pushes[0]["body"] and pushes[0]["data"]["kind"] == "treat_limit_raised"
+    assert _put(AGENT, "treat_schedule", {**TS, "daily_cap": 100, "max_per_hour": 10})["value"]["daily_cap"] == 100
+    assert len(pushes) == 2 and "voice assistant" in pushes[1]["body"] and "hourly treat limit 3 → 10" in pushes[1]["body"]
+    assert _put(CONN, "treat_schedule", {**TS, "daily_cap": 4, "max_per_hour": 2})["value"]["daily_cap"] == 4
+    assert len(pushes) == 2                                        # lowering: no alert
+    with pytest.raises(HTTPException) as e:                        # bounds still apply to everyone
+        _put(CONN, "treat_schedule", {**TS, "daily_cap": 101, "max_per_hour": 2})
+    assert e.value.status_code == 422
+
+
+def test_robot_may_write_treat_schedule_only(temp_db):
+    from app.models import SettingPut
+    from app.routers import dog_settings
+    robot = Actor(kind="robot", id="wimz_t1", user_id="user_t1", device_id="wimz_t1")
+    row = asyncio.run(dog_settings.put_setting(
+        "dog_t1", "treat_schedule", SettingPut(value={**TS, "daily_cap": 100, "max_per_hour": 3}), robot))
+    assert row["value"]["daily_cap"] == 100
+    assert settings_service.check_treat_cap("dog_t1", AGENT)["treat_cap"] == 100
     with pytest.raises(HTTPException) as e:
-        _put(CONN, "treat_schedule", {"daily_cap": 8, "default_multiplier": 1.0, "max_per_hour": 3, "windows": []})
-    assert e.value.detail["guard"] == "treat_cap_lower_only"
-    assert _put(CONN, "treat_schedule", {"daily_cap": 3, "default_multiplier": 1.0, "max_per_hour": 3, "windows": []})["value"]["daily_cap"] == 3
+        asyncio.run(dog_settings.put_setting(
+            "dog_t1", "quiet_hours", SettingPut(value={"enabled": True, "start": "22:00", "end": "07:00"}), robot))
+    assert e.value.detail["code"] == "robot_read_only"
+    other = Actor(kind="robot", id="wimz_x", user_id="someone_else", device_id="wimz_x")
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(dog_settings.put_setting(
+            "dog_t1", "treat_schedule", SettingPut(value={**TS, "daily_cap": 50, "max_per_hour": 3}), other))
+    assert e.value.detail["code"] == "dog_not_owned_by_device_owner"
+
+
+def _sync(msg, device_id="wimz_t1", user_id="user_t1"):
+    return asyncio.run(settings_service.sync_treat_limits_from_app_message(user_id, device_id, msg))
+
+
+def test_app_sg_config_mirrors_treat_limit(temp_db):
+    import app.database as db
+    db.create_device_pairing("user_t1", "wimz_t1")
+    db.link_device_dog("wimz_t1", "dog_t1")
+    row = _sync({"type": "sg_config", "data": {"max_treats_per_day": 100}})      # dog from the robot's pairing
+    assert row["value"]["daily_cap"] == 100 and row["value"]["max_per_hour"] == 3
+    assert _sync({"type": "sg_config", "data": {"max_treats_per_day": 100}}) is None   # unchanged: no write
+    row = _sync({"type": "sg_config", "dog_id": "dog_t1", "config": {"treat_limit": "25", "max_treats_per_hour": 6}})
+    assert row["value"]["daily_cap"] == 25 and row["value"]["max_per_hour"] == 6 and row["version"] == 2
+    assert _sync({"type": "sg_config", "data": {"sensitivity": "high"}}) is None     # no treat field
+    assert _sync({"type": "sg_config", "data": {"daily_cap": 500}}) is None           # out of bounds: ignored
+    assert _sync({"type": "sg_config", "data": {"daily_cap": 50}}, user_id="stranger") is None   # not their dog
+    assert settings_service.get_value("dog_t1", "treat_schedule")["daily_cap"] == 25
 
 
 def test_treat_cap_enforced(temp_db):

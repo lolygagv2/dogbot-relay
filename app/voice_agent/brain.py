@@ -293,6 +293,13 @@ class Brain:
             return toks + verbs
         if change["tool"] == "set_treat_schedule":
             ws = r.get("windows") or []
+            limit_changed = (r.get("daily_cap") != r.get("previous_daily_cap")
+                             or r.get("max_per_hour") != r.get("previous_max_per_hour"))
+            if limit_changed:
+                if r.get("daily_cap") != r.get("previous_daily_cap"):
+                    return [f"{r.get('daily_cap')} a day", f"{r.get('daily_cap')} treats", f"{r.get('daily_cap')} per day"]
+                h = r.get("max_per_hour")
+                return ["no hourly limit"] if h == 0 else [f"{h} an hour", f"{h} per hour", f"{h} treats an hour"]
             if not ws:
                 return ["no treat windows", "cleared", "removed"]
             toks = []
@@ -335,6 +342,12 @@ class Brain:
                 return f"Coach mode {r.get('coach')} was simulated, because no live robot is connected."
             return ("I've told the robot to start Coach mode." if r.get("coach") == "on"
                     else "I've told the robot to stop Coach mode and go to standby.")
+        if change["tool"] == "set_treat_schedule" and (
+                r.get("daily_cap") != r.get("previous_daily_cap")
+                or r.get("max_per_hour") != r.get("previous_max_per_hour")):
+            hourly = r.get("max_per_hour")
+            per_hour = "no hourly limit" if hourly == 0 else f"at most {hourly} an hour"
+            return f"The treat limit is now {r.get('daily_cap')} a day, {per_hour}."
         if change["tool"] == "set_treat_schedule":
             ws = r.get("windows") or []
             dm = r.get("default_multiplier")
@@ -370,6 +383,8 @@ class Brain:
                 "robot_offline": "the robot is offline",
                 "notify_rules_limit": "the dog already has the maximum of 10 notification rules",
                 "windows_overlap": "those treat windows overlap",
+                "invalid_daily_cap": "the daily treat cap has to be between 0 and 100",
+                "invalid_max_per_hour": "the hourly treat limit has to be between 0 and 60",
             }
             parts.append("I couldn't do that because " + reasons.get(refused[0], refused[0].replace("_", " ")) + ".")
         if not parts:

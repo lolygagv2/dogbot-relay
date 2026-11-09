@@ -68,10 +68,17 @@ async def get_setting(dog_id: str, key: str, actor: Actor = Depends(resolve_acto
     return _row_out(settings_service.get_setting(dog_id, key))
 
 
+# Settings a robot may write back (HMAC-authenticated, for dogs its owner owns). Everything
+# else stays read-only for robots. treat_schedule: a treat limit changed on the robot syncs
+# here so the app, the robot and the AI assistants all read the same cap (2026-11-09).
+ROBOT_WRITABLE_KEYS = {"treat_schedule"}
+
+
 @router.put("/api/dogs/{dog_id}/settings/{key}")
 async def put_setting(dog_id: str, key: str, body: SettingPut, actor: Actor = Depends(resolve_actor)):
-    if actor.kind == "robot":
-        raise HTTPException(status_code=403, detail={"code": "robot_read_only"})
+    if actor.kind == "robot" and key not in ROBOT_WRITABLE_KEYS:
+        raise HTTPException(status_code=403, detail={"code": "robot_read_only",
+                                                     "writable": sorted(ROBOT_WRITABLE_KEYS)})
     check_dog_access(actor, dog_id, write=True)
     row = await settings_service.put_setting(dog_id, key, body.value, actor, body.expected_version)
     return _row_out(row)

@@ -56,14 +56,45 @@ def test_treat_windows_written_and_read_back(temp_db):
     assert saved["windows"] == r["windows"] and saved["default_multiplier"] == 1.5
 
 
-def test_treat_schedule_never_touches_caps(temp_db):
+def test_windows_only_change_keeps_caps(temp_db):
     run(settings_service.put_setting("dog_t1", "treat_schedule",
                                      {"daily_cap": 4, "max_per_hour": 2, "default_multiplier": 1, "windows": []}, OWNER))
     r = treat([{"start": "22:00", "end": "02:00", "multiplier": 3}])     # wraps midnight
     assert r["ok"] and r["daily_cap"] == 4 and r["default_multiplier"] == 1
     saved = settings_service.get_value("dog_t1", "treat_schedule")
     assert saved["daily_cap"] == 4 and saved["max_per_hour"] == 2
-    assert "daily_cap" not in inspect.signature(settings_tools.set_treat_schedule).parameters
+
+
+def caps(**kw):
+    return run(settings_tools.set_treat_schedule(LocalClient(), "dog_t1", **kw))
+
+
+def test_tool_raises_and_lowers_caps_keeping_windows(temp_db, monkeypatch):
+    sent = []
+
+    async def fake_push(**kw):
+        sent.append(kw)
+        return "sent"
+    from app.services import push_service
+    monkeypatch.setattr(push_service, "send_push", fake_push)
+    treat([{"start": "08:00", "end": "09:00", "multiplier": 2}])
+    r = caps(daily_cap=100, max_per_hour=0)                       # from the defaults 10 / 3
+    assert r["ok"] and r["daily_cap"] == 100 and r["max_per_hour"] == 0
+    assert r["previous_daily_cap"] == 10 and r["previous_max_per_hour"] == 3 and r["owner_alerted"]
+    assert r["windows"] == [{"start": "08:00", "end": "09:00", "multiplier": 2.0}]   # windows kept
+    assert len(sent) == 1 and "10 → 100" in sent[0]["body"] and sent[0]["user_id"] == "user_t1"
+    r = caps(daily_cap=20)                                        # lowering: no alert
+    assert r["ok"] and r["daily_cap"] == 20 and r["max_per_hour"] == 0 and "owner_alerted" not in r
+    assert len(sent) == 1
+
+
+def test_tool_cap_bounds_and_empty_call(temp_db):
+    assert caps(daily_cap=101)["reason"] == "invalid_daily_cap"
+    assert caps(daily_cap=-1)["reason"] == "invalid_daily_cap"
+    assert caps(daily_cap=2.5)["reason"] == "invalid_daily_cap"
+    assert caps(max_per_hour=61)["reason"] == "invalid_max_per_hour"
+    assert caps()["reason"] == "nothing_to_change"
+    assert settings_service.get_value("dog_t1", "treat_schedule")["daily_cap"] == 10
 
 
 def test_empty_list_clears_windows(temp_db):
@@ -147,7 +178,9 @@ def test_scope_registration_and_not_strict():
     from app.voice_agent import tools as vt
     t = {x["name"]: x for x in vt.TOOLS}
     assert not t["set_treat_schedule"].get("strict") and not t["set_notify_rule"].get("strict")
-    assert "daily_cap" not in t["set_treat_schedule"]["input_schema"]["properties"]
+    props = t["set_treat_schedule"]["input_schema"]["properties"]
+    assert "daily_cap" in props and "max_per_hour" in props
+    assert t["set_treat_schedule"]["input_schema"]["required"] == ["dog_id"]
     assert t["set_notify_rule"]["input_schema"]["required"] == ["dog_id", "event_type"]
 
 
@@ -173,3 +206,20 @@ def test_agent_readback():
           "cooldown_s": 600, "when": {"min_duration_s": 30.0, "severity_in": ["med", "high"]}}}}
     assert Brain._readback_sentence(ch) == ("You'll now get a notification for each bark episode, med severity or higher, "
                                             "at least 30 seconds, at most once every 600 seconds, with a photo.")
+
+
+def test_voice_readback_for_cap_change():
+    from app.voice_agent.brain import Brain
+    ch = {"tool": "set_treat_schedule", "result": {"ok": True, "windows": [], "daily_cap": 100, "previous_daily_cap": 10,
+                                                   "max_per_hour": 0, "previous_max_per_hour": 3}}
+    assert Brain._readback_sentence(ch) == "The treat limit is now 100 a day, no hourly limit."
+    assert "100 a day" in Brain._readback_tokens(ch) and "0" not in Brain._readback_tokens(ch)
+
+
+def test_agent_dispatch_sets_cap(temp_db):
+    from app.voice_agent import tools as vt
+    ctx = vt.ToolContext(user_id="user_t1", source="phone")
+    ctx.client = LocalClient()
+    r = run(vt.dispatch(ctx, "set_treat_schedule", {"dog_id": "dog_t1", "daily_cap": 30}))
+    assert r["ok"] and r["daily_cap"] == 30 and r["previous_daily_cap"] == 10
+    assert settings_service.get_value("dog_t1", "treat_schedule")["daily_cap"] == 30

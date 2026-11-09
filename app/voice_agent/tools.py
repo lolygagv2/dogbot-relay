@@ -95,14 +95,16 @@ TOOLS: list[dict] = [
          "dog_id": _str("dog id"), "days": {"type": "integer", "description": "1-730, default 30"}},
          "required": ["dog_id"]}},
     {"name": "set_treat_schedule",
-     "description": "Replace the treat-time windows. windows: list of {start, end, multiplier}; start/end HH:MM 24h local (may wrap midnight, no overlaps, at most 12); multiplier 0-3 scales treat frequency inside the window. Empty list clears them. default_multiplier (0-3, optional) applies outside windows. The daily treat cap is owner-only and never changes here. Say back the saved windows.",
+     "description": "Change treat windows and limits; omitted fields keep their value. windows: list of {start, end, multiplier}; start/end HH:MM 24h local (may wrap midnight, no overlaps, at most 12); multiplier 0-3 scales treat frequency inside the window. Empty list clears them. default_multiplier (0-3) applies outside windows. daily_cap (0-100) = most treats per day; max_per_hour (0-60, 0 = no hourly limit). Only change a limit when the owner says the number. Raising a limit alerts the owner. Say back what was saved.",
      "input_schema": {"type": "object", "properties": {
          "dog_id": _str("dog id"),
          "windows": {"type": "array", "items": {"type": "object", "properties": {
              "start": _str("HH:MM"), "end": _str("HH:MM"), "multiplier": {"type": "number", "description": "0-3"}},
              "required": ["start", "end", "multiplier"]}},
-         "default_multiplier": {"type": "number", "description": "0-3; omit to keep"}},
-         "required": ["dog_id", "windows"]}},
+         "default_multiplier": {"type": "number", "description": "0-3; omit to keep"},
+         "daily_cap": {"type": "integer", "description": "0-100 treats per day; omit to keep"},
+         "max_per_hour": {"type": "integer", "description": "0-60 treats per hour, 0 = no hourly limit; omit to keep"}},
+         "required": ["dog_id"]}},
     {"name": "set_notify_rule",
      "description": "Add a phone notification rule. event_type: bark_episode, intervention, settle, pacing, departure, arrival, treat, music or mission_run. Optional: min_duration_s; severity (bark_episode only) low|med|high meaning at least that severe; attach none|still|clip; cooldown_s between pushes. At most 10 rules per dog; edits and removals are done in the app.",
      "input_schema": {"type": "object", "properties": {
@@ -285,7 +287,8 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             h.get("totals", {}).pop("success_rate", None)
             return h
         if name == "set_treat_schedule":
-            return await settings_tools.set_treat_schedule(c, dog_id, a.get("windows"), a.get("default_multiplier"))
+            return await settings_tools.set_treat_schedule(c, dog_id, a.get("windows"), a.get("default_multiplier"),
+                                                           a.get("daily_cap"), a.get("max_per_hour"))
         if name == "set_notify_rule":
             return await settings_tools.set_notify_rule(c, dog_id, str(a.get("event_type") or ""), a.get("min_duration_s"),
                                                         a.get("severity"), a.get("attach"), a.get("cooldown_s"))

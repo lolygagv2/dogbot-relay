@@ -36,8 +36,8 @@ provider = WimzOAuthProvider()
 INSTRUCTIONS = """WIM-Z is a home robot that keeps a dog company and coaches it while the owner is away.
 Use get_dogs first to learn the dog_id. Read tools return the owner's roll-ups, events and robot
 status; quote only numbers that appear in those results. Control tools are limited by the owner's
-consent scopes and by guards on the robot side: treats are capped per day, quiet hours can only be
-turned on or widened, and live video can never be turned on from here (with the photos / camera
+consent scopes and by guards on the robot side: treats are capped per day (set_treat_schedule can change
+the daily cap and hourly limit when the user asks), quiet hours can only be turned on or widened, and live video can never be turned on from here (with the photos / camera
 permissions you may fetch an event's snapshot or ask for a single new snapshot). When a tool returns
 refused=true, tell the user the reason plainly. To start or stop Silent Guardian (bark watch) now, use set_silent_guardian; for Coach mode (trick training) now, use set_coach. get_trick_history gives the dog's per-trick record. To run Silent Guardian, Coach mode or a training mission at a set time, use schedule_mission (it schedules immediately; there is no approval step), get_schedule to see what is scheduled and when it next fires, and cancel_mission to delete one. Only say something is scheduled on the robot when confirmed_by_robot is true. For supervised movement: take a photo, decide one move, take another photo. Turn to face away before driving away from something. Stop and explain after 8 move cycles, or after a full 360-degree search finds nothing."""
 

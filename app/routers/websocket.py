@@ -26,7 +26,7 @@ from app.database import (
     store_event as db_store_event,
 )
 from app.routers.device import get_device_data, update_device_online_status
-from app.services import push_service
+from app.services import push_service, settings_service
 from app.services.turn_service import turn_service
 
 logger = logging.getLogger(__name__)
@@ -1651,6 +1651,10 @@ async def websocket_app_endpoint(
                     # Build 48: treat_counter_set routing verification
                     if cmd_type == "treat_counter_set":
                         logger.info(f"RELAY: Routing treat_counter_set to device {target_device}")
+                    # 2026-11-09: the app saves its treat limit inside sg_config (sent to the robot);
+                    # mirror it into the relay's treat_schedule, which the robot and AI assistants read.
+                    if cmd_type in ("sg_config", "treat_config", "treat_schedule", "treat_settings"):
+                        await settings_service.sync_treat_limits_from_app_message(user_id, target_device, message)
                 else:
                     # Check why it failed
                     if not manager.is_robot_online(target_device):
@@ -2275,6 +2279,10 @@ async def websocket_generic_endpoint(
                             # Build 48: treat_counter_set routing verification
                             if cmd_type == "treat_counter_set":
                                 logger.info(f"RELAY: Routing treat_counter_set to device {target_device}")
+                            # 2026-11-09: the app saves its treat limit inside sg_config (sent to the robot);
+                            # mirror it into the relay's treat_schedule, which the robot and AI assistants read.
+                            if cmd_type in ("sg_config", "treat_config", "treat_schedule", "treat_settings"):
+                                await settings_service.sync_treat_limits_from_app_message(identifier, target_device, message)
                         else:
                             logger.warning(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type} FAILED")
                     else:
