@@ -317,7 +317,7 @@ def test_tool_descriptions_and_instructions():
 
 
 def test_treat_limits_are_account_wide(temp_db, pushes):
-    """Limits set on one dog (by any actor) are copied to the owner's other dogs; windows stay per dog."""
+    """treat_schedule set on one dog (by any actor) is copied to the owner's other dogs, windows too."""
     import app.database as db
     db.create_dog(dog_id="dog_t2", name="Bea", user_id="user_t1")
     db.add_user_dog("user_t1", "dog_t2", "owner")
@@ -326,13 +326,13 @@ def test_treat_limits_are_account_wide(temp_db, pushes):
     db.add_user_dog("user_t9", "dog_t9", "owner")
     win = [{"start": "08:00", "end": "09:00", "multiplier": 2.0}]
     _put(APP, "treat_schedule", {**TS, "daily_cap": 40, "max_per_hour": 0})
-    asyncio.run(settings_service.put_setting("dog_t2", "treat_schedule",
-                {**TS, "windows": win, "daily_cap": 40, "max_per_hour": 0}, APP))       # dog_t2's own windows
-    _put(AGENT, "treat_schedule", {**TS, "daily_cap": 2, "daily_cap_enabled": False, "max_per_hour": 4})
+    assert settings_service.get_value("dog_t2", "treat_schedule")["daily_cap"] == 40      # copied
+    _put(AGENT, "treat_schedule", {**TS, "windows": win, "daily_cap": 2, "daily_cap_enabled": False,
+                                   "max_per_hour": 4, "default_multiplier": 0.5})
     t2 = settings_service.get_value("dog_t2", "treat_schedule")
     assert (t2["daily_cap"], t2["daily_cap_enabled"], t2["max_per_hour"]) == (2, False, 4)   # copied
-    assert t2["windows"] == win                                                            # untouched
+    assert t2["windows"] == win and t2["default_multiplier"] == 0.5                        # copied too
     assert settings_service.get_value("dog_t9", "treat_schedule")["daily_cap"] == 10       # other owner
     assert len(pushes) == 1 and "all your dogs" in pushes[0]["body"]                       # one alert
     audit = db.list_settings_audit("dog_t2", 5)
-    assert audit[0]["actor"] == "agent" and "account-wide" in (audit[0]["reason"] or "")
+    assert audit[0]["actor"] == "agent" and "account-wide treat schedule" in (audit[0]["reason"] or "")

@@ -388,13 +388,13 @@ def effective_daily_cap(value: Any) -> Optional[int]:
     return ts.daily_cap if ts.daily_cap_enabled else None
 
 
-# The treat LIMITS are account-wide (the app has one Settings control for all dogs): a change
-# for one dog is copied to every other dog of the same owner. Windows stay per dog.
-ACCOUNT_WIDE_TREAT_FIELDS = ("daily_cap", "daily_cap_enabled", "max_per_hour")
+# treat_schedule is account-wide (the app has one Settings control for all dogs): a change
+# for one dog is copied to every other dog of the same owner - limits, windows and multiplier.
+ACCOUNT_WIDE_TREAT_FIELDS = ("daily_cap", "daily_cap_enabled", "max_per_hour", "windows", "default_multiplier")
 
 
 async def _propagate_treat_limits(dog_id: str, actor: Actor, value: dict) -> int:
-    """Copy the account-wide treat limit fields to the owner's other dogs. Never raises."""
+    """Copy the account-wide treat_schedule fields to the owner's other dogs. Never raises."""
     from app.auth import check_dog_access
     from app.database import get_owned_dog_ids
     copied = 0
@@ -416,7 +416,7 @@ async def _propagate_treat_limits(dog_id: str, actor: Actor, value: dict) -> int
             if row is None:
                 continue
             insert_settings_audit(other, "treat_schedule", actor.label, "put", cur["value"], new,
-                                  f"account-wide treat limit (set on {dog_id})")
+                                  f"account-wide treat schedule (set on {dog_id})")
             await push_settings_to_robot(other, "treat_schedule", row)
             copied += 1
     except Exception as e:  # pragma: no cover - defensive

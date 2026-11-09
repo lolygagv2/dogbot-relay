@@ -446,9 +446,8 @@ def register_tools(mcp: MCPServer) -> None:
         (0-3) applies outside any window. daily_cap (0-100) is the most treats per local day;
         daily_cap_enabled=false removes the daily cap (unlimited; daily_cap null in results),
         true puts it back;
-        max_per_hour (0-60, 0 = no hourly limit) is the most per rolling hour. The limits (daily_cap,
-        daily_cap_enabled, max_per_hour) are account-wide: they apply to all the owner's dogs; windows
-        and default_multiplier are per dog. Only change a limit
+        max_per_hour (0-60, 0 = no hourly limit) is the most per rolling hour. The whole treat schedule
+        (limits, windows, default_multiplier) is account-wide: it applies to all the owner's dogs. Only change a limit
         when the user asks for that number. Raising a limit sends the owner a phone alert. The
         result reads back the saved schedule and the previous limits; quote them to the user."""
         client, user_id = _client("set_treat_schedule")
