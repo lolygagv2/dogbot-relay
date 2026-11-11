@@ -681,7 +681,7 @@ class CommandRequest(BaseModel):
     command: Literal[
         "dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move",
         "take_photo", "standby", "run_trick", "listen", "play_tts",  # play_tts: voice agent only (allowlist)
-        "schedule_sync",
+        "schedule_sync", "smart_plug",
     ]
     data: dict = Field(default_factory=dict)
     device_id: Optional[str] = None

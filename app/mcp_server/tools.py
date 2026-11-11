@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_trick_history, get_missions, get_robot_status, get_schedule
-Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_coach, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, speak
+Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_coach, set_smart_plug, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, speak
 Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
@@ -30,6 +30,7 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
+from app.services.robot_control import SMART_PLUG_ASSISTANT_ACTIONS, SMART_PLUG_WAIT_S, smart_plug_tool_result
 from app.services import schedule_tools, settings_tools
 from app.services.event_store import cue_rates as event_store_rates
 
@@ -417,6 +418,25 @@ def register_tools(mcp: MCPServer) -> None:
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return coach_mode_tool_result(bool(on), res)
+
+    @mcp.tool(name="set_smart_plug", annotations=CONTROL)
+    @audited("set_smart_plug")
+    async def set_smart_plug(dog_id: str, action: str) -> dict:
+        """Switch or check the robot's smart plug, which powers an Adaptil calming-pheromone
+        diffuser. action: on, off or status. Silent Guardian switches it on by itself at a level 2+
+        intervention and off 2 hours later; on/off here is a manual override, so the robot will not
+        switch it off by itself afterwards. available=false means the plug is not available (it may
+        be unplugged): say so plainly, it is not a fault. Setting up a plug is done in the app."""
+        client, user_id = _client("set_smart_plug")
+        _check_dog(user_id, dog_id)
+        action = str(action or "").strip().lower()
+        if action not in SMART_PLUG_ASSISTANT_ACTIONS:
+            raise ToolError("action must be on, off or status")
+        try:
+            res = await client.command(dog_id, "smart_plug", {"action": action}, wait_s=SMART_PLUG_WAIT_S)
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return smart_plug_tool_result(action, res)
 
     @mcp.tool(name="get_trick_history", annotations=READ)
     @audited("get_trick_history")

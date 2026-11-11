@@ -1908,6 +1908,8 @@ STORABLE_EVENT_TYPES = {
     # Silent Guardian summaries + panic alerts (robot contract 2026-08-31).
     "sg_summary",
     "panic_alert",
+    # Smart plug (Adaptil diffuser) on/off changes (robot 248f9e5, 2026-11-11).
+    "smart_plug",
     "error",
 }
 

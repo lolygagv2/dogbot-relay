@@ -21,6 +21,7 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, move_tool_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
+from app.services.robot_control import SMART_PLUG_ASSISTANT_ACTIONS, SMART_PLUG_WAIT_S, smart_plug_tool_result
 from app.services import schedule_tools, settings_tools
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,11 @@ TOOLS: list[dict] = [
      "input_schema": {"type": "object", "properties": {
          "dog_id": _str("dog id"), "on": {"type": "boolean", "description": "true = on, false = off (standby)"}},
          "required": ["dog_id", "on"]}},
+    {"name": "set_smart_plug",   # not strict (strict cap 20)
+     "description": "Switch or check the smart plug that powers the calming (Adaptil) diffuser. action: on, off or status. Silent Guardian turns it on by itself and off 2 hours later; on/off here is a manual override. If available is false, say the plug is not available (maybe unplugged); it is not a fault.",
+     "input_schema": {"type": "object", "properties": {
+         "dog_id": _str("dog id"), "action": _str("on, off or status", sorted(SMART_PLUG_ASSISTANT_ACTIONS))},
+         "required": ["dog_id", "action"]}},
     {"name": "get_trick_history",
      "description": "The dog's trick record from Coach cues: per trick attempts, successes, success_pct, avg latency and last attempt, plus recent attempts and totals. days 1-730 (default 30).",
      "input_schema": {"type": "object", "properties": {
@@ -281,6 +287,13 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             on = bool(a.get("on"))
             res = await c.command(dog_id, "set_mode", coach_mode_command(on))
             return coach_mode_tool_result(on, res)
+        if name == "set_smart_plug":
+            action = str(a.get("action") or "").strip().lower()
+            if action not in SMART_PLUG_ASSISTANT_ACTIONS:
+                return {"ok": False, "refused": True, "reason": "smart_plug_action_not_allowed",
+                        "allowed": sorted(SMART_PLUG_ASSISTANT_ACTIONS)}
+            res = await c.command(dog_id, "smart_plug", {"action": action}, wait_s=SMART_PLUG_WAIT_S)
+            return smart_plug_tool_result(action, res)
         if name == "get_trick_history":
             h = await c.trick_history(dog_id, max(1, min(int(a.get("days") or 30), 730)), 5)
             for t in h.get("tricks", []):

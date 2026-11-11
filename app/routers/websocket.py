@@ -110,12 +110,26 @@ LEGACY_TO_ACTIVITY_TYPE = {
     "mission_complete": "mission_completed",
     "mission_progress": "mission_progress",
     "mission_stopped": "mission_stopped",
+    # Smart plug (Adaptil diffuser) on/off changes (robot 248f9e5, 2026-11-11). Own activity
+    # type, so no push: plug changes are informational, and plug_unreachable is never an alert.
+    "smart_plug": "smart_plug",
 }
 
 # Robot events routed to the "guardian" activity type. Their meaningful fields
 # sit at the message top level rather than nested under "data", so everything
 # outside the envelope below is merged into the stored payload.
 _GUARDIAN_LIKE_EVENTS = {"guardian", "sg_summary", "panic_alert"}
+# Other events whose fields may sit at the top level: flattened the same way.
+_FLATTENED_EVENTS = _GUARDIAN_LIKE_EVENTS | {"smart_plug"}
+# Robot events that may arrive as {"type": X} without an "event" key; they are given
+# "event": X so they take the legacy event path (store, activity history, forward).
+_TYPE_AS_EVENT = {"smart_plug"}
+
+
+def _normalize_robot_event(message: dict) -> None:
+    t = message.get("type")
+    if t in _TYPE_AS_EVENT and "event" not in message:
+        message["event"] = t
 
 # Message-envelope keys — routing/transport metadata that must never be copied
 # into an activity payload when flattening a top-level robot event.
@@ -236,7 +250,7 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
         # been lost. "event" is deliberately merged too — it is what tells the
         # app and the push mapper which of the three folded event types this row
         # came from.
-        if event_name in _GUARDIAN_LIKE_EVENTS:
+        if event_name in _FLATTENED_EVENTS:
             extra = {k: v for k, v in message.items() if k not in _ENVELOPE_KEYS}
             data = {**data, **extra}
             data.setdefault("event", event_name)
@@ -947,6 +961,7 @@ async def websocket_device_endpoint(
                 continue
 
             msg_type = message.get("type")
+            _normalize_robot_event(message)
 
             # Buffer event for offline replay (stamps seq/ts_server in-place)
             maybe_buffer_event(device_id, message)
@@ -1948,6 +1963,7 @@ async def websocket_generic_endpoint(
 
             # Buffer event for offline replay (legacy /ws robot path)
             if connection_type == "robot":
+                _normalize_robot_event(message)
                 maybe_buffer_event(identifier, message)
                 # Retain latest network_state for late-connecting app sessions
                 _maybe_retain_network_state(identifier, message)

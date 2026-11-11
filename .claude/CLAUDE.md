@@ -103,7 +103,7 @@ CLOUDFLARE_TURN_API_TOKEN=your_turn_api_token
 | GET /summary/{dog}/{date} | Daily roll-up per dog (today / yesterday / YYYY-MM-DD) |
 | GET /api/dogs/{dog}/events, /status | Raw events; latest robot status + treat/quiet-hours context |
 | GET/PUT /api/dogs/{dog}/settings/{key} | Shared settings with guards (app, connector, agent; robot reads all, writes only `treat_schedule`). Treat cap/hourly limit: changeable by every actor (0-100 / 0-60); an AI raising one pushes the owner an alert; the app's Settings treat limit (`mission_config` `data.daily_limit` / `daily_limit_enabled`; off = unlimited via `daily_cap_enabled: false`) is mirrored, debounced 1 s, into `treat_schedule`. `treat_schedule` is account-wide: a change on one dog is copied to all the owner's dogs |
-| POST /api/dogs/{dog}/command | Allowlisted robot control (+ `wait_s` for command_result) |
+| POST /api/dogs/{dog}/command | Allowlisted robot control (+ `wait_s` for command_result). `smart_plug` (diffuser plug on the robot's LAN): app any action, assistants on/off/status only; robot `smart_plug` events → own activity type, no push |
 | /api/dogs/{dog}/missions/drafts | Assistant-proposed missions, owner approves in app |
 | /api/dogs/{dog}/ai/* | Connector list / revoke / audit for the app |
 | /admin/replay/* | Demo replayer (admin JWT) |

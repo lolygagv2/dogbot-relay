@@ -34,13 +34,13 @@ MOVE_ACTIONS: dict[str, tuple[str, int, int, int]] = {
 
 # What each actor kind may ask for. "relay" = departure triggers (not reachable over HTTP).
 ACTOR_ALLOWED: dict[str, set[str]] = {
-    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync"},
-    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync"},
-    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen", "schedule_sync"},
+    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug"},
+    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug"},
+    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen", "schedule_sync", "smart_plug"},
     # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
     # server) — never with HUD, max one per 0.5 s per assistant. (Quiet hours no longer apply:
     # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
-    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen", "schedule_sync"},
+    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen", "schedule_sync", "smart_plug"},
     # play_tts for "relay" = speak(): the URL is always a relay-made WIM-Z voice clip.
     "relay":     {"start_mission", "play_music", "play_tts"},
 }
@@ -48,6 +48,12 @@ ACTOR_ALLOWED: dict[str, set[str]] = {
 MOVE_WAIT_S = 8   # callers wait this long for the step's command_result
 LISTEN_MAX_S = 15   # listen: record 1-15 s; the clip is kept 1 hour (media_files.AUDIO_TTL_S)
 LISTEN_EXTRA_WAIT_S = 10   # callers wait seconds + this for the robot's command_result
+
+# smart_plug (robot 248f9e5, 2026-11-11): the robot switches a WiFi plug on its own LAN (Adaptil
+# diffuser). The plug choice lives on the robot only; the relay just validates and passes through.
+SMART_PLUG_ACTIONS = {"status", "on", "off", "toggle", "scan", "configure", "remove"}
+SMART_PLUG_ASSISTANT_ACTIONS = {"status", "on", "off"}   # connectors and the voice agent
+SMART_PLUG_WAIT_S = 16   # the robot answers within 15 s (scan ~3 s, ~7 s when the plug is absent)
 
 
 def move_tool_result(action: str, res: dict) -> dict:
@@ -136,6 +142,32 @@ def listen_tool_result(res: dict) -> tuple[dict, Optional[str]]:
         from app.services.media_files import AUDIO_TTL_S
         out["clip_expires_in_s"] = AUDIO_TTL_S
     return out, clip
+
+
+def smart_plug_tool_result(action: str, res: dict) -> dict:
+    """Shape a dispatch() result for the set_smart_plug tools. plug_unreachable is not a fault
+    (the plug may simply be unplugged): it is reported as available=false, never as an alert."""
+    if res.get("simulated"):
+        return {"ok": False, "reason": "robot_offline_demo", "simulated": True}
+    if res.get("timed_out"):
+        return {"ok": False, "reason": "smart_plug_timed_out", "command_id": res.get("command_id")}
+    r = res.get("result") or {}
+    inner = r.get("result") if isinstance(r.get("result"), dict) else {}
+    out: dict[str, Any] = {"ok": bool(r.get("ok", True)), "action": action, "command_id": res.get("command_id")}
+    for k in ("configured", "alias", "on", "reachable", "owner", "auto_off_in_s", "auto_off_at",
+              "trigger_level", "auto_off_minutes", "last_change", "last_error"):
+        if isinstance(inner.get(k), (str, int, float, bool)):
+            out[k] = inner[k][:120] if isinstance(inner[k], str) else inner[k]
+    err = r.get("error")
+    code = err.get("code") if isinstance(err, dict) else err
+    if code:
+        out["error"] = str(code)[:64]
+    if code == "plug_unreachable" or inner.get("reachable") is False:
+        out["available"] = False
+        out["message"] = "Plug not available (it may be unplugged). This is not a fault."
+    elif code == "no_plug" or inner.get("configured") is False:
+        out["message"] = "No smart plug is set up on the robot; the owner sets one up in the app."
+    return out
 
 
 PHOTO_MIN_INTERVAL_S = 0.5   # connectors: snapshot-move-snapshot loops need fast stills
@@ -264,6 +296,34 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
                 raise HTTPException(status_code=422, detail={"code": "listen_seconds_out_of_range", "seconds": raw,
                                                              "min": 1, "max": LISTEN_MAX_S})
             out = ("listen", {"seconds": seconds, "source": source, "command_id": command_id})
+        case "smart_plug":
+            action = str(data.get("action") or "")[:16]
+            if action not in SMART_PLUG_ACTIONS:
+                raise HTTPException(status_code=422, detail={"code": "invalid_action", "action": action,
+                                                             "allowed": sorted(SMART_PLUG_ACTIONS)})
+            if actor.kind in ("connector", "agent") and action not in SMART_PLUG_ASSISTANT_ACTIONS:
+                raise HTTPException(status_code=403, detail={"code": "smart_plug_action_not_allowed",
+                                                             "action": action,
+                                                             "allowed": sorted(SMART_PLUG_ASSISTANT_ACTIONS)})
+            plug: dict[str, Any] = {"action": action}
+            if action == "configure":
+                dev = data.get("device_id")
+                if not isinstance(dev, str) or not dev.strip():
+                    raise HTTPException(status_code=422, detail={"code": "missing_device_id"})
+                plug["device_id"] = dev.strip()[:128]
+                if data.get("alias") is not None:
+                    if not isinstance(data["alias"], str):
+                        raise HTTPException(status_code=422, detail={"code": "invalid_value", "field": "alias"})
+                    plug["alias"] = data["alias"].strip()[:64]
+                for field, lo, hi in (("trigger_level", 1, 4), ("auto_off_minutes", 1, 1440)):
+                    raw = data.get(field)
+                    if raw is None:
+                        continue   # omitted fields keep their value on the robot
+                    if isinstance(raw, bool) or not isinstance(raw, int) or not lo <= raw <= hi:
+                        raise HTTPException(status_code=422, detail={"code": "invalid_value", "field": field,
+                                                                     "value": raw, "min": lo, "max": hi})
+                    plug[field] = raw
+            out = ("smart_plug", {**plug, "source": source})
         case "run_trick":
             trick = str(data.get("trick") or "")[:64]
             if trick not in KNOWN_TRICKS:

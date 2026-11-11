@@ -30,6 +30,8 @@ FEED_WORTHY_EVENTS = {
     # guardian alerts do.
     "sg_summary",
     "panic_alert",
+    # Smart plug (Adaptil diffuser) on/off changes (robot 248f9e5, 2026-11-11).
+    "smart_plug",
 }
 
 # Transient event types: sequenced (they get a seq) but deliberately NOT
