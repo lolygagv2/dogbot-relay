@@ -14,6 +14,11 @@ and the robot answers with the usual command_result:
 (Shape confirmed against wimz_robot_05 on 2026-11-07.)
 next_fire_at is null for a mission that will not fire (disabled, or not a schedule trigger).
 
+One-time missions (robot d7f235b, 2026-11-12): trigger.date (YYYY-MM-DD, the dog's local date)
+makes the mission fire once at `time` on that date. The robot deletes it after the run (or 30 s
+after load if it is already more than 60 s past) and sends schedule_deleted {once: true, reason:
+"completed" | "date_passed"}; the relay's schedule_deleted sync then drops it from `missions`.
+
 Mission types: training missions (recall, sit_stay, ...) run up to 60 minutes; mode missions
 (silent_guardian, coach) put the robot in that mode for duration_s (up to 12 hours), then idle.
 """
@@ -21,6 +26,7 @@ from __future__ import annotations
 
 import re
 import secrets
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from app.models import MODE_MAX_DURATION_S, MODE_MISSION_TYPES, TRAINING_MAX_DURATION_S
@@ -34,6 +40,9 @@ TRAINING_MAX_MIN = TRAINING_MAX_DURATION_S // 60   # 60
 MODE_MAX_MIN = MODE_MAX_DURATION_S // 60           # 720
 MODE_MIN_MIN = 5
 SYNC_WAIT_S = 8
+ONCE_MAX_DAYS_AHEAD = 365
+ONCE_LATE_TOLERANCE_S = 60   # the robot still fires a one-time mission up to 60 s late
+_YMD = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _TYPE_LABEL = {"silent_guardian": "Silent Guardian", "coach": "Coach mode"}
 
@@ -71,6 +80,8 @@ async def robot_schedule(client: RelayClient, dog_id: str) -> dict:
     for m in raw[:100]:
         if isinstance(m, dict) and isinstance(m.get("id"), str):
             entry = {"enabled": bool(m.get("enabled", True)), "next_fire_at": _str_or_none(m.get("next_fire_at"))}
+            if isinstance(m.get("once"), bool):
+                entry["once"] = m["once"]
             # e.g. find_treat / spin: kept by the robot but next_fire_at null with a reason
             reason = next((m[k] for k in ("reason", "unsupported_reason", "status") if _str_or_none(m.get(k))), None)
             if reason:
@@ -95,6 +106,7 @@ def _summary(m: dict) -> dict:
     trig = m.get("trigger") or {}
     return {"id": m.get("id"), "name": m.get("name"), "type": m.get("type"), "enabled": m.get("enabled", True),
             "trigger": trig.get("kind"), "time": trig.get("time"), "days": trig.get("days"),
+            "date": trig.get("date"), "once": bool(trig.get("date")),
             "duration_min": round(int(m.get("duration_s") or 0) / 60, 1)}
 
 
@@ -157,14 +169,51 @@ async def _put_missions(client: RelayClient, dog_id: str, change) -> dict:
     raise AssertionError("unreachable")
 
 
+def resolve_once_date(dog_id: str, date: Optional[str], time: str) -> tuple[Optional[str], Optional[dict]]:
+    """date: None/"" (repeats weekly), "today", "tomorrow" or YYYY-MM-DD in the dog's local time.
+    Returns (YYYY-MM-DD or None, refusal or None)."""
+    if date is None or not str(date).strip():
+        return None, None
+    from app.services import settings_service
+    tz = settings_service.get_timezone(dog_id)
+    now = datetime.now(tz)
+    d = str(date).strip().lower()
+    if d == "today":
+        day = now.date()
+    elif d == "tomorrow":
+        day = now.date() + timedelta(days=1)
+    elif _YMD.match(d):
+        try:
+            day = datetime.strptime(d, "%Y-%m-%d").date()
+        except ValueError:
+            return None, _refused("date_must_be_YYYY-MM-DD")
+    else:
+        return None, _refused("date_must_be_YYYY-MM-DD")
+    h, m = int(time[:2]), int(time[3:])
+    run_at = datetime(day.year, day.month, day.day, h, m, tzinfo=tz)
+    if run_at < now - timedelta(seconds=ONCE_LATE_TOLERANCE_S):
+        return None, _refused("date_in_past", local_now=now.strftime("%Y-%m-%d %H:%M"))
+    if day > now.date() + timedelta(days=ONCE_MAX_DAYS_AHEAD):
+        return None, _refused("date_too_far_ahead", max_days=ONCE_MAX_DAYS_AHEAD)
+    return day.isoformat(), None
+
+
 async def schedule_mission(client: RelayClient, dog_id: str, type: str, time: str, days: Optional[list[str]] = None,
                            duration_min: Optional[int] = None, name: Optional[str] = None,
-                           reward_treats: Optional[int] = None, goal: str = "") -> dict:
+                           reward_treats: Optional[int] = None, goal: str = "",
+                           date: Optional[str] = None) -> dict:
+    """date set -> a one-time mission: runs once on that local date, then the robot deletes it."""
     if type not in ALL_TYPES:
         return _refused("unknown_mission_type", allowed=ALL_TYPES)
     if not isinstance(time, str) or not _HM.match(time):
         return _refused("time_must_be_HH:MM_24h")
-    days = [d for d in (days or []) if d in DAYS] or list(DAYS)
+    once, refusal = resolve_once_date(dog_id, date, time)
+    if refusal:
+        return refusal
+    if once:
+        days = [DAYS[datetime.strptime(once, "%Y-%m-%d").weekday()]]   # fallback for older robots
+    else:
+        days = [d for d in (days or []) if d in DAYS] or list(DAYS)
     is_mode = type in MODE_TYPES
     lo, hi, default = (MODE_MIN_MIN, MODE_MAX_MIN, 120) if is_mode else (1, TRAINING_MAX_MIN, 2)
     minutes = default if duration_min in (None, -1, 0) else int(duration_min)
@@ -172,11 +221,14 @@ async def schedule_mission(client: RelayClient, dog_id: str, type: str, time: st
         return _refused("duration_out_of_range", min_minutes=lo, max_minutes=hi)
     treats = 0 if is_mode else max(0, min(3, 1 if reward_treats in (None, -1) else int(reward_treats)))
     tl = type_label(type)
-    label = (name or "").strip() or f"{tl[0].upper()}{tl[1:]} at {time}"
+    label = (name or "").strip() or f"{tl[0].upper()}{tl[1:]} at {time}" + (f" on {once}" if once else "")
+    trigger: dict[str, Any] = {"kind": "schedule", "time": time, "delay_s": 0, "cooldown_s": 3600, "days": days}
+    if once:
+        trigger["date"] = once
     mission = {
-        "id": f"m_{type}_{time.replace(':', '')}_{secrets.token_hex(2)}",
+        "id": f"m_{type}_{once.replace('-', '') + '_' if once else ''}{time.replace(':', '')}_{secrets.token_hex(2)}",
         "type": type, "name": label[:120], "enabled": True,
-        "trigger": {"kind": "schedule", "time": time, "delay_s": 0, "cooldown_s": 3600, "days": days},
+        "trigger": trigger,
         "duration_s": max(10, minutes * 60), "reward_treats": treats, "goal": (goal or "")[:240],
     }
     warnings: list[str] = []
@@ -184,7 +236,8 @@ async def schedule_mission(client: RelayClient, dog_id: str, type: str, time: st
     def add(missions: list[dict]):
         for m in missions:
             t = m.get("trigger") or {}
-            if t.get("kind") == "schedule" and t.get("time") == time and m.get("enabled", True):
+            clash = not t.get("date") or not once or t.get("date") == once
+            if t.get("kind") == "schedule" and t.get("time") == time and m.get("enabled", True) and clash:
                 warnings.append(f"{m.get('name') or m.get('id')} is also scheduled at {time}.")
         return missions + [mission]
 
@@ -205,7 +258,8 @@ async def schedule_mission(client: RelayClient, dog_id: str, type: str, time: st
             if r.get("reason"):
                 out["robot_note"] = r["reason"]
     if out.get("next_fire_at"):
-        out["message"] = f"Scheduled on the robot; next run {out['next_fire_at']}."
+        out["message"] = (f"Scheduled once on the robot for {out['next_fire_at']}; it is deleted after it runs."
+                          if once else f"Scheduled on the robot; next run {out['next_fire_at']}.")
     elif out["confirmed_by_robot"]:
         out["message"] = f"The robot has it but will not run it ({out.get('robot_note') or 'no next run'})."
     else:

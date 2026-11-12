@@ -34,13 +34,13 @@ MOVE_ACTIONS: dict[str, tuple[str, int, int, int]] = {
 
 # What each actor kind may ask for. "relay" = departure triggers (not reachable over HTTP).
 ACTOR_ALLOWED: dict[str, set[str]] = {
-    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug"},
-    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug"},
-    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen", "schedule_sync", "smart_plug"},
+    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
+    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
+    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
     # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
     # server) — never with HUD, max one per 0.5 s per assistant. (Quiet hours no longer apply:
     # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
-    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen", "schedule_sync", "smart_plug"},
+    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
     # play_tts for "relay" = speak(): the URL is always a relay-made WIM-Z voice clip.
     "relay":     {"start_mission", "play_music", "play_tts"},
 }
@@ -142,6 +142,103 @@ def listen_tool_result(res: dict) -> tuple[dict, Optional[str]]:
         from app.services.media_files import AUDIO_TTL_S
         out["clip_expires_in_s"] = AUDIO_TTL_S
     return out, clip
+
+
+# ultrasonic (robot, 2026-11-12): the robot's tweeter, the same one Silent Guardian uses. App, admin and
+# assistants (connectors: opt-in "ultrasonic" scope, only when the owner asks). The robot also enforces its
+# enabled flag, a 20 s cooldown shared with Silent Guardian, and the caps below; the relay checks them
+# first so bad requests never reach it.
+ULTRASONIC_STYLES = {"before_quiet", "before_music", "nonstop_barking"}
+ULTRASONIC_FREQS_HZ = {20000, 25000, 32000, 40000}
+ULTRASONIC_MAX_LEVEL_PCT = 80
+ULTRASONIC_MAX_S = 5.0
+ULTRASONIC_WAIT_S = 10   # the burst is at most 5 s
+
+
+def _num_in(raw: Any, lo: float, hi: float) -> Optional[float]:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not lo <= raw <= hi:
+        return None
+    return raw
+
+
+def ultrasonic_payload(data: dict) -> dict:
+    """Validate one ultrasonic request: {action: status} | {style} | a custom burst. Raises 422."""
+    def bad(field: str, **extra):
+        raise HTTPException(status_code=422, detail={"code": "bad_request", "field": field, **extra})
+
+    if data.get("action") is not None:
+        if data["action"] != "status":
+            bad("action", allowed=["status"])
+        return {"action": "status"}
+    if data.get("style") is not None:
+        if data["style"] not in ULTRASONIC_STYLES:
+            bad("style", allowed=sorted(ULTRASONIC_STYLES))
+        return {"style": data["style"]}
+    out: dict[str, Any] = {}
+    for field in ("freq_hz", "alt_freq_hz"):
+        raw = data.get(field)
+        if raw is None and field == "alt_freq_hz":
+            continue
+        if isinstance(raw, bool) or raw not in ULTRASONIC_FREQS_HZ:
+            bad(field, value=raw, allowed=sorted(ULTRASONIC_FREQS_HZ))
+        out[field] = int(raw)
+    level = _num_in(data.get("level_pct"), 1, ULTRASONIC_MAX_LEVEL_PCT)
+    if level is None:
+        bad("level_pct", value=data.get("level_pct"), min=1, max=ULTRASONIC_MAX_LEVEL_PCT)
+    out["level_pct"] = level
+    dur = _num_in(data.get("duration_s"), 0.1, ULTRASONIC_MAX_S)
+    if dur is None:
+        bad("duration_s", value=data.get("duration_s"), min=0.1, max=ULTRASONIC_MAX_S)
+    out["duration_s"] = dur
+    for field in ("pulse_s", "gap_s"):
+        if data.get(field) is None:
+            continue
+        v = _num_in(data[field], 0.05, ULTRASONIC_MAX_S)
+        if v is None:
+            bad(field, value=data[field], min=0.05, max=ULTRASONIC_MAX_S)
+        out[field] = v
+    return out
+
+
+def ultrasonic_tool_result(res: dict) -> dict:
+    """Shape a dispatch() result for the ultrasonic tools; the robot's reply fields pass through."""
+    if res.get("simulated"):
+        return {"ok": False, "reason": "robot_offline_demo", "simulated": True}
+    if res.get("timed_out"):
+        return {"ok": False, "reason": "ultrasonic_timed_out", "command_id": res.get("command_id")}
+    r = res.get("result") or {}
+    out: dict[str, Any] = {"ok": bool(r.get("ok", True)), "command_id": res.get("command_id")}
+    if isinstance(r.get("result"), dict):
+        out["result"] = r["result"]
+    err = r.get("error")
+    if err:
+        out["error"] = err if isinstance(err, dict) else {"code": str(err)[:64]}
+    return out
+
+
+# look (robot d7f235b, 2026-11-12): one bounded camera pan/tilt step. Pan + is right, tilt + is up,
+# 0,0 = calibrated centre; ~30 deg/s. Never touches video.
+LOOK_ACTIONS = {"pan_left", "pan_right", "tilt_up", "tilt_down", "center"}
+LOOK_MIN_DEG, LOOK_MAX_DEG, LOOK_DEFAULT_DEG = 5, 45, 15
+LOOK_WAIT_S = 6   # the robot answers within 5 s
+
+
+def look_tool_result(action: str, res: dict) -> dict:
+    if res.get("simulated"):
+        return {"ok": False, "reason": "robot_offline_demo", "simulated": True}
+    if res.get("timed_out"):
+        return {"ok": False, "reason": "look_timed_out", "command_id": res.get("command_id")}
+    r = res.get("result") or {}
+    inner = r.get("result") if isinstance(r.get("result"), dict) else {}
+    out: dict[str, Any] = {"ok": bool(r.get("ok", True)), "action": action, "command_id": res.get("command_id")}
+    for k in ("pan", "tilt", "limit_reached", "moved_degrees"):
+        if isinstance(inner.get(k), (int, float, bool)):
+            out[k] = inner[k]
+    err = r.get("error")
+    code = err.get("code") if isinstance(err, dict) else err
+    if code:
+        out["error"] = str(code)[:64]
+    return out
 
 
 def smart_plug_tool_result(action: str, res: dict) -> dict:
@@ -324,6 +421,22 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
                                                                      "value": raw, "min": lo, "max": hi})
                     plug[field] = raw
             out = ("smart_plug", {**plug, "source": source})
+        case "ultrasonic":
+            out = ("ultrasonic", {**ultrasonic_payload(data), "dog_id": dog_id, "source": source})
+        case "look":
+            action = str(data.get("action") or "")[:16]
+            if action not in LOOK_ACTIONS:
+                raise HTTPException(status_code=422, detail={"code": "invalid_action", "action": action,
+                                                             "allowed": sorted(LOOK_ACTIONS)})
+            payload: dict[str, Any] = {"action": action}
+            if action != "center":
+                raw = data.get("degrees")
+                deg = LOOK_DEFAULT_DEG if raw is None else raw
+                if isinstance(deg, bool) or not isinstance(deg, (int, float)) or not LOOK_MIN_DEG <= deg <= LOOK_MAX_DEG:
+                    raise HTTPException(status_code=422, detail={"code": "invalid_value", "degrees": raw,
+                                                                 "min": LOOK_MIN_DEG, "max": LOOK_MAX_DEG})
+                payload["degrees"] = deg
+            out = ("look", {**payload, "source": source})
         case "run_trick":
             trick = str(data.get("trick") or "")[:64]
             if trick not in KNOWN_TRICKS:

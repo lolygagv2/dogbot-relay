@@ -346,3 +346,22 @@ def test_both_event_paths_call_the_hook():
     src = inspect.getsource(ws)
     assert src.count('if event_name == "schedule_deleted":') == 2
     assert src.count('if msg_type == "schedule_deleted":') == 2
+
+
+def test_schedule_one_time_mission(temp_db):
+    from datetime import datetime, timedelta
+    from app.services import settings_service
+    tomorrow = datetime.now(settings_service.get_timezone("dog_t1")).date() + timedelta(days=1)
+    weekday = st.DAYS[tomorrow.weekday()]
+    fake = FakeRelay(missions=[{"id": "m_weekly", "type": "recall", "enabled": True,
+                                "trigger": {"kind": "schedule", "time": "15:00", "days": ["mon"]}}])
+    out = run(st.schedule_mission(fake, "dog_t1", "silent_guardian", "15:00", ["mon", "tue"], 60, None,
+                                  date="tomorrow"))
+    assert out["ok"] and out["once"] is True and out["date"] == tomorrow.isoformat()
+    assert out["days"] == [weekday]                      # weekday fallback; given days are ignored
+    m = fake.missions[-1]
+    assert m["trigger"]["date"] == tomorrow.isoformat() and m["id"].startswith(f"m_silent_guardian_{tomorrow:%Y%m%d}_1500_")
+    assert "once" in out["message"]
+    assert any("15:00" in w for w in out["warnings"])  # still clashes with the weekly 15:00 mission
+    MissionDef.model_validate(m)
+    assert run(st.schedule_mission(fake, "dog_t1", "recall", "15:00", date="2020-01-01"))["reason"] == "date_in_past"

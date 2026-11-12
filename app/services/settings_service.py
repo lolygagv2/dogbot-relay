@@ -154,6 +154,13 @@ def validate_value(key: str, value: Any) -> Any:
         ids = [m.id for m in parsed.missions]
         if len(ids) != len(set(ids)):
             raise HTTPException(status_code=422, detail={"code": "invalid_value", "reason": "duplicate mission id"})
+        out = parsed.model_dump()
+        # One-time fields (2026-11-12) only when set: weekly missions reach the robot exactly as before.
+        for m in out["missions"]:
+            for k in ("date", "grace_s"):
+                if m["trigger"].get(k) is None:
+                    m["trigger"].pop(k, None)
+        return out
     return parsed.model_dump()
 
 

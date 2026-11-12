@@ -622,6 +622,10 @@ class MissionTrigger(BaseModel):
     delay_s: int = Field(default=300, ge=0, le=7200)
     cooldown_s: int = Field(default=7200, ge=0, le=86400)
     days: Optional[list[str]] = None
+    # One-time missions (robot d7f235b, 2026-11-12): fire only on this local date at `time`, ignoring
+    # `days`; the robot deletes the mission after the run and sends schedule_deleted {once: true}.
+    date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    grace_s: Optional[int] = Field(default=None, ge=0, le=3600)   # robot default: 60 s late still fires
 
 
 # Mode missions (2026-11-07): when one fires, the robot enters that mode for duration_s, then idle.
@@ -681,7 +685,7 @@ class CommandRequest(BaseModel):
     command: Literal[
         "dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move",
         "take_photo", "standby", "run_trick", "listen", "play_tts",  # play_tts: voice agent only (allowlist)
-        "schedule_sync", "smart_plug",
+        "schedule_sync", "smart_plug", "ultrasonic", "look",
     ]
     data: dict = Field(default_factory=dict)
     device_id: Optional[str] = None

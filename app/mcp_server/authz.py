@@ -25,18 +25,19 @@ from app.mcp_server import oauth_db
 
 logger = logging.getLogger(__name__)
 
-ALL_SCOPES = ["read", "settings", "missions", "physical", "photos", "camera", "listen"]
+ALL_SCOPES = ["read", "settings", "missions", "physical", "photos", "camera", "listen", "ultrasonic"]
 SCOPE_LABELS = {
     "read": "Read summaries, events and robot status",
     "settings": "Change quiet hours, music, Silent Guardian (on/off and sensitivity), Coach mode on/off, the diffuser smart plug on/off, treat-time windows and notification rules",
     "missions": "See, schedule and cancel missions (training, Silent Guardian, Coach)",
-    "physical": "Give a treat, move the robot or speak through it",
+    "physical": "Give a treat, move the robot or the camera, or speak through it",
     "photos": "See snapshots WIM-Z already took",
     "camera": "Ask WIM-Z to take a new snapshot (never live video)",
     "listen": "Ask WIM-Z to listen for up to 15 seconds and hear the recording",
+    "ultrasonic": "Play an ultrasonic tone through WIM-Z when you ask (up to 5 seconds)",
 }
 # Off by default on the consent screen even when requested (PHOTO ACCESS 2026-11-06).
-OPT_IN_SCOPES = {"photos", "camera", "listen"}
+OPT_IN_SCOPES = {"photos", "camera", "listen", "ultrasonic"}
 TOOL_SCOPES = {
     "get_dogs": "read", "get_day_summary": "read", "get_events": "read", "get_trend": "read",
     "get_missions": "read", "get_robot_status": "read",
@@ -44,8 +45,8 @@ TOOL_SCOPES = {
     "set_treat_schedule": "settings", "set_notify_rule": "settings", "set_coach": "settings", "set_smart_plug": "settings",
     "get_trick_history": "read",
     "get_schedule": "missions", "schedule_mission": "missions", "cancel_mission": "missions",
-    "give_treat": "physical", "go_to": "physical", "move": "physical", "speak": "physical",
-    "get_event_photo": "photos", "take_photo": "camera", "listen": "listen",
+    "give_treat": "physical", "go_to": "physical", "move": "physical", "speak": "physical", "look": "physical",
+    "get_event_photo": "photos", "take_photo": "camera", "listen": "listen", "play_ultrasonic": "ultrasonic",
 }
 
 

@@ -22,11 +22,14 @@ from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, m
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
 from app.services.robot_control import SMART_PLUG_ASSISTANT_ACTIONS, SMART_PLUG_WAIT_S, smart_plug_tool_result
+from app.services.robot_control import (LOOK_ACTIONS, LOOK_WAIT_S, ULTRASONIC_STYLES, ULTRASONIC_WAIT_S,
+                                        look_tool_result, ultrasonic_tool_result)
 from app.services import schedule_tools, settings_tools
 
 logger = logging.getLogger(__name__)
 
-PHYSICAL_TOOLS = {"give_treat", "go_to", "move", "take_photo", "listen", "run_trick", "standby", "speak"}
+PHYSICAL_TOOLS = {"give_treat", "go_to", "move", "look", "take_photo", "listen", "run_trick", "standby", "speak",
+                  "play_ultrasonic"}
 GO_TO_TARGETS = ["dog", "dock"]
 MOVE_ACTIONS = list(MOVE_SPEC)
 TRICKS = ["sit", "down", "stay", "spin", "place", "paw", "speak"]
@@ -126,14 +129,15 @@ TOOLS: list[dict] = [
      "description": "List scheduled missions and ask the robot what it has loaded: each has id, name, type, time (local HH:MM), days, duration_min and, when the robot confirms, next_fire_at. confirmed_by_robot false means it is the relay's copy only.",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
     {"name": "schedule_mission",
-     "description": "Schedule a mission now (no approval step). type: a training mission (1-60 min) or silent_guardian / coach (the robot enters that mode at the time for duration_min, 5-720, then goes idle). time HH:MM 24h local. Only say it is on the robot when confirmed_by_robot is true; say the next run in words (e.g. 'tomorrow at 6 pm'), never the raw timestamp.",
+     "description": "Schedule a mission now (no approval step). type: a training mission (1-60 min) or silent_guardian / coach (the robot enters that mode at the time for duration_min, 5-720, then goes idle). time HH:MM 24h local. It repeats every week on days, unless date is given: then it runs once on that date and is deleted. Only say it is on the robot when confirmed_by_robot is true; say the next run in words (e.g. 'tomorrow at 6 pm'), never the raw timestamp.",
      "input_schema": _schema({"dog_id": _str("dog id"), "type": _str("mission type", schedule_tools.ALL_TYPES),
                               "time": _str("HH:MM, 24h local time"),
                               "days": {"type": "array", "items": {"type": "string", "enum": schedule_tools.DAYS},
                                        "description": "days to run; empty array = every day"},
                               "duration_min": {"type": "integer", "description": "minutes; -1 for the default (2 for training, 120 for a mode)"},
-                              "name": _str("short name, or empty string")},
-                             ["dog_id", "type", "time", "days", "duration_min", "name"]), "strict": True},
+                              "name": _str("short name, or empty string"),
+                              "date": _str("one-time: YYYY-MM-DD local, 'today' or 'tomorrow'; empty string = repeats weekly")},
+                             ["dog_id", "type", "time", "days", "duration_min", "name", "date"]), "strict": True},
     {"name": "cancel_mission",
      "description": "Delete a scheduled mission by mission_id (from get_schedule). The robot is asked to confirm it is gone.",
      "input_schema": _schema({"dog_id": _str("dog id"), "mission_id": _str("mission id")}, ["dog_id", "mission_id"]),
@@ -149,6 +153,19 @@ TOOLS: list[dict] = [
                                          "description": "forward/backward: 5-30 cm (use 15 if unsure); turn_left/turn_right: 15-90 degrees (use 30 if unsure)"}},
                              ["dog_id", "action", "amount"]),
      "strict": True},
+    # Not strict (strict cap 20).
+    {"name": "look", "description": "Turn the camera one small step without moving the robot: pan_left, pan_right, tilt_up, tilt_down or center. degrees 5-45 (default 15). Take a photo, look, take a photo. gimbal_busy: the owner is steering it or the robot is moving; wait.",
+     "input_schema": {"type": "object", "properties": {
+         "dog_id": _str("dog id"), "action": _str("action", sorted(LOOK_ACTIONS)),
+         "degrees": {"type": "integer", "description": "5-45; leave out for 15"}},
+         "required": ["dog_id", "action"]}},
+    {"name": "play_ultrasonic", "description": "Play an ultrasonic tone through the robot. Only when the owner asks for it in this conversation; never on your own initiative. Either a style: before_quiet (20 or 25 kHz, 1-3 s, 80%), before_music (3 s, 60%), nonstop_barking (5 s pulsed, 80%); or a custom burst: freq_hz 20000/25000/32000/40000, level_pct 1-80, duration_s up to 5, optional pulse_s, gap_s, alt_freq_hz. status true only checks it. One burst per 20 s: cooldown gives retry_after_s.",
+     "input_schema": {"type": "object", "properties": {
+         "dog_id": _str("dog id"), "style": _str("style", sorted(ULTRASONIC_STYLES)),
+         "freq_hz": {"type": "integer"}, "level_pct": {"type": "integer"}, "duration_s": {"type": "number"},
+         "pulse_s": {"type": "number"}, "gap_s": {"type": "number"}, "alt_freq_hz": {"type": "integer"},
+         "status": {"type": "boolean"}},
+         "required": ["dog_id"]}},
     {"name": "take_photo", "description": "Take one new snapshot with the robot camera (no HUD) and look at it. A copy is kept so the owner's app can add it to its photo gallery; don't say it is on a timeline. Describe what you see. Never live video.",
      "input_schema": _schema({"dog_id": _str("dog id")}, ["dog_id"]), "strict": True},
     {"name": "listen", "description": "Asks the robot to listen for up to 15 seconds and returns what it heard, with the recording.",
@@ -311,7 +328,25 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             return await schedule_tools.get_schedule(c, dog_id)
         if name == "schedule_mission":
             return await schedule_tools.schedule_mission(c, dog_id, a["type"], a["time"], a.get("days") or [],
-                                                         a.get("duration_min"), a.get("name") or None)
+                                                         a.get("duration_min"), a.get("name") or None,
+                                                         date=a.get("date") or None)
+        if name == "look":
+            action = str(a.get("action") or "")
+            if action not in LOOK_ACTIONS:
+                return {"ok": False, "refused": True, "reason": "invalid_action", "allowed": sorted(LOOK_ACTIONS)}
+            data = {"action": action}
+            if a.get("degrees") is not None and action != "center":
+                data["degrees"] = a["degrees"]
+            return look_tool_result(action, await c.command(dog_id, "look", data, wait_s=LOOK_WAIT_S))
+        if name == "play_ultrasonic":
+            if a.get("status"):
+                data = {"action": "status"}
+            elif a.get("style"):
+                data = {"style": a["style"]}
+            else:
+                data = {k: a[k] for k in ("freq_hz", "level_pct", "duration_s", "pulse_s", "gap_s", "alt_freq_hz")
+                        if a.get(k) is not None}
+            return ultrasonic_tool_result(await c.command(dog_id, "ultrasonic", data, wait_s=ULTRASONIC_WAIT_S))
         if name == "cancel_mission":
             return await schedule_tools.cancel_mission(c, dog_id, str(a.get("mission_id") or ""))
         if name == "give_treat":

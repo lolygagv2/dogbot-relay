@@ -333,6 +333,8 @@ class Brain:
         if change["tool"] == "schedule_mission":
             from app.services.schedule_tools import type_label
             what = f"{type_label(str(r.get('type')))} at {r.get('time')} for {r.get('duration_min'):g} minutes"
+            if r.get("date"):
+                what += f", once on {r['date']}"
             if r.get("confirmed_by_robot") and r.get("next_fire_at"):
                 return f"{what[0].upper()}{what[1:]} is scheduled, and the robot has confirmed it."
             return f"I've saved {what}, but the robot hasn't confirmed it yet."

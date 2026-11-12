@@ -1,8 +1,9 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_trick_history, get_missions, get_robot_status, get_schedule
-Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_coach, set_smart_plug, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, speak
+Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_coach, set_smart_plug, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, look, speak
 Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
+Ultrasonic: play_ultrasonic (opt-in ultrasonic scope; only when the owner asks)
 
 Every tool: checks the token's scope, checks the user's role on the dog locally, then
 calls the relay through RelayClient (actor `connector:<client_id>`). Relay refusals come
@@ -31,6 +32,8 @@ from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, 
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
 from app.services.robot_control import SMART_PLUG_ASSISTANT_ACTIONS, SMART_PLUG_WAIT_S, smart_plug_tool_result
+from app.services.robot_control import (LOOK_ACTIONS, LOOK_WAIT_S, ULTRASONIC_STYLES, ULTRASONIC_WAIT_S,
+                                        look_tool_result, ultrasonic_tool_result)
 from app.services import schedule_tools, settings_tools
 from app.services.event_store import cue_rates as event_store_rates
 
@@ -503,7 +506,8 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("get_schedule")
     async def get_schedule(dog_id: str) -> dict:
         """List the dog's scheduled missions and ask the robot what it has loaded (schedule_sync).
-        Each mission has id, name, type, time (HH:MM, the dog's local time), days, duration_min and,
+        Each mission has id, name, type, time (HH:MM, the dog's local time), days, date and once (a
+        one-time mission runs only on date, then is deleted), duration_min and,
         when the robot confirms, on_robot and next_fire_at. confirmed_by_robot=false means the list is
         the relay's copy only (robot offline or no reply)."""
         client, user_id = _client("get_schedule")
@@ -514,18 +518,21 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("schedule_mission")
     async def schedule_mission(dog_id: str, type: str, time: str, days: Optional[list[str]] = None,
                                duration_min: Optional[int] = None, name: Optional[str] = None,
-                               reward_treats: Optional[int] = None, goal: str = "") -> dict:
+                               reward_treats: Optional[int] = None, goal: str = "",
+                               date: Optional[str] = None) -> dict:
         """Schedule a mission on the robot right away (no approval step). type: a training mission
         (recall, sit_stay, down_stay, place, quiet, find_treat, sit, down, stay, spin; 1-60 min,
         default 2) or a mode: silent_guardian (bark watch) or coach (5-720 min, default 120): the robot
         enters that mode at the time and returns to idle after duration_min. time: HH:MM 24h in the
-        dog's local time. days: mon..sun (default every day). reward_treats 0-3 (training only).
-        Returns mission_id and the robot's confirmation: confirmed_by_robot and next_fire_at. Only say
+        dog's local time. days: mon..sun (default every day); it repeats every week on those days.
+        date: for a one-time mission, YYYY-MM-DD (the dog's local date), "today" or "tomorrow": it
+        runs once at time on that date and is then deleted (days is ignored). reward_treats 0-3
+        (training only). Returns mission_id and the robot's confirmation: confirmed_by_robot and next_fire_at. Only say
         it is scheduled on the robot when confirmed_by_robot is true."""
         client, user_id = _client("schedule_mission")
         _check_dog(user_id, dog_id)
         return await schedule_tools.schedule_mission(client, dog_id, type, time, days, duration_min, name,
-                                                     reward_treats, goal)
+                                                     reward_treats, goal, date)
 
     @mcp.tool(name="cancel_mission", annotations=CONTROL)
     @audited("cancel_mission")
@@ -662,6 +669,58 @@ def register_tools(mcp: MCPServer) -> None:
             return e.as_result(_status=e.status)
         return {"ok": True, "target": target, "delivered": res.get("delivered"), "simulated": res.get("simulated"),
                 "command_id": res.get("command_id")}
+
+    @mcp.tool(name="look", annotations=CONTROL)
+    @audited("look")
+    async def look(dog_id: str, action: str, degrees: Optional[int] = None) -> dict:
+        """Turn the camera one small step: pan_left, pan_right, tilt_up, tilt_down, or center.
+        degrees 5-45 (default 15; ignored for center). Returns pan and tilt (degrees; pan + is
+        right, tilt + is up, 0,0 = centre) and limit_reached. Take a photo, look, take a photo.
+        The robot body does not move. gimbal_busy means the owner is steering it or the robot is
+        moving: wait and try again."""
+        client, user_id = _client("look")
+        _check_dog(user_id, dog_id)
+        if action not in LOOK_ACTIONS:
+            raise ToolError(f"action must be one of: {', '.join(sorted(LOOK_ACTIONS))}")
+        data: dict[str, Any] = {"action": action}
+        if degrees is not None and action != "center":
+            data["degrees"] = degrees
+        try:
+            res = await client.command(dog_id, "look", data, wait_s=LOOK_WAIT_S)
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return look_tool_result(action, res)
+
+    @mcp.tool(name="play_ultrasonic", annotations=CONTROL)
+    @audited("play_ultrasonic")
+    async def play_ultrasonic(dog_id: str, style: Optional[str] = None, freq_hz: Optional[int] = None,
+                              level_pct: Optional[int] = None, duration_s: Optional[float] = None,
+                              pulse_s: Optional[float] = None, gap_s: Optional[float] = None,
+                              alt_freq_hz: Optional[int] = None, status: bool = False) -> dict:
+        """Play an ultrasonic tone through the robot's tweeter (dogs hear it; people mostly do not).
+        Use ONLY when the owner asks for it in this conversation; never on your own initiative.
+        Either style: before_quiet (random 20 or 25 kHz, 1-3 s, 80%), before_music (20 or 25 kHz,
+        3 s, 60%) or nonstop_barking (5 s pulsed, 20/25 kHz alternating, 80%); or a custom burst:
+        freq_hz 20000/25000/32000/40000, level_pct 1-80, duration_s up to 5, optional pulse_s, gap_s,
+        alt_freq_hz. status=true only reports whether it is enabled and its limits. The robot allows
+        one burst per 20 s (shared with Silent Guardian): error cooldown gives retry_after_s."""
+        client, user_id = _client("play_ultrasonic")
+        _check_dog(user_id, dog_id)
+        if status:
+            data: dict[str, Any] = {"action": "status"}
+        elif style:
+            if style not in ULTRASONIC_STYLES:
+                raise ToolError(f"style must be one of: {', '.join(sorted(ULTRASONIC_STYLES))}")
+            data = {"style": style}
+        else:
+            data = {k: v for k, v in (("freq_hz", freq_hz), ("level_pct", level_pct), ("duration_s", duration_s),
+                                      ("pulse_s", pulse_s), ("gap_s", gap_s), ("alt_freq_hz", alt_freq_hz))
+                    if v is not None}
+        try:
+            res = await client.command(dog_id, "ultrasonic", data, wait_s=ULTRASONIC_WAIT_S)
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return ultrasonic_tool_result(res)
 
     @mcp.tool(name="move", annotations=CONTROL)
     @audited("move")
