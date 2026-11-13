@@ -1910,6 +1910,8 @@ STORABLE_EVENT_TYPES = {
     "panic_alert",
     # Smart plug (Adaptil diffuser) on/off changes (robot 248f9e5, 2026-11-11).
     "smart_plug",
+    # Ultrasonic tweeter plays (2026-11-13).
+    "ultrasonic",
     "error",
 }
 

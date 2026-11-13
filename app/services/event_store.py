@@ -270,6 +270,43 @@ async def ingest_events(
     return result
 
 
+# Device events the robot sends over the WebSocket (not POST /events) that must also be readable
+# through GET /api/dogs/{dog}/events, the day summary and the assistants' get_events. Added
+# 2026-11-13: the 2026-11-12 plug switch sat only in activity_events, so the assistant could not
+# see it and wrongly told the owner it had failed.
+WS_TYPED_EVENTS = ("smart_plug", "ultrasonic")
+
+
+def record_ws_device_event(device_id: str, user_id: Optional[str], etype: str, event_id: str,
+                           ts: Any, data: dict) -> int:
+    """Copy a WebSocket device event into `events`, one row per dog the robot serves (the plug
+    and tweeter are device-wide; event reads go by dog). Row ids are "<event_id>:<dog_id>", so a
+    replayed frame is a duplicate. No push, no activity mirror (the WS path already wrote the
+    activity row). Returns rows inserted; never raises."""
+    if etype not in WS_TYPED_EVENTS or not user_id:
+        return 0
+    try:
+        from app.services import pairing
+
+        dt = normalize_ts(ts) or datetime.now(timezone.utc)
+        ts_iso = dt.isoformat()
+        payload = _clean_media({k: v for k, v in (data or {}).items() if v is not None})
+        payload.pop("dog_id", None)
+        inserted = 0
+        for dog_id in pairing.device_dog_ids(device_id):
+            local_date = local_date_for(dt, settings_service.get_timezone(dog_id))
+            if insert_event(
+                event_id=f"{event_id}:{dog_id}"[:128], dog_id=dog_id, device_id=device_id, user_id=user_id,
+                type=etype, ts=ts_iso, duration_s=None, data=payload, source="robot", local_date=local_date,
+            ):
+                inserted += 1
+                mark_summary_dirty(dog_id, local_date)
+        return inserted
+    except Exception as e:
+        logger.error(f"[EVENT-STORE] {etype} copy failed for {device_id}: {e}")
+        return 0
+
+
 async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], source: str, notify: bool,
                       forward: bool, tz_cache: dict) -> bool:
     """Insert one validated event row and run the side effects. Returns False on duplicate."""

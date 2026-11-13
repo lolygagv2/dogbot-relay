@@ -47,7 +47,7 @@ READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_h
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 
 EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", "arrival", "treat", "music",
-               "mission_run", "status", "coach_session", "trick_attempt"]
+               "mission_run", "status", "coach_session", "trick_attempt", "smart_plug", "ultrasonic"]
 GO_TO_TARGETS = ["dog", "dock"]
 SG_LEVELS = ["low", "medium", "high"]
 TREND_DAILY_MAX_DAYS = 90     # up to this many days: one row per day
@@ -137,8 +137,11 @@ def register_tools(mcp: MCPServer) -> None:
     async def get_events(dog_id: str, since: Optional[str] = None, until: Optional[str] = None,
                          type: Optional[str] = None, limit: int = 25) -> dict:
         """Recent events for a dog, newest first. since/until are ISO-8601 timestamps; type is one of
-        bark_episode, intervention, settle, pacing, departure, arrival, treat, music, mission_run, status
-        (comma-separated allowed). limit 1-100."""
+        bark_episode, intervention, settle, pacing, departure, arrival, treat, music, mission_run, status,
+        coach_session, trick_attempt, smart_plug, ultrasonic (comma-separated allowed). limit 1-100.
+        smart_plug: each plug switch the robot reported (data.on, data.reason, data.level). ultrasonic: each
+        tone the robot reported playing. To say whether the plug or tweeter ran, check these events, not
+        only the current set_smart_plug status (which shows the state now, not what happened earlier)."""
         client, user_id = _client("get_events")
         _check_dog(user_id, dog_id)
         limit = max(1, min(int(limit), 100))

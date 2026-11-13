@@ -59,7 +59,7 @@ TOOLS: list[dict] = [
      "input_schema": _schema({"dog_id": _str("dog id"), "date": _str("YYYY-MM-DD | today | yesterday")}, ["dog_id", "date"]),
      "strict": True},
     {"name": "get_events",
-     "description": "Recent events for a dog, newest first. type is one of bark_episode, intervention, settle, pacing, departure, arrival, treat, music, mission_run, coach_session, trick_attempt, status or empty for all.",
+     "description": "Recent events for a dog, newest first. type is one of bark_episode, intervention, settle, pacing, departure, arrival, treat, music, mission_run, coach_session, trick_attempt, smart_plug, ultrasonic, status or empty for all.",
      "input_schema": _schema({"dog_id": _str("dog id"), "type": _str("event type or empty string"),
                               "limit": {"type": "integer", "description": "1-50"}}, ["dog_id", "type", "limit"]),
      "strict": True},

@@ -26,7 +26,7 @@ from app.database import (
     store_event as db_store_event,
 )
 from app.routers.device import get_device_data, update_device_online_status
-from app.services import push_service, settings_service
+from app.services import event_store as typed_event_store, push_service, settings_service
 from app.services.treat_watchdog import get_treat_watchdog
 from app.services.turn_service import turn_service
 
@@ -113,6 +113,9 @@ LEGACY_TO_ACTIVITY_TYPE = {
     # Smart plug (Adaptil diffuser) on/off changes (robot 248f9e5, 2026-11-11). Own activity
     # type, so no push: plug changes are informational, and plug_unreachable is never an alert.
     "smart_plug": "smart_plug",
+    # Ultrasonic tweeter plays (2026-11-13; robot to emit, same shape as smart_plug). Own activity
+    # type, no push.
+    "ultrasonic": "ultrasonic",
 }
 
 # Robot events routed to the "guardian" activity type. Their meaningful fields
@@ -120,10 +123,10 @@ LEGACY_TO_ACTIVITY_TYPE = {
 # outside the envelope below is merged into the stored payload.
 _GUARDIAN_LIKE_EVENTS = {"guardian", "sg_summary", "panic_alert"}
 # Other events whose fields may sit at the top level: flattened the same way.
-_FLATTENED_EVENTS = _GUARDIAN_LIKE_EVENTS | {"smart_plug"}
+_FLATTENED_EVENTS = _GUARDIAN_LIKE_EVENTS | {"smart_plug", "ultrasonic"}
 # Robot events that may arrive as {"type": X} without an "event" key; they are given
 # "event": X so they take the legacy event path (store, activity history, forward).
-_TYPE_AS_EVENT = {"smart_plug"}
+_TYPE_AS_EVENT = {"smart_plug", "ultrasonic"}
 
 
 def _normalize_robot_event(message: dict) -> None:
@@ -268,6 +271,12 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
             payload=data,
         )
         logger.info(f"[ACTIVITY-AUTO] Persisted {event_name}->{activity_type} id={event_id} device={device_id}")
+
+        # Plug / tweeter changes also go to the typed events table, so get_events and the day
+        # summary (and so the assistants) can see them (2026-11-13).
+        if event_name in typed_event_store.WS_TYPED_EVENTS:
+            typed_event_store.record_ws_device_event(
+                device_id, owner_id, event_name, event_id, timestamp, data)
 
         # FCM push (contract 2026-07-30) — only on first insert, so buffered
         # replays of the same event never re-notify.

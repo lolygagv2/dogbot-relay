@@ -485,6 +485,7 @@ EVENT_TYPES = (
     "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
     "treat", "music", "mission_run", "status", "mode_change",
     "coach_session", "trick_attempt",
+    "smart_plug", "ultrasonic",
 )
 
 
@@ -494,6 +495,7 @@ class EventIn(BaseModel):
         "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
         "treat", "music", "mission_run", "status", "mode_change",
         "coach_session", "trick_attempt",
+        "smart_plug", "ultrasonic",
     ]
     # coach_session / trick_attempt (2026-11-08): see event_store.validate_event for the shapes.
     # mode_change (2026-11-07): device-scoped like status; data.mode is the mode just entered.
