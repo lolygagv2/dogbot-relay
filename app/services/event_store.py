@@ -4,7 +4,7 @@ Robots post typed events to `POST /events`; the replayer writes the same table w
 `source='replay'`; relay-simulated commands write `source='relay'`. Every accepted event
 flows through the same pipeline: validate -> insert (idempotent on event_id) -> link
 treat ledger -> mark the day's summary dirty -> mirror into `activity_events` (so the
-existing app timeline keeps working) -> notify rules -> departure triggers -> agent
+existing app timeline keeps working) -> notify rules -> agent
 hooks -> WebSocket forward to the owner's app sessions.
 """
 from __future__ import annotations
@@ -45,8 +45,12 @@ MEDIA_PREFIX = "/api/media/download/"
 SETTLE_WINDOW_S = 600  # a settle within episode end + 10 min counts for that episode
 LOW_HOPPER_THRESHOLD = 3
 TRICK_RESULTS = ("success", "fail", "no_response")
-# mode time (2026-11-07): totals.<key> = seconds the robot spent in that mode on the local day
+# mode time (2026-11-07): totals.<key> = seconds the robot spent in that mode on the local day.
+# sg_s is the day's time on guard; it replaced alone_s (departure -> arrival) on 2026-11-18.
 MODE_TOTALS = {"silent_guardian": "sg_s", "coach": "coach_s"}
+# never in the day roll-up's rows or counts: status / mode_change feed mode time instead, and
+# departure / arrival (still accepted from older robots) no longer mean anything (2026-11-18)
+NOT_ROLLED_UP = ("status", "mode_change", "departure", "arrival")
 HEARTBEAT_GRACE_S = 120  # a mode period ends this long after the robot's last status heartbeat
 
 # last known robot mode per device (for sg_rearm detection); in-process only
@@ -375,10 +379,6 @@ async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], sourc
                 await notify_service.evaluate_notify_rules(ev, user_id)
             except Exception as e:  # pragma: no cover
                 logger.error(f"[EVENTS] notify rules failed for {ev['event_id']}: {e}")
-            try:
-                await notify_service.handle_triggers(ev, user_id)
-            except Exception as e:  # pragma: no cover
-                logger.error(f"[EVENTS] triggers failed for {ev['event_id']}: {e}")
         _agent_hooks(ev, user_id)
 
     if forward and user_id:
@@ -613,11 +613,11 @@ def cue_rates(cues: int, successes: int) -> dict:
 def compute_daily_summary(dog_id: str, date_str: str) -> dict:
     tz = settings_service.get_timezone(dog_id)
     rows = list_events(dog_id, local_date=date_str, limit=20000, order="asc")
-    rows = [r for r in rows if r["type"] not in ("status", "mode_change")]
+    rows = [r for r in rows if r["type"] not in NOT_ROLLED_UP]
 
-    counts = {t: 0 for t in EVENT_TYPES if t not in ("status", "mode_change")}
+    counts = {t: 0 for t in EVENT_TYPES if t not in NOT_ROLLED_UP}
     totals: dict[str, Any] = {
-        "bark_s": 0.0, "pacing_s": 0.0, "music_s": 0.0, "treats": 0, "alone_s": 0.0,
+        "bark_s": 0.0, "pacing_s": 0.0, "music_s": 0.0, "treats": 0,
         "interventions_by_kind": {}, "missions_success": 0, "missions_fail": 0,
         "cues": 0, "cue_successes": 0, "cues_by_trick": {},
     }
@@ -651,20 +651,9 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
                 per["successes"] += 1
                 totals["cue_successes"] += 1
 
-    # alone time: departure -> next arrival, clipped to the local day
     day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=tz)
     day_end = day_start + timedelta(days=1)
     now = datetime.now(timezone.utc)
-    open_departure: Optional[datetime] = None
-    for r in rows:
-        if r["type"] == "departure" and open_departure is None:
-            open_departure = _parse(r["ts"])
-        elif r["type"] == "arrival" and open_departure is not None:
-            totals["alone_s"] += max(0.0, (_parse(r["ts"]) - open_departure).total_seconds())
-            open_departure = None
-    if open_departure is not None:
-        end = min(now, day_end.astimezone(timezone.utc))
-        totals["alone_s"] += max(0.0, (end - open_departure).total_seconds())
 
     # time to settle + episode attribution
     episodes = [r for r in rows if r["type"] == "bark_episode"]
@@ -734,7 +723,7 @@ def compute_daily_summary(dog_id: str, date_str: str) -> dict:
         # explicit Coach sessions are the coaching time; otherwise time in Coach mode (mode_change)
         totals["coach_s"] = round(session_s)
     totals.update(cue_rates(totals["cues"], totals["cue_successes"]))
-    for k in ("bark_s", "pacing_s", "music_s", "alone_s"):
+    for k in ("bark_s", "pacing_s", "music_s"):
         totals[k] = round(totals[k])
 
     return {

@@ -17,7 +17,7 @@ import asyncio
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, TypedDict
+from typing import Any, Literal, Optional, TypedDict
 from zoneinfo import ZoneInfo
 
 from mcp.server import MCPServer
@@ -46,13 +46,13 @@ class TreatWindowArg(TypedDict):
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 CONTROL = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
 
-EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "departure", "arrival", "treat", "music",
+EVENT_TYPES = ["bark_episode", "intervention", "settle", "pacing", "treat", "music",
                "mission_run", "status", "coach_session", "trick_attempt", "smart_plug", "ultrasonic"]
 GO_TO_TARGETS = ["dog", "dock"]
 SG_LEVELS = ["low", "medium", "high"]
 TREND_DAILY_MAX_DAYS = 90     # up to this many days: one row per day
 TREND_MAX_DAYS = 730          # beyond 90: one row per week (Monday-Sunday), up to two years
-TREND_METRICS = ["treats", "bark_episodes", "bark_s", "interventions", "pacing_s", "alone_s",
+TREND_METRICS = ["treats", "bark_episodes", "bark_s", "interventions", "pacing_s",
                  "missions_success", "missions_fail", "sg_s", "coach_s", "coach_sessions", "cues", "cue_successes"]
 MOVE_ACTIONS = list(_MOVE_SPEC)
 _MEDIA_KEYS = {"image_url", "clip_url", "photo", "image", "audio", "audio_url", "url", "video_url"}
@@ -117,7 +117,7 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("get_day_summary")
     async def get_day_summary(dog_id: str, date: str = "today") -> dict:
         """Daily roll-up for one dog: counts per event type, totals (bark seconds, treats vs cap,
-        alone time, music, sg_s / coach_s, and coaching: cues = trick cues given, cue_successes,
+        music, sg_s = time on guard (seconds in Silent Guardian), coach_s, and coaching: cues = trick cues given, cue_successes,
         success_rate 0-1 and success_pct, cues_by_trick = per-trick {cues, successes}), time-to-settle
         stats and the top 3 bark episodes. coach_s is the day's Coach sessions when the robot
         reports them, otherwise time in Coach mode.
@@ -137,7 +137,7 @@ def register_tools(mcp: MCPServer) -> None:
     async def get_events(dog_id: str, since: Optional[str] = None, until: Optional[str] = None,
                          type: Optional[str] = None, limit: int = 25) -> dict:
         """Recent events for a dog, newest first. since/until are ISO-8601 timestamps; type is one of
-        bark_episode, intervention, settle, pacing, departure, arrival, treat, music, mission_run, status,
+        bark_episode, intervention, settle, pacing, treat, music, mission_run, status,
         coach_session, trick_attempt, smart_plug, ultrasonic (comma-separated allowed). limit 1-100.
         smart_plug: each plug switch the robot reported (data.on, data.reason, data.level). ultrasonic: each
         tone the robot reported playing. To say whether the plug or tweeter ran, check these events, not
@@ -168,8 +168,8 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("get_trend")
     async def get_trend(dog_id: str, days: int = 7, compare_dog_id: Optional[str] = None) -> dict:
         """Trend series over the last `days` days (1-730, default 7; today is in the last row):
-        treats, bark episodes, bark seconds, interventions, pacing, alone time, missions, median
-        time-to-settle, sg_s / coach_s (seconds the robot spent in Silent Guardian / Coach), and
+        treats, bark episodes, bark seconds, interventions, pacing, missions, median
+        time-to-settle, sg_s = time on guard (seconds in Silent Guardian), coach_s (seconds in Coach), and
         coaching: coach_sessions, cues, cue_successes and success_rate per row; totals add
         success_rate / success_pct over the whole period and cues_by_trick (per-trick cues, successes).
         Up to 90 days there is one row per day (granularity "day"). Over 90 days there is one row
@@ -217,7 +217,7 @@ def register_tools(mcp: MCPServer) -> None:
             c, t, tts = s.get("counts", {}), s.get("totals", {}), s.get("time_to_settle", {})
             return {"date": s.get("date"), "treats": t.get("treats", 0), "bark_episodes": c.get("bark_episode", 0),
                     "bark_s": t.get("bark_s", 0), "interventions": c.get("intervention", 0),
-                    "pacing_s": t.get("pacing_s", 0), "alone_s": t.get("alone_s", 0),
+                    "pacing_s": t.get("pacing_s", 0),
                     "missions_success": t.get("missions_success", 0), "missions_fail": t.get("missions_fail", 0),
                     "sg_s": t.get("sg_s", 0), "coach_s": t.get("coach_s", 0),
                     "coach_sessions": c.get("coach_session", 0), "cues": t.get("cues", 0),
@@ -346,31 +346,32 @@ def register_tools(mcp: MCPServer) -> None:
 
     @mcp.tool(name="set_music", annotations=CONTROL)
     @audited("set_music")
-    async def set_music(dog_id: str, enabled: bool = True, volume: Optional[int] = None,
-                        on_departure_track: Optional[str] = None, on_departure_delay_s: Optional[int] = None,
-                        on_departure_duration_min: Optional[int] = None) -> dict:
-        """Update the calming-music plan: enable/disable, volume 0-100, and what plays when the owner
-        leaves (track name, delay in seconds, duration in minutes). Omitted fields keep their value."""
+    async def set_music(dog_id: str, enabled: Optional[bool] = None, volume: Optional[int] = None,
+                        trigger: Optional[Literal["on_mode_start", "after_treat", "on_bark_episode", "at_time"]] = None,
+                        remove: bool = False, track: Optional[str] = None, duration_min: Optional[int] = None,
+                        mode: Optional[Literal["silent_guardian", "coach"]] = None, delay_s: Optional[int] = None,
+                        every_n: Optional[int] = None, minutes: Optional[int] = None,
+                        min_severity: Optional[Literal["low", "med", "high"]] = None,
+                        time: Optional[str] = None) -> dict:
+        """Change the calming-music plan. enabled turns all music on/off; volume 0-100 applies to
+        every trigger. To add or change one trigger, name it and pass its fields (omitted fields keep
+        their value): on_mode_start (mode silent_guardian|coach, delay_s 0-3600 after the mode
+        starts), after_treat (every_n 1-50 treats within a rolling `minutes` 1-240 window; the count
+        then resets), on_bark_episode (min_severity low|med|high, at least that severe), at_time
+        (time HH:MM local, every day; one slot per time, up to 12). Every trigger also takes track
+        (a song id from the dog's sounds, e.g. song_calm_01) and duration_min 1-480.
+        remove=true switches that trigger off (at_time: the slot at `time`, or all slots).
+        The robot runs the triggers. There is no departure/arrival trigger. Quiet hours still
+        silence music."""
         client, user_id = _client("set_music")
         _check_dog(user_id, dog_id)
         try:
-            cur = (await client.get_setting(dog_id, "music_plan")).get("value") or {}
-            plan = dict(cur)
-            plan["enabled"] = bool(enabled)
-            if volume is not None:
-                plan["volume"] = int(volume)
-            od = dict(plan.get("on_departure") or {"track": "calm_01", "delay_s": 60, "duration_min": 30})
-            if on_departure_track is not None:
-                od["track"] = str(on_departure_track)[:64]
-            if on_departure_delay_s is not None:
-                od["delay_s"] = int(on_departure_delay_s)
-            if on_departure_duration_min is not None:
-                od["duration_min"] = int(on_departure_duration_min)
-            plan["on_departure"] = od
-            row = await client.put_setting(dog_id, "music_plan", plan)
+            return await settings_tools.set_music(
+                client, dog_id, enabled=enabled, volume=volume, trigger=trigger, remove=remove, track=track,
+                duration_min=duration_min, mode=mode, delay_s=delay_s, every_n=every_n, minutes=minutes,
+                min_severity=min_severity, time=time)
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
-        return {"ok": True, "music_plan": row["value"], "version": row["version"]}
 
     @mcp.tool(name="set_sg_sensitivity", annotations=CONTROL)
     @audited("set_sg_sensitivity")
@@ -491,7 +492,7 @@ def register_tools(mcp: MCPServer) -> None:
                               severity: Optional[str] = None, attach: str = "none",
                               cooldown_s: Optional[int] = None) -> dict:
         """Add a phone notification rule for the dog. event_type: bark_episode, intervention, settle,
-        pacing, departure, arrival, treat, music or mission_run. min_duration_s: only events at least
+        pacing, treat, music or mission_run. min_duration_s: only events at least
         this long. severity (bark_episode only): low, med or high, meaning at least that severe.
         attach: none, still (snapshot) or clip. cooldown_s: minimum seconds between pushes from this
         rule (0-86400). The push category (app_type) follows the event type. At most 10 rules per

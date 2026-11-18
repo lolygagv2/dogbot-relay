@@ -497,6 +497,8 @@ class EventIn(BaseModel):
         "coach_session", "trick_attempt",
         "smart_plug", "ultrasonic",
     ]
+    # departure / arrival: still accepted from older robots and stored, but since 2026-11-18 they
+    # trigger nothing, are not rolled up and have no notify rules.
     # coach_session / trick_attempt (2026-11-08): see event_store.validate_event for the shapes.
     # mode_change (2026-11-07): device-scoped like status; data.mode is the mode just entered.
     # With dog_id it counts toward that dog only (e.g. a Coach session), without it toward all
@@ -560,23 +562,55 @@ class SgSensitivity(BaseModel):
     escalate_after_s: int = Field(default=60, ge=5, le=3600)
 
 
-class MusicOnDeparture(BaseModel):
-    track: str = "song_calm_01"
-    delay_s: int = Field(default=60, ge=0, le=3600)
-    duration_min: int = Field(default=30, ge=1, le=480)
+# Music plan triggers (2026-11-18). The robot runs every trigger itself (it sees mode starts,
+# treats and barking live); the relay only validates, stores and pushes the plan. Each trigger
+# carries its own track and duration_min; volume is plan-wide. Departure/arrival are gone.
+MUSIC_TRIGGER_KINDS = ("on_mode_start", "after_treat", "on_bark_episode", "at_time")
+MUSIC_MODES = ("silent_guardian", "coach")
+BARK_SEVERITIES = ("low", "med", "high")   # bark_episode data.severity, lowest first
 
 
-class MusicSlot(BaseModel):
-    time: str = Field(..., pattern=r"^\d{2}:\d{2}$")
-    track: str
+class MusicTrack(BaseModel):
+    track: str = Field(default="song_calm_01", min_length=1, max_length=64)   # a sound id of kind song
     duration_min: int = Field(default=20, ge=1, le=480)
+
+
+class MusicOnModeStart(MusicTrack):
+    """Play when the robot enters `mode`, after delay_s."""
+    mode: Literal["silent_guardian", "coach"] = "silent_guardian"
+    delay_s: int = Field(default=60, ge=0, le=3600)
+
+
+class MusicAfterTreat(MusicTrack):
+    """Play when every_n treats land within a rolling `minutes` window; the count then resets."""
+    every_n: int = Field(default=3, ge=1, le=50)
+    minutes: int = Field(default=10, ge=1, le=240)
+
+
+class MusicOnBarkEpisode(MusicTrack):
+    """Play when a bark episode at least min_severity starts."""
+    min_severity: Literal["low", "med", "high"] = "med"
+
+
+class MusicAtTime(MusicTrack):
+    time: str = Field(..., pattern=r"^\d{2}:\d{2}$")   # local HH:MM, every day
 
 
 class MusicPlan(BaseModel):
     enabled: bool = True
     volume: int = Field(default=40, ge=0, le=100)
-    on_departure: Optional[MusicOnDeparture] = Field(default_factory=MusicOnDeparture)
-    schedule: list[MusicSlot] = Field(default_factory=list)
+    on_mode_start: Optional[MusicOnModeStart] = None     # None = trigger off
+    after_treat: Optional[MusicAfterTreat] = None
+    on_bark_episode: Optional[MusicOnBarkEpisode] = None
+    at_time: list[MusicAtTime] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_schedule(cls, v):
+        # pre-2026-11-18 plans called at_time "schedule"; on_departure is dropped (extra keys ignored)
+        if isinstance(v, dict) and "schedule" in v and "at_time" not in v:
+            v = {**v, "at_time": v["schedule"]}
+        return v
 
 
 NOTIFY_APP_TYPES = (
@@ -599,7 +633,7 @@ class NotifyRule(BaseModel):
     id: str = Field(..., min_length=1, max_length=64)
     enabled: bool = True
     event_type: Literal[
-        "bark_episode", "intervention", "settle", "pacing", "departure", "arrival",
+        "bark_episode", "intervention", "settle", "pacing",
         "treat", "music", "mission_run",
     ]
     when: NotifyWhen = Field(default_factory=NotifyWhen)
@@ -619,7 +653,9 @@ class NotifyRules(BaseModel):
 
 
 class MissionTrigger(BaseModel):
-    kind: Literal["schedule", "departure", "manual"] = "manual"
+    # Missions run at a set time (schedule, on the robot's clock) or on demand (manual) only;
+    # the departure trigger and its 15-minute fallback were removed 2026-11-18.
+    kind: Literal["schedule", "manual"] = "manual"
     time: Optional[str] = Field(default=None, pattern=r"^\d{2}:\d{2}$")
     delay_s: int = Field(default=300, ge=0, le=7200)
     cooldown_s: int = Field(default=7200, ge=0, le=86400)

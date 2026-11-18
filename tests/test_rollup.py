@@ -1,4 +1,4 @@
-"""Daily roll-up: validation, time-to-settle, top episodes, alone time."""
+"""Daily roll-up: validation, time-to-settle, top episodes; legacy departure/arrival ignored."""
 import asyncio
 
 import pytest
@@ -50,7 +50,9 @@ def test_rollup_time_to_settle_and_top_episodes(temp_db):
     s = event_store.get_summary("dog_t1", "2026-11-06")
     assert s["counts"]["bark_episode"] == 3 and s["counts"]["settle"] == 2 and s["counts"]["treat"] == 1
     assert s["totals"]["treats"] == 2 and s["totals"]["bark_s"] == 330
-    assert s["totals"]["alone_s"] == 5 * 3600
+    # departure / arrival (2026-11-18): still accepted, but no alone_s and not counted
+    assert "alone_s" not in s["totals"] and "departure" not in s["counts"] and "arrival" not in s["counts"]
+    assert s["totals"]["sg_s"] == 0
     tts = s["time_to_settle"]
     assert tts["n"] == 2 and tts["unresolved"] == 1 and tts["min_s"] == 75 and tts["max_s"] == 200
     top = s["top_episodes"]
@@ -60,7 +62,7 @@ def test_rollup_time_to_settle_and_top_episodes(temp_db):
     from app.database import get_event
     assert get_event("s1")["data"]["settle_s"] == 75
     # cache: second read served from daily_summary, refresh recomputes
-    assert event_store.get_summary("dog_t1", "2026-11-06")["event_count"] == 9
+    assert event_store.get_summary("dog_t1", "2026-11-06")["event_count"] == 7
 
 
 def test_treat_still_is_pinned_for_seven_days(temp_db, tmp_path, monkeypatch):

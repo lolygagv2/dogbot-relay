@@ -132,7 +132,9 @@ class Replayer:
 
         self.seed_name, self.seed = path.name, seed
         self.dog_id = dog_id or s.demo_dog_id
-        self.device_id = device_id or s.demo_device_id
+        # the seed's own robot when the load names none (2026-11-18): time on guard (sg_s) comes from
+        # mode_change, and mode time only counts for a robot paired to the dog's owner
+        self.device_id = device_id or seed.get("device_id") or s.demo_device_id
         self.user_id = admin.user_id
         try:
             self.tz = ZoneInfo(seed.get("timezone") or s.default_timezone)

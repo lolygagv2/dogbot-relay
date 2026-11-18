@@ -1,12 +1,13 @@
-"""Notify rules, departure triggers and voice-agent hooks (Dec 9 demo build, 2026-11-06).
+"""Notify rules and voice-agent hooks (Dec 9 demo build, 2026-11-06).
 
 `evaluate_notify_rules` runs on every ingested event: matches the dog's `notify_rules`,
 respects quiet hours and per-rule cooldowns, attaches a still or clip URL from the
 event payload, and sends an FCM push through `push_service.send_push`. Every decision
 is written to `notify_log` (that table also drives the cooldowns).
 
-`handle_triggers` arms delayed robot actions on `departure` (missions with a
-`departure` trigger, `music_plan.on_departure`) and cancels them on `arrival`.
+The relay runs no robot-action triggers of its own (the departure/arrival triggers and the
+15-minute departure fallback were removed 2026-11-18): missions fire on the robot's clock or
+on demand, and the robot runs every `music_plan` trigger itself.
 
 `notify_agent` posts fire-and-forget hooks to the voice agent process.
 """
@@ -14,32 +15,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
-from fastapi import HTTPException
 
 from app.config import get_settings
 from app.database import (
     get_dog_by_id,
-    get_dog_owner,
-    get_latest_event,
     insert_notify_log,
     last_notify_sent,
     last_notify_sent_event_ts,
 )
-from app.models import Missions, MusicPlan, NotifyRule, NotifyRules
+from app.models import NotifyRule, NotifyRules
 from app.services import settings_service
 
 logger = logging.getLogger(__name__)
 
-# dog_id -> list of pending departure-trigger tasks
-_departure_tasks: dict[str, list[asyncio.Task]] = {}
-# (dog_id, mission_id) -> fallback task: start a departure mission 15 min after it was set
-# even if no departure event arrives (amendment 2026-11-06, item 3)
-_fallback_tasks: dict[tuple[str, str], asyncio.Task] = {}
-DEPARTURE_FALLBACK_S = 15 * 60
 # Quiet hours never hold these back (bark alerts); every other rule is non-urgent and is
 # suppressed during quiet hours unless the owner set override_quiet on it.
 URGENT_EVENT_TYPES = {"bark_episode"}
@@ -149,116 +141,6 @@ async def evaluate_notify_rules(ev: dict, user_id: Optional[str],
         )
         log(outcome)
     return outcomes
-
-
-# ---------------------------------------------------------------------------
-# Departure / arrival triggers
-# ---------------------------------------------------------------------------
-
-async def handle_triggers(ev: dict, user_id: Optional[str]) -> None:
-    dog_id = ev["dog_id"]
-    if ev["type"] == "arrival":
-        cancel_departure_triggers(dog_id)
-        return
-    if ev["type"] != "departure":
-        return
-    cancel_departure_triggers(dog_id)
-    cancel_departure_fallbacks(dog_id)  # the real departure path takes over
-    tasks: list[asyncio.Task] = []
-
-    missions = Missions.model_validate(settings_service.get_value(dog_id, "missions"))
-    for m in missions.missions:
-        if not m.enabled or m.trigger.kind != "departure":
-            continue
-        last = get_latest_event(dog_id, "mission_run")
-        if last and last["data"].get("mission_id") == m.id:
-            age = (datetime.now(timezone.utc) - datetime.fromisoformat(last["ts"])).total_seconds()
-            if age < m.trigger.cooldown_s:
-                logger.info(f"[TRIGGER] mission {m.id} for {dog_id} skipped (cooldown)")
-                continue
-        tasks.append(asyncio.create_task(_delayed_command(
-            dog_id, user_id, m.trigger.delay_s, "start_mission",
-            {"mission_id": m.id, "mission_type": m.type, "trigger": "departure"},
-        )))
-
-    plan = MusicPlan.model_validate(settings_service.get_value(dog_id, "music_plan"))
-    if plan.enabled and plan.on_departure:
-        tasks.append(asyncio.create_task(_delayed_command(
-            dog_id, user_id, plan.on_departure.delay_s, "play_music",
-            {"track": plan.on_departure.track, "duration_min": plan.on_departure.duration_min,
-             "volume": plan.volume, "trigger": "departure"},
-        )))
-    if tasks:
-        _departure_tasks[dog_id] = tasks
-
-
-def arm_departure_fallbacks(dog_id: str, old_value: Optional[dict], new_value: dict,
-                            user_id: Optional[str]) -> int:
-    """Arm a 15-minute fallback start for every departure mission that is new or changed."""
-    old = {m["id"]: m for m in (old_value or {}).get("missions", []) if isinstance(m, dict)}
-    armed = 0
-    for m in new_value.get("missions", []):
-        if not m.get("enabled") or (m.get("trigger") or {}).get("kind") != "departure":
-            continue
-        if old.get(m["id"]) == m:
-            continue  # unchanged
-        key = (dog_id, m["id"])
-        prev = _fallback_tasks.pop(key, None)
-        if prev:
-            prev.cancel()
-        try:
-            _fallback_tasks[key] = asyncio.get_running_loop().create_task(_delayed_command(
-                dog_id, user_id or get_dog_owner(dog_id), DEPARTURE_FALLBACK_S, "start_mission",
-                {"mission_id": m["id"], "mission_type": m.get("type"), "trigger": "departure_fallback"},
-            ))
-            armed += 1
-        except RuntimeError:  # pragma: no cover - no loop (tests)
-            pass
-    if armed:
-        logger.info(f"[TRIGGER] armed {armed} departure fallback(s) for {dog_id} ({DEPARTURE_FALLBACK_S}s)")
-    return armed
-
-
-def cancel_departure_fallbacks(dog_id: str) -> int:
-    keys = [k for k in _fallback_tasks if k[0] == dog_id]
-    for k in keys:
-        _fallback_tasks.pop(k).cancel()
-    return len(keys)
-
-
-def cancel_departure_triggers(dog_id: str) -> int:
-    tasks = _departure_tasks.pop(dog_id, [])
-    for t in tasks:
-        t.cancel()
-    return len(tasks)
-
-
-async def _delayed_command(dog_id: str, user_id: Optional[str], delay_s: int, command: str, data: dict) -> None:
-    try:
-        # During a replay, virtual time runs `speed` times faster than the wall clock.
-        try:
-            from app.services.replayer import get_replayer
-            rp = get_replayer()
-            if rp.handles(dog_id):
-                delay_s = delay_s / max(rp.speed, 1.0)
-        except ImportError:
-            pass
-        await asyncio.sleep(delay_s)
-        from app.auth import Actor
-        from app.services import robot_control
-
-        actor = Actor(kind="relay", id="trigger", user_id=user_id)
-        res = await robot_control.dispatch(dog_id, command, data, actor, device_id=None, allow_relay=True)
-        logger.info(f"[TRIGGER] {command} for {dog_id}: {res.get('delivered')} simulated={res.get('simulated')}")
-    except asyncio.CancelledError:
-        logger.info(f"[TRIGGER] {command} for {dog_id} cancelled (arrival)")
-    except HTTPException as e:
-        if isinstance(e.detail, dict) and e.detail.get("guard") == "music_quiet_hours":
-            logger.info(f"[TRIGGER] {command} for {dog_id} skipped (quiet hours)")
-        else:
-            logger.warning(f"[TRIGGER] {command} for {dog_id} failed: {e.detail}")
-    except Exception as e:
-        logger.warning(f"[TRIGGER] {command} for {dog_id} failed: {e}")
 
 
 # ---------------------------------------------------------------------------

@@ -139,7 +139,7 @@ def test_rule_appended_with_matching_app_type(temp_db):
 
 
 @pytest.mark.parametrize("event_type,app_type", [("treat", "treatDispensed"), ("mission_run", "missionCompleted"),
-                                                 ("settle", "alert"), ("departure", "alert"), ("pacing", "alert")])
+                                                 ("settle", "alert"), ("intervention", "alert"), ("pacing", "alert")])
 def test_app_type_follows_event_type(temp_db, event_type, app_type):
     r = rule(event_type)
     assert r["ok"] and r["rule"]["app_type"] == app_type and r["rule"]["when"] == {} and r["rule"]["attach"] == "none"
@@ -148,8 +148,8 @@ def test_app_type_follows_event_type(temp_db, event_type, app_type):
 def test_max_ten_rules(temp_db):
     n = len(settings_service.get_value("dog_t1", "notify_rules")["rules"])
     for _ in range(10 - n):
-        assert rule("arrival")["ok"]
-    r = rule("arrival")
+        assert rule("pacing")["ok"]
+    r = rule("pacing")
     assert r["refused"] and r["reason"] == "notify_rules_limit" and r["rule_count"] == 10
     assert len(settings_service.get_value("dog_t1", "notify_rules")["rules"]) == 10
 

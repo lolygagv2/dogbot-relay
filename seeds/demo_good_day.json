@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Bezik good day (demo)",
-  "notes": "Departure 09:05, four short quiet check-ins, one bark episode at 14:10 settled at SG level 2 in 2 min 20 s, treats front-loaded in the morning.",
+  "notes": "Silent Guardian on 09:05 (mode start), four short quiet check-ins, one bark episode at 14:10 settled at SG level 2 in 2 min 20 s, treats front-loaded in the morning.",
   "dog_name": "Bezik",
   "dog_breed": "Pomeranian",
   "dog_id": "01a183fe-0169-7d8b-ac62-5d58727473bf",
@@ -47,9 +47,9 @@
     },
     {
       "offset_s": 7500,
-      "type": "departure",
+      "type": "mode_change",
       "data": {
-        "method": "door"
+        "mode": "silent_guardian"
       }
     },
     {
@@ -58,7 +58,7 @@
       "data": {
         "action": "start",
         "track": "song_calm_01",
-        "trigger": "departure"
+        "trigger": "on_mode_start"
       }
     },
     {
@@ -188,9 +188,9 @@
     },
     {
       "offset_s": 38400,
-      "type": "arrival",
+      "type": "mode_change",
       "data": {
-        "method": "door"
+        "mode": "idle"
       }
     },
     {

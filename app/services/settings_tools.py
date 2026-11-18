@@ -9,6 +9,10 @@ daily treat cap (0-100, or daily_cap_enabled=false for no daily cap) and the hou
 relay copies it (limits, windows, default_multiplier) to all the owner's dogs. Raising either limit is allowed (since 2026-11-09) and pushes the owner an alert.
 The result reads back the saved schedule and the previous limits.
 
+set_music (2026-11-18) changes the calming-music plan: enabled, volume, and one trigger per call
+(on_mode_start, after_treat, on_bark_episode or at_time) with its track and duration. The robot
+runs the triggers; departure/arrival triggers no longer exist.
+
 set_notify_rule appends one rule to `notify_rules`, with the app_type that matches its event
 type, up to MAX_NOTIFY_RULES rules per dog (the owner's existing rules count).
 """
@@ -18,7 +22,12 @@ import re
 import secrets
 from typing import Any, Optional
 
-from app.models import NotifyRule, TreatSchedule
+from pydantic import ValidationError
+
+from app.models import (
+    MUSIC_TRIGGER_KINDS, MusicAfterTreat, MusicAtTime, MusicOnBarkEpisode, MusicOnModeStart,
+    MusicPlan, NotifyRule, TreatSchedule,
+)
 from app.services import settings_service
 from app.services.relay_client import RelayClient
 from app.services.settings_service import minute_set
@@ -43,8 +52,6 @@ _TEXT = {
     "intervention": ("WIM-Z stepped in", "{dog_name}: {kind}"),
     "settle": ("{dog_name} settled", "after {settle_min} min"),
     "pacing": ("{dog_name} is pacing", "{duration_min} min"),
-    "departure": ("{dog_name} is home alone", "Guardian active"),
-    "arrival": ("Someone is home", "{dog_name} has company"),
     "treat": ("Treat given", "by {source}"),
     "music": ("Music for {dog_name}", "{track}"),
     "mission_run": ("Mission {result}", "{mission_type}"),
@@ -204,3 +211,99 @@ async def set_notify_rule(client: RelayClient, dog_id: str, event_type: str, min
     saved["when"] = {k: v for k, v in (saved.get("when") or {}).items() if v is not None}
     return {"ok": True, "rule": saved, "rule_count": len(row["value"].get("rules", [])),
             "max_rules": MAX_NOTIFY_RULES, "version": row.get("version")}
+
+
+# ---------------------------------------------------------------------------
+# set_music (2026-11-18)
+# ---------------------------------------------------------------------------
+
+MUSIC_TRIGGER_MODELS = {"on_mode_start": MusicOnModeStart, "after_treat": MusicAfterTreat,
+                        "on_bark_episode": MusicOnBarkEpisode, "at_time": MusicAtTime}
+# fields that belong to one trigger only (track / duration_min apply to every trigger)
+MUSIC_TRIGGER_FIELDS = {"on_mode_start": ("mode", "delay_s"), "after_treat": ("every_n", "minutes"),
+                        "on_bark_episode": ("min_severity",), "at_time": ("time",)}
+MAX_MUSIC_SLOTS = 12   # = MusicPlan.at_time max_length
+
+
+async def set_music(client: RelayClient, dog_id: str, enabled: Optional[bool] = None, volume: Any = None,
+                    trigger: Optional[str] = None, remove: bool = False, track: Optional[str] = None,
+                    duration_min: Any = None, mode: Optional[str] = None, delay_s: Any = None,
+                    every_n: Any = None, minutes: Any = None, min_severity: Optional[str] = None,
+                    time: Optional[str] = None) -> dict:
+    """Change the music plan. trigger + fields add or update that trigger (omitted fields keep their
+    value, or the default for a new one); remove=True switches it off (at_time: the slot at `time`,
+    or every slot without `time`). Everything not named keeps its value."""
+    given = {k: v for k, v in {"mode": mode, "delay_s": delay_s, "every_n": every_n, "minutes": minutes,
+                               "min_severity": min_severity, "time": time}.items() if v is not None}
+    if trigger is not None and trigger not in MUSIC_TRIGGER_KINDS:
+        return _refuse("invalid_trigger", allowed=list(MUSIC_TRIGGER_KINDS))
+    if trigger is None and (given or track is not None or duration_min is not None or remove):
+        return _refuse("trigger_required", allowed=list(MUSIC_TRIGGER_KINDS),
+                       hint="name the trigger these fields belong to")
+    if trigger is not None:
+        stray = [k for k in given if k not in MUSIC_TRIGGER_FIELDS[trigger]]
+        if stray:
+            return _refuse("field_not_for_trigger", trigger=trigger, fields=stray,
+                           allowed=["track", "duration_min", *MUSIC_TRIGGER_FIELDS[trigger]])
+    if enabled is not None and not isinstance(enabled, bool):
+        return _refuse("invalid_enabled", hint="true or false")
+    vol = None
+    if volume is not None:
+        vol = _int_in(volume, 0, 100)
+        if vol is None:
+            return _refuse("invalid_volume", min=0, max=100, requested=volume)
+    if enabled is None and volume is None and trigger is None:
+        return _refuse("nothing_to_change", hint="pass enabled, volume or a trigger")
+
+    cur_row = await client.get_setting(dog_id, "music_plan")
+    plan = MusicPlan.model_validate(cur_row.get("value") or {}).model_dump()
+    if enabled is not None:
+        plan["enabled"] = enabled
+    if vol is not None:
+        plan["volume"] = vol
+
+    if trigger is not None:
+        if track is not None and not remove:
+            sounds = (await client.get_setting(dog_id, "sounds")).get("value") or {}
+            songs = [x.get("id") for x in sounds.get("sounds", []) if x.get("kind") == "song"]
+            if track not in songs:
+                return _refuse("unknown_track", requested=track, available_tracks=songs)
+        fields = dict(given)
+        if track is not None:
+            fields["track"] = track
+        if duration_min is not None:
+            fields["duration_min"] = duration_min
+        model = MUSIC_TRIGGER_MODELS[trigger]
+        if trigger == "at_time":
+            slots = list(plan["at_time"])
+            if remove:
+                plan["at_time"] = [x for x in slots if time is not None and x["time"] != time]
+            else:
+                if time is None or not _HM.match(str(time)):
+                    return _refuse("invalid_time", hint="at_time needs time as HH:MM (24h, local)")
+                old = next((x for x in slots if x["time"] == time), {})
+                try:
+                    slot = model.model_validate({**old, **fields}).model_dump()
+                except ValidationError as e:
+                    return _refuse("invalid_value", trigger=trigger, errors=_errors(e))
+                slots = [x for x in slots if x["time"] != time] + [slot]
+                if len(slots) > MAX_MUSIC_SLOTS:
+                    return _refuse("too_many_music_slots", max=MAX_MUSIC_SLOTS)
+                plan["at_time"] = sorted(slots, key=lambda x: x["time"])
+        elif remove:
+            plan[trigger] = None
+        else:
+            try:
+                plan[trigger] = model.model_validate({**(plan.get(trigger) or {}), **fields}).model_dump()
+            except ValidationError as e:
+                return _refuse("invalid_value", trigger=trigger, errors=_errors(e))
+
+    row = await client.put_setting(dog_id, "music_plan", plan, expected_version=cur_row.get("version"))
+    v = row["value"]
+    return {"ok": True, "music_enabled": v.get("enabled"), "volume": v.get("volume"), "music_plan": v,
+            "version": row.get("version"),
+            "note": "The robot runs these triggers itself; quiet hours still silence music."}
+
+
+def _errors(e: ValidationError) -> list[dict]:
+    return [{"field": ".".join(str(p) for p in err["loc"]), "msg": err["msg"]} for err in e.errors()]

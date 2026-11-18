@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "Bezik bad day (demo)",
-  "notes": "Departure 09:05, bark episodes at 10:30, 11:45, 13:20, 14:50 (each longer), Silent Guardian through all four levels every time, daily cap of 10 treats used up by 15:30 with 5 left in the hopper, settle times climbing.",
+  "notes": "Silent Guardian on 09:05 (mode start), bark episodes at 10:30, 11:45, 13:20, 14:50 (each longer), Silent Guardian through all four levels every time, daily cap of 10 treats used up by 15:30 with 5 left in the hopper, settle times climbing.",
   "dog_name": "Bezik",
   "dog_breed": "Pomeranian",
   "dog_id": "01a183fe-0169-7d8b-ac62-5d58727473bf",
@@ -47,9 +47,9 @@
     },
     {
       "offset_s": 7500,
-      "type": "departure",
+      "type": "mode_change",
       "data": {
-        "method": "door"
+        "mode": "silent_guardian"
       }
     },
     {
@@ -58,7 +58,7 @@
       "data": {
         "action": "start",
         "track": "song_calm_01",
-        "trigger": "departure"
+        "trigger": "on_mode_start"
       }
     },
     {
@@ -450,9 +450,9 @@
     },
     {
       "offset_s": 38400,
-      "type": "arrival",
+      "type": "mode_change",
       "data": {
-        "method": "door"
+        "mode": "idle"
       }
     },
     {

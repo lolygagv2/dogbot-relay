@@ -76,9 +76,6 @@ DEFAULT_NOTIFY_RULES = {
         {"id": "settled", "enabled": True, "event_type": "settle", "when": {},
          "cooldown_s": 600, "attach": "none", "app_type": "alert",
          "title": "{dog_name} settled", "body": "after {settle_min} min"},
-        {"id": "departure", "enabled": True, "event_type": "departure", "when": {},
-         "cooldown_s": 1800, "attach": "none", "app_type": "alert",
-         "title": "Guardian active", "body": "{dog_name} is home alone"},
         {"id": "mission_fail", "enabled": True, "event_type": "mission_run",
          "when": {"result_in": ["fail"]}, "cooldown_s": 0, "attach": "clip",
          "app_type": "missionFailed", "title": "Mission failed", "body": "{mission_type}"},
@@ -301,14 +298,6 @@ async def put_setting(dog_id: str, key: str, value: Any, actor: Actor,
         await _propagate_treat_limits(dog_id, actor, row["value"])
         if actor.is_internal:
             await _alert_owner_if_treat_limits_raised(dog_id, actor, current["value"], row["value"])
-    if key == "missions":
-        # amendment 2026-11-06 (3): a new/changed departure mission starts within 15 min
-        # even if no departure event arrives
-        try:
-            from app.services import notify_service
-            notify_service.arm_departure_fallbacks(dog_id, current["value"], new_value, actor.user_id)
-        except Exception as e:  # pragma: no cover
-            logger.warning(f"[SETTINGS] arming departure fallbacks failed: {e}")
     return row
 
 

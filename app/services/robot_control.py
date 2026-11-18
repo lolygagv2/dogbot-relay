@@ -1,7 +1,7 @@
 """Allowlisted robot control with guards (Dec 9 demo build, 2026-11-06).
 
-Every HTTP actor (app, admin, MCP connector, voice agent) and the relay's own
-departure triggers go through `dispatch`. The outgoing robot message is built fresh
+Every HTTP actor (app, admin, MCP connector, voice agent) and the relay's own internal
+callers (speak) go through `dispatch`. The outgoing robot message is built fresh
 from a `match` on the command name, never copied from the request, so nothing outside
 the allowlist (webrtc/live view, motor, download_song, ...) can ever be emitted.
 """
@@ -32,7 +32,8 @@ MOVE_ACTIONS: dict[str, tuple[str, int, int, int]] = {
     "turn_left": ("deg", 15, 90, 30), "turn_right": ("deg", 15, 90, 30),
 }
 
-# What each actor kind may ask for. "relay" = departure triggers (not reachable over HTTP).
+# What each actor kind may ask for. "relay" = the relay's own internal callers (not reachable
+# over HTTP); since the departure triggers went (2026-11-18) only speak() uses it.
 ACTOR_ALLOWED: dict[str, set[str]] = {
     "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
     "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},

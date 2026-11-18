@@ -25,6 +25,7 @@ from app.services.robot_control import SMART_PLUG_ASSISTANT_ACTIONS, SMART_PLUG_
 from app.services.robot_control import (LOOK_ACTIONS, LOOK_WAIT_S, ULTRASONIC_STYLES, ULTRASONIC_WAIT_S,
                                         look_tool_result, ultrasonic_tool_result)
 from app.services import schedule_tools, settings_tools
+from app.models import BARK_SEVERITIES, MUSIC_MODES, MUSIC_TRIGGER_KINDS
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +56,11 @@ TOOLS: list[dict] = [
     {"name": "get_dogs", "description": "List the owner's dogs (dog_id, name, breed).",
      "input_schema": _schema({}, [])},
     {"name": "get_day_summary",
-     "description": "Daily roll-up for a dog: counts per event type, totals (bark seconds, treats vs cap, alone time), time-to-settle stats, top bark episodes. date: YYYY-MM-DD, today or yesterday.",
+     "description": "Daily roll-up for a dog: counts per event type, totals (bark seconds, treats vs cap, sg_s = time on guard in seconds), time-to-settle stats, top bark episodes. date: YYYY-MM-DD, today or yesterday.",
      "input_schema": _schema({"dog_id": _str("dog id"), "date": _str("YYYY-MM-DD | today | yesterday")}, ["dog_id", "date"]),
      "strict": True},
     {"name": "get_events",
-     "description": "Recent events for a dog, newest first. type is one of bark_episode, intervention, settle, pacing, departure, arrival, treat, music, mission_run, coach_session, trick_attempt, smart_plug, ultrasonic, status or empty for all.",
+     "description": "Recent events for a dog, newest first. type is one of bark_episode, intervention, settle, pacing, treat, music, mission_run, coach_session, trick_attempt, smart_plug, ultrasonic, status or empty for all.",
      "input_schema": _schema({"dog_id": _str("dog id"), "type": _str("event type or empty string"),
                               "limit": {"type": "integer", "description": "1-50"}}, ["dog_id", "type", "limit"]),
      "strict": True},
@@ -73,10 +74,22 @@ TOOLS: list[dict] = [
      "input_schema": _schema({"dog_id": _str("dog id"), "start": _str("HH:MM"), "end": _str("HH:MM")},
                              ["dog_id", "start", "end"]), "strict": True},
     {"name": "set_music",
-     "description": "Enable/disable calming music and set its volume (0-100). Pass volume -1 to keep the current volume.",
-     "input_schema": _schema({"dog_id": _str("dog id"), "enabled": {"type": "boolean"},
-                              "volume": {"type": "integer", "description": "0-100, or -1 to keep"}},
-                             ["dog_id", "enabled", "volume"]), "strict": True},
+     "description": "Change the calming-music plan. enabled turns all music on/off; volume 0-100 for every trigger. To add or change one trigger, name it with its fields (omitted fields keep their value): on_mode_start (mode silent_guardian|coach, delay_s 0-3600 after the mode starts), after_treat (every_n 1-50 treats within a rolling `minutes` 1-240 window), on_bark_episode (min_severity low|med|high), at_time (time HH:MM local, daily). Any trigger takes track (a song id, e.g. song_calm_01) and duration_min 1-480. remove=true switches the trigger off. The robot runs the triggers; there is no departure or arrival trigger.",
+     "input_schema": {"type": "object", "properties": {
+         "dog_id": _str("dog id"),
+         "enabled": {"type": "boolean", "description": "all music on/off; omit to keep"},
+         "volume": {"type": "integer", "description": "0-100; omit to keep"},
+         "trigger": _str("which trigger to change", list(MUSIC_TRIGGER_KINDS)),
+         "remove": {"type": "boolean", "description": "true = switch that trigger off"},
+         "track": _str("song id"),
+         "duration_min": {"type": "integer", "description": "1-480 minutes of music"},
+         "mode": _str("on_mode_start: mode that starts the music", list(MUSIC_MODES)),
+         "delay_s": {"type": "integer", "description": "on_mode_start: seconds after the mode starts, 0-3600"},
+         "every_n": {"type": "integer", "description": "after_treat: treats in the window, 1-50"},
+         "minutes": {"type": "integer", "description": "after_treat: rolling window in minutes, 1-240"},
+         "min_severity": _str("on_bark_episode: at least this severe", list(BARK_SEVERITIES)),
+         "time": _str("at_time: HH:MM 24h local")},
+         "required": ["dog_id"]}},
     {"name": "set_sg_sensitivity",
      "description": "Set how sensitive Silent Guardian (bark intervention) is: level low, medium or high; min_episode_s = seconds of barking before it counts as an episode (1-600); escalate_after_s = seconds before it escalates (5-3600). Pass -1 for a number to keep its current value.",
      "input_schema": _schema({"dog_id": _str("dog id"), "level": _str("low | medium | high", ["low", "medium", "high"]),
@@ -116,7 +129,7 @@ TOOLS: list[dict] = [
          "max_per_hour": {"type": "integer", "description": "0-60 treats per hour, 0 = no hourly limit; omit to keep"}},
          "required": ["dog_id"]}},
     {"name": "set_notify_rule",
-     "description": "Add a phone notification rule. event_type: bark_episode, intervention, settle, pacing, departure, arrival, treat, music or mission_run. Optional: min_duration_s; severity (bark_episode only) low|med|high meaning at least that severe; attach none|still|clip; cooldown_s between pushes. At most 10 rules per dog; edits and removals are done in the app.",
+     "description": "Add a phone notification rule. event_type: bark_episode, intervention, settle, pacing, treat, music or mission_run. Optional: min_duration_s; severity (bark_episode only) low|med|high meaning at least that severe; attach none|still|clip; cooldown_s between pushes. At most 10 rules per dog; edits and removals are done in the app.",
      "input_schema": {"type": "object", "properties": {
          "dog_id": _str("dog id"),
          "event_type": _str("event type", settings_tools.NOTIFY_EVENT_TYPES),
@@ -278,13 +291,11 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             row = await c.put_setting(dog_id, "quiet_hours", {"enabled": True, "start": a["start"], "end": a["end"]})
             return {"ok": True, "quiet_hours": row["value"]}
         if name == "set_music":
-            cur = (await c.get_setting(dog_id, "music_plan")).get("value") or {}
-            cur["enabled"] = bool(a.get("enabled"))
-            vol = int(a.get("volume", -1))
-            if vol >= 0:
-                cur["volume"] = min(100, vol)
-            row = await c.put_setting(dog_id, "music_plan", cur)
-            return {"ok": True, "music_enabled": row["value"]["enabled"], "volume": row["value"]["volume"]}
+            return await settings_tools.set_music(
+                c, dog_id, enabled=a.get("enabled"), volume=a.get("volume"), trigger=a.get("trigger"),
+                remove=bool(a.get("remove", False)), track=a.get("track"), duration_min=a.get("duration_min"),
+                mode=a.get("mode"), delay_s=a.get("delay_s"), every_n=a.get("every_n"), minutes=a.get("minutes"),
+                min_severity=a.get("min_severity"), time=a.get("time"))
         if name == "set_sg_sensitivity":
             cur = (await c.get_setting(dog_id, "sg_sensitivity")).get("value") or {}
             cur["level"] = a["level"]
