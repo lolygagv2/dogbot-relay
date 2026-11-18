@@ -146,3 +146,76 @@ def test_live_events_keep_wall_clock_cooldown(temp_db, monkeypatch):
                                         "duration_s": 90, "data": {"bark_count": 9, "severity": "high"}}],
                                       device_id="robot_t", user_id="user_t1", source="robot", forward=False))
     assert sent == ["live1"]                           # live robot: wall-clock cooldown, as before
+
+
+# ---- settle push text and seed media (2026-11-18) ----
+
+QUIET_SEED = {
+    "version": 1, "name": "quiet test", "timezone": "UTC", "day_start": "07:00",
+    "events": [
+        {"offset_s": 0, "type": "status", "data": {"battery": 90, "mode": "silent_guardian", "treats_remaining": 8}},
+        {"offset_s": 600, "type": "bark_episode", "duration_s": 50, "id": "ep1", "data": {"bark_count": 9, "severity": "low"}},
+        {"offset_s": 740, "type": "settle", "data": {"episode_ref": "ep1"}},
+        {"offset_s": 4500, "type": "settle", "data": {"kind": "quiet_check", "quiet_min": 75}, "still": "asleep.jpg"},
+        {"offset_s": 5000, "type": "bark_episode", "duration_s": 360, "id": "ep2",
+         "data": {"bark_count": 82, "severity": "high"}, "still": "bark.jpg", "clip": "bark.mp4"},
+        {"offset_s": 5100, "type": "settle", "data": {"kind": "quiet_check"}, "still": "not_there.jpg"},
+    ],
+}
+
+
+@pytest.fixture()
+def quiet(rec, tmp_path, monkeypatch):
+    from app.services import media_files
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "asleep.png").write_bytes(b"png")       # seed names .jpg: same stem is used
+    (media / "bark.jpg").write_bytes(b"jpg")
+    (media / "bark.mp4").write_bytes(b"mp4")
+    monkeypatch.setattr(media_files, "SEEDS_MEDIA_DIR", media)
+    (tmp_path / "quiet.json").write_text(json.dumps(QUIET_SEED))
+    r, _, pushes, _ = rec
+    return r, pushes, media
+
+
+def test_quiet_check_push_quotes_quiet_min_and_episode_settle_its_time(quiet):
+    r, pushes, _ = quiet
+    run(r.load("quiet.json", ADMIN, dog_id="dog_t1", device_id=DEVICE, date="2026-11-03"))
+    run(r.jump(offset_s=800))            # newest settle = the episode settle (740 - 600 = 140 s)
+    (p,) = [p for p in pushes if p["app_type"] == "alert"]
+    assert p["title"].endswith(" settled") and p["body"] == "after 2 min"
+    pushes.clear()
+    run(r.jump(offset_s=4600))           # newest settle = the 75-min quiet check
+    (p,) = [p for p in pushes if p["app_type"] == "alert"]
+    assert p["title"].endswith("is quiet") and p["body"] == "Quiet for 75 min"
+    assert "0 min" not in p["body"] and "settled" not in p["title"]
+
+
+def test_settle_without_time_never_says_zero_min(temp_db):
+    from app.models import NotifyRule
+    rule = NotifyRule(id="settled", event_type="settle", title="{dog_name} settled", body="after {settle_min} min")
+    for data in ({}, {"settle_s": 0}, {"kind": "quiet_check"}):
+        ev = {"type": "settle", "ts": "2026-11-03T15:30:00+00:00", "data": data, "duration_s": None}
+        title, body = notify_service._render(rule, ev, notify_service._fmt_vars(ev, "Bezik"))
+        assert "0 min" not in body and "?" not in title + body, (data, title, body)
+    ev = {"type": "settle", "ts": "2026-11-03T15:30:00+00:00", "data": {"kind": "quiet_check", "quiet_min": 75}}
+    v = notify_service._fmt_vars(ev, "Bezik")
+    assert v["quiet_since"] == "14:15"
+
+
+def test_seed_media_links_by_file_name(quiet):
+    from app.services import media_files
+    r, _, media = quiet
+    st = run(r.load("quiet.json", ADMIN, dog_id="dog_t1", device_id=DEVICE, date="2026-11-03"))
+    assert st["media_missing"] == [{"file": "not_there.jpg", "kind": "still", "type": "settle", "offset_s": 5100}]
+    by_off = {e["offset_s"]: e["event"]["data"] for e in r.events}
+    assert by_off[4500]["image_url"] == "/api/media/download/seed_asleep.png"
+    assert by_off[5000]["image_url"] == "/api/media/download/seed_bark.jpg"
+    assert by_off[5000]["clip_url"] == "/api/media/download/seed_bark.mp4"
+    assert "image_url" not in by_off[5100]
+    assert "still" not in QUIET_SEED["events"][3]["data"]          # the seed itself is not changed
+    assert media_files.resolve("seed_bark.mp4") == media / "bark.mp4"
+    # replayed events keep the links, so has_photo is true and attach still/clip works
+    run(r.jump(offset_s=5050))
+    pushes = [p for p in quiet[1] if p["app_type"] == "bark"]
+    assert pushes and pushes[-1]["data"]["image_url"] == "/api/media/download/seed_bark.jpg"

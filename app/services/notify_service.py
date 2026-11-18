@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -46,17 +46,45 @@ class _Safe(dict):
         return "?"
 
 
-def _fmt_vars(ev: dict, dog_name: str) -> dict:
+def _fmt_vars(ev: dict, dog_name: str, tz=None) -> dict:
     d = ev["data"]
     dur = ev.get("duration_s") or 0
     settle = d.get("settle_s") or dur
+    quiet_min = d.get("quiet_min")
+    quiet_since = "?"
+    if isinstance(quiet_min, (int, float)) and not isinstance(quiet_min, bool) and quiet_min > 0:
+        since = datetime.fromisoformat(ev["ts"]) - timedelta(minutes=quiet_min)
+        quiet_since = (since.astimezone(tz) if tz else since).strftime("%H:%M")
+    else:
+        quiet_min = "?"
     return _Safe(
         dog_name=dog_name, duration_s=round(dur), duration_min=max(1, round(dur / 60)) if dur else 0,
-        settle_min=max(1, round(settle / 60)) if settle else 0, bark_count=d.get("bark_count", "?"),
+        settle_min=max(1, round(settle / 60)) if settle else "?", bark_count=d.get("bark_count", "?"),
         severity=d.get("severity", "?"), kind=d.get("kind", "?"), result=d.get("result", "?"),
         mission_type=d.get("mission_type") or d.get("mission_id") or "?", source=d.get("source", "?"),
-        track=d.get("track", "?"),
+        track=d.get("track", "?"), quiet_min=quiet_min, quiet_since=quiet_since,
     )
+
+
+# Settle events come in two kinds (2026-11-18): a quiet check-in (data.kind "quiet_check",
+# quiet_min = how long the dog has been quiet) and an episode settle (settle_s = seconds from
+# the bark episode's start). Rule templates are written for episode settles, so a quiet check
+# always gets its own text, and a settle with no time quotes no number (never "0 min").
+QUIET_CHECK_TEXT = ("{dog_name} is quiet", "Quiet for {quiet_min} min")
+QUIET_CHECK_TEXT_NO_MIN = ("{dog_name} is quiet", "")
+
+
+def _render(rule: NotifyRule, ev: dict, variables: dict) -> tuple[str, str]:
+    title_t, body_t = rule.title, rule.body
+    if ev["type"] == "settle":
+        if ev["data"].get("kind") == "quiet_check":
+            title_t, body_t = QUIET_CHECK_TEXT if variables["quiet_min"] != "?" else QUIET_CHECK_TEXT_NO_MIN
+        elif variables["settle_min"] == "?":
+            if "{settle_min}" in title_t:
+                title_t = "{dog_name} settled"
+            if "{settle_min}" in body_t:
+                body_t = ""
+    return title_t.format_map(variables), body_t.format_map(variables)
 
 
 def _matches(rule: NotifyRule, ev: dict) -> bool:
@@ -105,9 +133,8 @@ async def evaluate_notify_rules(ev: dict, user_id: Optional[str],
             continue
         image = ev["data"].get("image_url") if rule.attach == "still" else None
         clip = ev["data"].get("clip_url") if rule.attach == "clip" else None
-        variables = _fmt_vars(ev, dog_name)
-        title = rule.title.format_map(variables)
-        body = rule.body.format_map(variables)
+        variables = _fmt_vars(ev, dog_name, settings_service.get_timezone(dog_id))
+        title, body = _render(rule, ev, variables)
 
         def log(outcome: str) -> None:
             insert_notify_log(dog_id, user_id, rule.id, ev["event_id"], ev["type"], outcome,

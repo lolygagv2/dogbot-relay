@@ -19,6 +19,10 @@ Seed format (seeds/demo_day.json):
    "events": [{"offset_s": 0, "type": "status", "data": {...}, "duration_s": ..., "id": "ep1"},
               {"offset_s": 2430, "type": "intervention", "data": {"kind": "sound", "episode_ref": "ep1"}}]}
 `episode_ref` resolves to the generated event_id of the seed entry with that `id`.
+Media (2026-11-18): an entry may name `"still": "<file>"` and/or `"clip": "<file>"` in
+seeds/media; load links them as data.image_url / data.clip_url (so has_photo is true and a rule's
+attach still/clip works). A named file that is not there is left off and listed in the load
+result's `media_missing`; drop the file in and load again.
 Event ids are deterministic (replay:<dog>:<date>:<idx>) so re-runs are idempotent.
 `day_start` is local time in the dog's timezone; the seed's `timezone` is only a fallback.
 """
@@ -51,7 +55,7 @@ from app.database import (
     get_event,
     get_user_dog_role,
 )
-from app.services import event_store, settings_service
+from app.services import event_store, media_files, settings_service
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +168,29 @@ class Replayer:
         devices = pairing.dog_devices(dog_id, owner)
         return devices[0] if devices else get_settings().demo_device_id
 
+    @staticmethod
+    def _link_media(entries: list[dict]) -> tuple[list[dict], list[dict]]:
+        """Seed entries with still/clip file names turned into image_url/clip_url (copies)."""
+        out, missing = [], []
+        kinds = (("still", "image_url", media_files.IMAGE_EXTS), ("clip", "clip_url", media_files.VIDEO_EXTS))
+        for entry in entries:
+            if not any(entry.get(k) for k, _, _ in kinds):
+                out.append(entry)
+                continue
+            entry = {**entry, "data": dict(entry.get("data") or {})}
+            for key, field, exts in kinds:
+                name = entry.get(key)
+                if not name:
+                    continue
+                url = media_files.find_seed_media(name, exts)
+                if url:
+                    entry["data"][field] = url
+                else:
+                    missing.append({"file": name, "kind": key, "type": entry.get("type"),
+                                    "offset_s": entry.get("offset_s")})
+            out.append(entry)
+        return out, missing
+
     def _materialise(self, entries: list[dict], date: str) -> list[dict]:
         base = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=self.tz) + timedelta(seconds=self.day_start_s)
         ref_ids: dict[str, str] = {}
@@ -225,6 +252,9 @@ class Replayer:
         self.dog_id, self.device_id, self.user_id = dog_id, device, admin.user_id
         self.tz, self.day_start_s, self.date = tz, day_start_s, date
         entries = sorted(seed["events"], key=lambda e: float(e.get("offset_s", 0)))
+        entries, media_missing = self._link_media(entries)
+        if media_missing:
+            logger.warning(f"[REPLAY] {self.seed_name}: media not in seeds/media: {[m['file'] for m in media_missing]}")
 
         landed_date = (day - timedelta(days=1)).date().isoformat() if seed.get("land_previous_day") else None
         await self._purge(dog_id, [date] + ([landed_date] if landed_date else []))
@@ -247,7 +277,8 @@ class Replayer:
         logger.info(f"[REPLAY] loaded {self.seed_name}: {len(self.events)} events for {dog_id} on {date}"
                     + (f", landed {landed} on {landed_date}" if landed_date else "")
                     + (f", seed settings ignored: {ignored}" if ignored else ""))
-        return {**self.state(), "landed": landed, "landed_date": landed_date, "settings_ignored": ignored}
+        return {**self.state(), "landed": landed, "landed_date": landed_date, "settings_ignored": ignored,
+                "media_missing": media_missing}
 
     async def start(self, speed: Optional[float] = None, dog_id: Optional[str] = None) -> dict:
         self._require_target(dog_id)

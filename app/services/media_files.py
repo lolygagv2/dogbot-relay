@@ -3,7 +3,9 @@
 Files live in `media_storage_dir` (default <repo>/data/media, persistent across reboots).
 Retention: video 1 h, audio clips (listen) 1 h, stills 24 h, and stills pinned by `pin_media` (treat snapshots) 7 days
 (PHOTO ACCESS amendment 2026-11-06). Pins are sidecar files `<name>.ttl` holding the TTL in
-seconds, so they survive restarts. Seed stills under <repo>/seeds/media are read-only.
+seconds, so they survive restarts. Seed media under <repo>/seeds/media is read-only and never
+expires; it is served as `seed_<file name>` (a file already named seed_* keeps its name), so a
+replay seed can link any still or clip dropped there by file name (find_seed_media).
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ IMAGE_TTL_S = 24 * 3600
 TREAT_STILL_TTL_S = 7 * 24 * 3600
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".aac"}
+VIDEO_EXTS = {".mp4", ".mov"}
 MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
                ".mp4": "video/mp4", ".mov": "video/quicktime",
                ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg",
@@ -61,10 +64,28 @@ def resolve(filename: str) -> Optional[Path]:
             return None
         return p
     if safe.startswith("seed_"):
-        sp = SEEDS_MEDIA_DIR / safe
-        if sp.is_file():
-            return sp
+        for sp in (SEEDS_MEDIA_DIR / safe, SEEDS_MEDIA_DIR / safe[len("seed_"):]):
+            if sp.is_file():
+                return sp
     return None
+
+
+def find_seed_media(name: str, exts: set[str]) -> Optional[str]:
+    """Download URL for a file in seeds/media, by file name. If that exact file is missing, a file
+    with the same stem and another allowed extension is used (bezik_asleep.jpg -> bezik_asleep.png).
+    None if nothing is there."""
+    base = os.path.basename(str(name or ""))
+    if not base or not SEEDS_MEDIA_DIR.is_dir():
+        return None
+    hit = SEEDS_MEDIA_DIR / base
+    if not (hit.is_file() and hit.suffix.lower() in exts):
+        stem = Path(base).stem
+        hit = next((p for p in sorted(SEEDS_MEDIA_DIR.iterdir())
+                    if p.is_file() and p.stem == stem and p.suffix.lower() in exts), None)
+    if hit is None:
+        return None
+    served = hit.name if hit.name.startswith("seed_") else f"seed_{hit.name}"
+    return DOWNLOAD_PREFIX + served
 
 
 def pin_media(url_or_name: str, ttl_seconds: int = TREAT_STILL_TTL_S) -> bool:

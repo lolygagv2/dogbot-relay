@@ -175,7 +175,8 @@
       "data": {
         "kind": "quiet_check",
         "quiet_min": 75
-      }
+      },
+      "still": "bezik_asleep.jpg"
     },
     {
       "offset_s": 32400,

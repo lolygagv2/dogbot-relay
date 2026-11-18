@@ -354,7 +354,9 @@
         "severity": "high",
         "peak_db": 88,
         "trigger": "unknown"
-      }
+      },
+      "still": "bezik_bark_1450.jpg",
+      "clip": "bezik_bark_1450.mp4"
     },
     {
       "offset_s": 28220,
