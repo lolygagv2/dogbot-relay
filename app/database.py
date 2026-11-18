@@ -3026,6 +3026,41 @@ def delete_events_by_source(dog_id: str, source: str) -> list[str]:
     return ids
 
 
+REPLAY_SOURCES = ("replay", "relay")   # replayer-written events and relay-simulated command effects
+
+
+def delete_replay_events(dog_id: str, local_dates: Optional[list[str]] = None) -> list[str]:
+    """Delete a dog's replay-made events (sources REPLAY_SOURCES), on the given local dates or all
+    dates. Real robot/app events are never touched. Returns the deleted event_ids."""
+    where = f"dog_id = ? AND source IN ({','.join('?' for _ in REPLAY_SOURCES)})"
+    args: list = [dog_id, *REPLAY_SOURCES]
+    if local_dates is not None:
+        if not local_dates:
+            return []
+        where += f" AND local_date IN ({','.join('?' for _ in local_dates)})"
+        args += list(local_dates)
+    with db_connection() as conn:
+        ids = [r["event_id"] for r in conn.execute(f"SELECT event_id FROM events WHERE {where}", args).fetchall()]
+        conn.execute(f"DELETE FROM events WHERE {where}", args)
+        conn.commit()
+    return ids
+
+
+def delete_treat_ledger_by_event_ids(event_ids: list[str]) -> int:
+    if not event_ids:
+        return 0
+    deleted = 0
+    with db_connection() as conn:
+        for i in range(0, len(event_ids), 500):
+            chunk = event_ids[i:i + 500]
+            cur = conn.execute(
+                f"DELETE FROM treat_ledger WHERE event_id IN ({','.join('?' for _ in chunk)})", chunk
+            )
+            deleted += cur.rowcount
+        conn.commit()
+    return deleted
+
+
 def delete_activity_events_by_ids(event_ids: list[str]) -> int:
     if not event_ids:
         return 0

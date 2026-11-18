@@ -1,9 +1,18 @@
 """Demo replayer (Dec 9 demo build, 2026-11-06).
 
-Loads a seed file from <repo>/seeds, materialises its events onto a local date for the
-demo dog, and feeds them through the normal ingest pipeline at a chosen speed, so the
-app, push notifications, roll-ups and the voice agent all behave as if a robot were
-live. In-process singleton; admin-only routes in app/routers/replay.py.
+Loads a seed file from <repo>/seeds, materialises its events onto a local date for one of
+the admin's own dogs, and feeds them through the normal ingest pipeline at a chosen speed,
+so the app, push notifications, roll-ups and the voice agent all behave as if a robot were
+live. It only records events: it never sends the robot a command. In-process singleton;
+admin-only routes in app/routers/replay.py.
+
+Per-dog targets (2026-11-18): every call names its dog, the dog must be one the admin owns
+(no placeholder dog is created), and a call for a dog other than the loaded one gets 409
+replay_other_dog. Load never changes the dog's settings and uses the dog's own timezone.
+A seed with "land_previous_day": true (demo_good_day) is also written in full, silently,
+onto the day before the replay date, so yesterday's recap exists while today replays.
+Load clears earlier replay data on the dates it writes; reset clears all of the dog's
+replay-made data (events of source replay/relay and the rows linked to them, nothing else).
 
 Seed format (seeds/demo_day.json):
   {"version": 1, "name": "...", "timezone": "America/New_York", "day_start": "07:30",
@@ -11,6 +20,7 @@ Seed format (seeds/demo_day.json):
               {"offset_s": 2430, "type": "intervention", "data": {"kind": "sound", "episode_ref": "ep1"}}]}
 `episode_ref` resolves to the generated event_id of the seed entry with that `id`.
 Event ids are deterministic (replay:<dog>:<date>:<idx>) so re-runs are idempotent.
+`day_start` is local time in the dog's timezone; the seed's `timezone` is only a fallback.
 """
 from __future__ import annotations
 
@@ -29,20 +39,17 @@ from fastapi import HTTPException
 from app.auth import Actor
 from app.config import get_settings
 from app.database import (
-    add_user_dog,
-    create_dog,
     delete_activity_events_by_ids,
     delete_daily_summaries,
     delete_events_by_ids,
-    delete_events_by_source,
-    delete_mission_drafts_for_dog,
     delete_notify_log_by_event_ids,
-    delete_notify_log_for_dog,
-    delete_treat_ledger_for_dog,
+    delete_replay_events,
+    delete_treat_ledger_by_event_ids,
+    get_device_owner,
     get_dog_by_id,
+    get_dog_owner,
     get_event,
     get_user_dog_role,
-    put_dog_setting,
 )
 from app.services import event_store, settings_service
 
@@ -116,62 +123,57 @@ class Replayer:
 
     # ---- lifecycle ----
 
-    async def load(self, seed_name: str, admin: Actor, dog_id: Optional[str] = None,
-                   device_id: Optional[str] = None, date: Optional[str] = None) -> dict:
-        await self.reset(delete_data=False)
-        s = get_settings()
-        path = seeds_dir() / Path(seed_name).name
-        if not path.exists():
-            raise HTTPException(status_code=404, detail={"code": "seed_not_found", "seed": seed_name})
-        try:
-            seed = json.loads(path.read_text())
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail={"code": "bad_seed", "reason": str(e)})
-        if not isinstance(seed.get("events"), list) or not seed["events"]:
-            raise HTTPException(status_code=422, detail={"code": "bad_seed", "reason": "events[] required"})
+    def state_for(self, dog_id: str) -> dict:
+        """State as seen from one dog: its own replay, or idle with busy_with naming the dog a
+        replay is loaded for, so an app on another dog is never shown someone else's clock."""
+        if self.handles(dog_id):
+            return {**self.state(), "busy_with": None}
+        busy = ({"dog_id": self.dog_id, "status": self.status, "seed": self.seed_name}
+                if self.status != "idle" else None)
+        return {"status": "idle", "seed": None, "name": None, "dog_id": dog_id, "device_id": None,
+                "date": None, "virtual_time": None, "virtual_offset_s": None, "emitted": 0, "total": 0,
+                "busy_with": busy}
 
-        self.seed_name, self.seed = path.name, seed
-        self.dog_id = dog_id or s.demo_dog_id
-        # the seed's own robot when the load names none (2026-11-18): time on guard (sg_s) comes from
-        # mode_change, and mode time only counts for a robot paired to the dog's owner
-        self.device_id = device_id or seed.get("device_id") or s.demo_device_id
-        self.user_id = admin.user_id
-        try:
-            self.tz = ZoneInfo(seed.get("timezone") or s.default_timezone)
-        except Exception:
-            raise HTTPException(status_code=422, detail={"code": "bad_seed", "reason": "bad timezone"})
-        h, m = (seed.get("day_start") or "07:00").split(":")
-        self.day_start_s = int(h) * 3600 + int(m) * 60
-        self.date = date or datetime.now(timezone.utc).astimezone(self.tz).date().isoformat()
-        try:
-            datetime.strptime(self.date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=422, detail={"code": "bad_date"})
+    @staticmethod
+    def _check_dog(admin: Actor, dog_id: str) -> None:
+        if not get_dog_by_id(dog_id):
+            raise HTTPException(status_code=404, detail={"code": "dog_not_found", "dog_id": dog_id})
+        if get_user_dog_role(admin.user_id, dog_id) != "owner":
+            raise HTTPException(status_code=403, detail={"code": "not_dog_owner", "dog_id": dog_id})
 
-        # demo dog under the loading admin
-        if not get_dog_by_id(self.dog_id):
-            create_dog(dog_id=self.dog_id, name=seed.get("dog_name") or "Demo dog", user_id=admin.user_id,
-                       breed=seed.get("dog_breed"), notes="Replayer demo dog")
-        if not get_user_dog_role(admin.user_id, self.dog_id):
-            add_user_dog(admin.user_id, self.dog_id, "owner")
-        put_dog_setting(self.dog_id, "timezone", str(self.tz.key), "replayer")
-        for key, value in (seed.get("settings") or {}).items():
-            try:
-                put_dog_setting(self.dog_id, key, settings_service.validate_value(key, value), "replayer")
-            except HTTPException as e:
-                logger.warning(f"[REPLAY] seed setting {key} ignored: {e.detail}")
+    def _require_target(self, dog_id: Optional[str]) -> None:
+        if self.status == "idle":
+            raise HTTPException(status_code=409, detail={"code": "replay_not_loaded", "dog_id": dog_id})
+        if dog_id is not None and dog_id != self.dog_id:
+            raise HTTPException(status_code=409, detail={
+                "code": "replay_other_dog", "dog_id": dog_id, "loaded_dog_id": self.dog_id,
+                "status": self.status, "seed": self.seed_name,
+                "hint": "load a seed for this dog (that stops the other replay) or reset it"})
 
-        # materialise
-        base = self._day_start_dt()
+    @staticmethod
+    def _resolve_device(dog_id: str, device_id: Optional[str]) -> str:
+        """The body's robot (must not belong to someone else), else the dog's own robot, else the
+        demo id. Mode time (sg_s) only counts for a robot paired to the dog's owner."""
+        owner = get_dog_owner(dog_id)
+        if device_id:
+            dev_owner = get_device_owner(device_id)
+            if dev_owner and dev_owner != owner:
+                raise HTTPException(status_code=422, detail={"code": "device_not_dogs", "device_id": device_id})
+            return device_id
+        from app.services import pairing
+        devices = pairing.dog_devices(dog_id, owner)
+        return devices[0] if devices else get_settings().demo_device_id
+
+    def _materialise(self, entries: list[dict], date: str) -> list[dict]:
+        base = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=self.tz) + timedelta(seconds=self.day_start_s)
         ref_ids: dict[str, str] = {}
-        materialised = []
-        entries = sorted(seed["events"], key=lambda e: float(e.get("offset_s", 0)))
+        out = []
         for idx, entry in enumerate(entries):
-            eid = f"replay:{self.dog_id}:{self.date}:{idx}"
+            eid = f"replay:{self.dog_id}:{date}:{idx}"
             if entry.get("id"):
                 ref_ids[str(entry["id"])] = eid
-            materialised.append({"idx": idx, "offset_s": float(entry.get("offset_s", 0)), "entry": entry, "event_id": eid})
-        for item in materialised:
+            out.append({"idx": idx, "offset_s": float(entry.get("offset_s", 0)), "entry": entry, "event_id": eid})
+        for item in out:
             entry = item["entry"]
             data = dict(entry.get("data") or {})
             ref = data.pop("episode_ref", None)
@@ -182,20 +184,73 @@ class Replayer:
                 "ts": (base + timedelta(seconds=item["offset_s"])).isoformat(),
                 "duration_s": entry.get("duration_s"), "data": data,
             }
-        self.events = materialised
+        return out
+
+    async def _purge(self, dog_id: str, dates: Optional[list[str]] = None) -> int:
+        """Delete the dog's replay-made events (on `dates`, or all) and the rows linked to them."""
+        ids = delete_replay_events(dog_id, dates)
+        delete_activity_events_by_ids(ids)
+        delete_notify_log_by_event_ids(ids)
+        delete_treat_ledger_by_event_ids(ids)
+        delete_daily_summaries(dog_id)   # cache only; recomputed on the next read
+        return len(ids)
+
+    async def load(self, seed_name: str, admin: Actor, dog_id: str,
+                   device_id: Optional[str] = None, date: Optional[str] = None) -> dict:
+        self._check_dog(admin, dog_id)
+        path = seeds_dir() / Path(seed_name).name
+        if not path.exists():
+            raise HTTPException(status_code=404, detail={"code": "seed_not_found", "seed": seed_name})
+        try:
+            seed = json.loads(path.read_text())
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail={"code": "bad_seed", "reason": str(e)})
+        if not isinstance(seed.get("events"), list) or not seed["events"]:
+            raise HTTPException(status_code=422, detail={"code": "bad_seed", "reason": "events[] required"})
+        try:
+            h, m = (seed.get("day_start") or "07:00").split(":")
+            day_start_s = int(h) * 3600 + int(m) * 60
+        except ValueError:
+            raise HTTPException(status_code=422, detail={"code": "bad_seed", "reason": "bad day_start"})
+        device = self._resolve_device(dog_id, device_id)
+        tz = settings_service.get_timezone(dog_id)
+        date = date or datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+        try:
+            day = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422, detail={"code": "bad_date"})
+
+        await self._stop()   # one replay at a time: loading here stops any other dog's replay
+        self.seed_name, self.seed = path.name, seed
+        self.dog_id, self.device_id, self.user_id = dog_id, device, admin.user_id
+        self.tz, self.day_start_s, self.date = tz, day_start_s, date
+        entries = sorted(seed["events"], key=lambda e: float(e.get("offset_s", 0)))
+
+        landed_date = (day - timedelta(days=1)).date().isoformat() if seed.get("land_previous_day") else None
+        await self._purge(dog_id, [date] + ([landed_date] if landed_date else []))
+        landed = 0
+        if landed_date:
+            # yesterday's recap: the whole seed, silently (no pushes, no WS frames, no agent lines)
+            batch = [e["event"] for e in self._materialise(entries, landed_date)]
+            res = await event_store.ingest_events(batch, device_id=device, user_id=admin.user_id,
+                                                  source="replay", notify=False, forward=False)
+            landed = len(res["accepted"])
+            await self._send_apps({"type": "replay_landed", "dog_id": dog_id, "date": landed_date, "landed": landed})
+
+        self.events = self._materialise(entries, date)
         self.cursor = 0
         self.emitted = 0
+        self.started_at = None
         self._anchor(0.0)
         self.status = "loaded"
-        logger.info(f"[REPLAY] loaded {self.seed_name}: {len(self.events)} events for {self.dog_id} on {self.date}")
-        return self.state()
+        ignored = sorted((seed.get("settings") or {}).keys())
+        logger.info(f"[REPLAY] loaded {self.seed_name}: {len(self.events)} events for {dog_id} on {date}"
+                    + (f", landed {landed} on {landed_date}" if landed_date else "")
+                    + (f", seed settings ignored: {ignored}" if ignored else ""))
+        return {**self.state(), "landed": landed, "landed_date": landed_date, "settings_ignored": ignored}
 
-    def _require_loaded(self) -> None:
-        if self.status == "idle":
-            raise HTTPException(status_code=409, detail={"code": "replay_not_loaded"})
-
-    async def start(self, speed: Optional[float] = None) -> dict:
-        self._require_loaded()
+    async def start(self, speed: Optional[float] = None, dog_id: Optional[str] = None) -> dict:
+        self._require_target(dog_id)
         if speed:
             self.speed = float(speed)
         if self.status == "done":
@@ -210,8 +265,8 @@ class Replayer:
         self._wake.set()
         return self.state()
 
-    async def pause(self) -> dict:
-        self._require_loaded()
+    async def pause(self, dog_id: Optional[str] = None) -> dict:
+        self._require_target(dog_id)
         self._anchor()
         self._running = False
         if self.status == "running":
@@ -219,15 +274,17 @@ class Replayer:
         self._wake.set()
         return self.state()
 
-    async def set_speed(self, speed: float) -> dict:
-        self._require_loaded()
+    async def set_speed(self, speed: float, dog_id: Optional[str] = None) -> dict:
+        self._require_target(dog_id)
         self._anchor()
         self.speed = float(speed)
         self._wake.set()
         return self.state()
 
-    async def jump(self, offset_s: Optional[float] = None, to: Optional[str] = None) -> dict:
-        self._require_loaded()
+    async def jump(self, offset_s: Optional[float] = None, to: Optional[str] = None,
+                   dog_id: Optional[str] = None) -> dict:
+        """landed = events this call wrote (forward); removed = replay events it took back (backward)."""
+        self._require_target(dog_id)
         if to:
             h, m = to.split(":")
             offset_s = int(h) * 3600 + int(m) * 60 - self.day_start_s
@@ -235,6 +292,7 @@ class Replayer:
             raise HTTPException(status_code=422, detail={"code": "jump_target_required"})
         offset_s = max(0.0, float(offset_s))
         catch_up: list[dict] = []
+        landed = removed = 0
         was_running = self._running
         self._running = False
         self._anchor()
@@ -242,9 +300,10 @@ class Replayer:
         if k < self.cursor:
             # backward: drop everything already emitted at/after the new cursor
             ids = [e["event_id"] for e in self.events[k:self.cursor]]
-            delete_events_by_ids(ids)
+            removed = delete_events_by_ids(ids)
             delete_activity_events_by_ids(ids)
             delete_notify_log_by_event_ids(ids)
+            delete_treat_ledger_by_event_ids(ids)
             delete_daily_summaries(self.dog_id)
             self.emitted = max(0, self.emitted - len(ids))
             # the robot's remembered mode goes back to what it was at the new cursor
@@ -258,7 +317,8 @@ class Replayer:
             batch = [e["event"] for e in self.events[self.cursor:k]]
             res = await event_store.ingest_events(batch, device_id=self.device_id, user_id=self.user_id,
                                                   source="replay", notify=False, forward=False)
-            self.emitted += len(res["accepted"])
+            landed = len(res["accepted"])
+            self.emitted += landed
             stored = [ev for ev in (get_event(i) for i in res["accepted"]) if ev]
             catch_up = await event_store.catch_up_skipped(
                 stored, [e["event"] for e in self.events[:self.cursor]],
@@ -276,9 +336,11 @@ class Replayer:
         self._wake.set()
         if catch_up:
             logger.info(f"[REPLAY] jump catch-up: {[c['kind'] + ':' + c.get('type', '') for c in catch_up]}")
-        return {**self.state(), "catch_up": catch_up}
+        logger.info(f"[REPLAY] jump {self.dog_id} -> {self.virtual_time().isoformat()} landed={landed} removed={removed}")
+        return {**self.state(), "landed": landed, "removed": removed, "catch_up": catch_up}
 
-    async def reset(self, delete_data: bool = True) -> dict:
+    async def _stop(self) -> None:
+        """Stop the loop and unload (no data deleted)."""
         self._running = False
         self._wake.set()
         if self._task and not self._task.done():
@@ -288,22 +350,31 @@ class Replayer:
             except (asyncio.CancelledError, Exception):
                 pass
         self._task = None
-        if delete_data and self.dog_id:
-            ids = delete_events_by_source(self.dog_id, "replay")
-            ids += delete_events_by_source(self.dog_id, "relay")
-            delete_activity_events_by_ids(ids)
-            delete_notify_log_for_dog(self.dog_id)
-            delete_treat_ledger_for_dog(self.dog_id)
-            delete_daily_summaries(self.dog_id)
-            delete_mission_drafts_for_dog(self.dog_id)
-            await self._send_apps({"type": "replay_reset", "dog_id": self.dog_id})
-            logger.info(f"[REPLAY] reset: removed {len(ids)} events for {self.dog_id}")
         self.status = "idle"
         self.cursor = 0
         self.emitted = 0
         self.started_at = None
         self._anchor(0.0)
-        return self.state()
+
+    async def reset_dog(self, dog_id: str, admin: Actor) -> dict:
+        """Delete this dog's replay-made data, even when nothing is loaded for it. Stops the replay
+        only if it is this dog's; another dog's replay keeps running (named in busy_with)."""
+        self._check_dog(admin, dog_id)
+        if self.dog_id == dog_id and self.status != "idle":
+            await self._stop()
+        removed = await self._purge(dog_id)
+        await self._send_apps({"type": "replay_reset", "dog_id": dog_id}, admin.user_id)
+        logger.info(f"[REPLAY] reset: removed {removed} events for {dog_id}")
+        return {**self.state_for(dog_id), "removed": removed}
+
+    async def reset(self) -> dict:
+        """Stop and delete the loaded dog's replay data (internal / tests)."""
+        dog_id = self.dog_id
+        await self._stop()
+        removed = await self._purge(dog_id) if dog_id else 0
+        if dog_id:
+            await self._send_apps({"type": "replay_reset", "dog_id": dog_id})
+        return {**self.state(), "removed": removed}
 
     # ---- loop ----
 
@@ -375,11 +446,11 @@ class Replayer:
             await event_store.ingest_events(events, device_id=self.device_id or get_settings().demo_device_id,
                                             user_id=self.user_id, source="relay")
 
-    async def _send_apps(self, msg: dict) -> None:
+    async def _send_apps(self, msg: dict, user_id: Optional[str] = None) -> None:
         try:
             from app.connection_manager import get_connection_manager
-            if self.user_id:
-                await get_connection_manager().send_to_user_apps(self.user_id, msg)
+            if user_id or self.user_id:
+                await get_connection_manager().send_to_user_apps(user_id or self.user_id, msg)
         except Exception as e:  # pragma: no cover
             logger.debug(f"[REPLAY] app notify failed: {e}")
 

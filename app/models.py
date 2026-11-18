@@ -749,17 +749,26 @@ class AgentTranscriptIn(BaseModel):
 
 # ============== Replayer ==============
 
-class ReplayLoad(BaseModel):
+class ReplayTarget(BaseModel):
+    """Every replay call names its dog (2026-11-18): one replay runs at a time, and a call for a
+    dog that is not the loaded one gets 409 replay_other_dog instead of acting on another dog."""
+    dog_id: str = Field(..., min_length=1, max_length=128)
+    device_id: Optional[str] = Field(default=None, max_length=128)   # used by load; ignored elsewhere
+
+
+class ReplayLoad(ReplayTarget):
     seed: str = Field(..., pattern=r"^[a-zA-Z0-9_.-]+\.json$")
-    dog_id: Optional[str] = None
-    device_id: Optional[str] = None
-    date: Optional[str] = None  # YYYY-MM-DD; default today in the seed timezone
+    date: Optional[str] = None  # YYYY-MM-DD; default today in the dog's timezone
 
 
-class ReplaySpeed(BaseModel):
+class ReplaySpeed(ReplayTarget):
     speed: float = Field(default=60, ge=1, le=3600)
 
 
-class ReplayJump(BaseModel):
+class ReplayStart(ReplayTarget):
+    speed: Optional[float] = Field(default=None, ge=1, le=3600)
+
+
+class ReplayJump(ReplayTarget):
     to: Optional[str] = Field(default=None, pattern=r"^\d{2}:\d{2}$")
     offset_s: Optional[float] = Field(default=None, ge=0)

@@ -126,12 +126,14 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
     manager = get_connection_manager()
     devices = pairing.dog_devices(dog_id, owner)
     online = [d for d in devices if manager.is_robot_online(d)]
-    replay_active, replay_device = False, None
+    replay_active, replay_device, replay_vt, replay_date = False, None, None, None
     try:
         from app.services.replayer import get_replayer
         rp = get_replayer()
         replay_active = rp.handles(dog_id)
-        replay_device = rp.device_id if replay_active else None
+        if replay_active:   # the replay's clock, for this dog only (2026-11-18)
+            replay_device, replay_date = rp.device_id, rp.date
+            replay_vt = rp.virtual_time().isoformat()
     except ImportError:
         pass
     # Robot state is the robot's own: "online" = one of the owner's robots is connected, no
@@ -158,6 +160,8 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
                         "active": settings_service.in_quiet_hours(dog_id)},
         "timezone": settings_service.get_value(dog_id, "timezone"),
         "replay_active": replay_active,
+        "virtual_time": replay_vt,     # None unless this dog's replay is loaded
+        "replay_date": replay_date,
     }
 
 
