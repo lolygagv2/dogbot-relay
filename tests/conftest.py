@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+from typing import Optional
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,7 @@ class FakeRobot:
         self.device_id = "robot_t"
         self.delay, self.respond, self.wake_delay = 0.05, True, None
         self.expire: set[str] = set()
+        self.report: Optional[dict] = None   # selection report sent in the first status after connect
         self.online = False
         self.mode, self.asleep, self.selected, self.session = "idle", False, None, None
         self.sent: list[dict] = []
@@ -77,6 +79,10 @@ class FakeRobot:
         self.online = True
         get_connection_manager().robot_connections[self.device_id] = object()
         robot_state.on_robot_connected(self.device_id)
+        if self.report is not None:   # its first status_update, as the WS handler hands it over
+            from app.routers import websocket as ws
+            robot_state.on_status(self.device_id, ws._status_fields(
+                {"type": "status_update", **self.report, "data": {"mode": self.mode, "battery": 80}}))
 
     def disconnect(self):
         from app.connection_manager import get_connection_manager

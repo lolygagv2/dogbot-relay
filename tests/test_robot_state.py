@@ -161,8 +161,8 @@ def test_select_timeout_stays_unapplied_and_resends_once_on_next_connect(robot):
         assert robot.commands().count("select_dog") == 1    # no retry while connected
         robot.respond = True
         robot.disconnect()
-        robot.connect()
-        await until(lambda: st()["selected_dog_applied"], 3.0)
+        robot.connect()     # no selection report from this robot: the stored one goes after 3 s
+        await until(lambda: st()["selected_dog_applied"], 5.0)
     run(main())
     assert robot.commands().count("select_dog") == 2
 
@@ -172,8 +172,8 @@ def test_last_write_wins_and_unknown_dog(robot):
         await state_routes.post_selected_dog(DEV, state_routes.SelectedDogRequest(dog_id=ELSA), actor=APP)
         await state_routes.post_selected_dog(DEV, state_routes.SelectedDogRequest(dog_id=BEZIK), actor=APP)
         assert st()["selected_dog_id"] == BEZIK
-        robot.connect()
-        await until(lambda: st()["selected_dog_applied"], 3.0)
+        robot.connect()     # reports nothing: the stored selection goes after the 3 s fallback
+        await until(lambda: st()["selected_dog_applied"], 5.0)
         with pytest.raises(HTTPException) as e:
             await state_routes.post_selected_dog(DEV, state_routes.SelectedDogRequest(dog_id="nope"), actor=APP)
         assert e.value.status_code == 422
@@ -862,18 +862,17 @@ def test_r4_expired_wake_sends_nothing_else(robot):
     assert err.detail == {"code": "expired"} and robot.commands() == ["set_sleep"]
 
 
-def test_r4_every_command_wakes_including_relay_made_ones(robot):
+def test_r4_relay_made_commands_select_dog_and_download_song_do_not_wake(robot):
+    """Point 10: the robot applies select_dog and download_song while asleep; no wake, no greeting."""
     async def main():
         robot.connect()
-        _asleep(robot)
-        await state_routes.post_selected_dog(DEV, state_routes.SelectedDogRequest(dog_id=BEZIK), actor=APP)
-        await until(lambda: st()["selected_dog_applied"])
         _asleep(robot)
         from app.services import sleep_wake
         assert await sleep_wake.send_awake(DEV, {"type": "command", "command": "download_song",
                                                  "command_id": "dl1", "data": {"source": "app"}}, "app") is None
+        await robot_control.dispatch(BEZIK, "schedule_sync", {}, APP)   # any other command still wakes
     run(main())
-    assert robot.commands() == ["set_sleep", "select_dog", "set_sleep", "download_song"]
+    assert robot.commands() == ["download_song", "set_sleep", "schedule_sync"]
 
 
 def test_r4_every_command_waits_2000_ms(robot):
@@ -887,3 +886,104 @@ def test_r4_every_command_waits_2000_ms(robot):
         return e.value, time.monotonic() - t0
     err, took = run(main())
     assert err.detail == {"code": "robot_timeout"} and 1.9 <= took <= 2.5
+
+
+# ---------------------------------------------------------------- round 5: reconnect rule, select_dog asleep
+
+
+def _stored_elsa_then_disconnect(robot):
+    """The relay owns an applied selection of Elsa; the robot then goes offline."""
+    async def main():
+        robot.connect()
+        await state_routes.post_selected_dog(DEV, state_routes.SelectedDogRequest(dog_id=ELSA), actor=APP)
+        await until(lambda: st()["selected_dog_applied"])
+        robot.disconnect()
+    run(main())
+    robot.sent.clear()
+    return st()["state_version"]
+
+
+def _reconnect_reporting(robot, dog, flag):
+    robot.selected = dog
+    robot.report = {"selected_dog_id": dog, "selected_dog_changed_locally": flag}
+
+    async def main():
+        robot.connect()
+        await asyncio.sleep(0.4)
+    run(main())
+    return [m["data"]["dog_id"] for m in robot.sent if m["command"] == "select_dog"]
+
+
+def test_r5_i_local_selection_on_the_robot_is_adopted(robot):
+    v0 = _stored_elsa_then_disconnect(robot)
+    sent = _reconnect_reporting(robot, BEZIK, True)
+    s = st()
+    assert (s["selected_dog_id"], s["selected_dog_applied"], s["source"], s["reason"]) == \
+        (BEZIK, True, "robot", "local_selection")
+    assert sent == [BEZIK] and s["state_version"] >= v0 + 2          # connect, adopt (+1), applied
+    assert any(m.get("selected_dog_id") == BEZIK and m["reason"] == "local_selection" for m in robot.states())
+    print(f"R5-i state={s['selected_dog_id'] == BEZIK and 'Bezik'} applied={s['selected_dog_applied']} "
+          f"select_dog_sent={['Bezik' for _ in sent]}")
+
+
+def test_r5_i_local_selection_wins_over_a_stored_unapplied_one(robot):
+    _stored_elsa_then_disconnect(robot)
+    run(state_routes.post_selected_dog(DEV, state_routes.SelectedDogRequest(dog_id=ELSA), actor=APP))
+    robot_state.update(DEV, source="app", selected_dog_applied=False)          # stored, not yet applied
+    sent = _reconnect_reporting(robot, BEZIK, True)
+    assert st()["selected_dog_id"] == BEZIK and st()["selected_dog_applied"] and sent == [BEZIK]
+
+
+def test_r5_ii_no_local_change_the_stored_value_is_sent(robot):
+    _stored_elsa_then_disconnect(robot)
+    sent = _reconnect_reporting(robot, BEZIK, False)
+    s = st()
+    assert (s["selected_dog_id"], s["selected_dog_applied"]) == (ELSA, True) and sent == [ELSA]
+    assert robot.selected == ELSA
+    print(f"R5-ii state=Elsa applied={s['selected_dog_applied']} select_dog_sent={['Elsa' for _ in sent]}")
+
+
+def test_r5_ii_flag_absent_behaves_as_false(robot):
+    _stored_elsa_then_disconnect(robot)
+    robot.selected = BEZIK
+    robot.report = {"selected_dog_id": BEZIK}
+
+    async def main():
+        robot.connect()
+        await asyncio.sleep(0.4)
+    run(main())
+    assert st()["selected_dog_id"] == ELSA and [m["data"]["dog_id"] for m in robot.sent
+                                                  if m["command"] == "select_dog"] == [ELSA]
+
+
+def test_r5_iii_another_accounts_dog_is_ignored(robot):
+    import app.database as db
+    db.create_user("user_t9", "other@example.com", "x")
+    db.create_dog(dog_id="dog_other", name="Max", user_id="user_t9")
+    db.add_user_dog("user_t9", "dog_other", "owner")
+    v0 = _stored_elsa_then_disconnect(robot)
+    sent = _reconnect_reporting(robot, "dog_other", True)
+    s = st()
+    assert s["selected_dog_id"] == ELSA and s["reason"] != "local_selection"
+    assert sent == [ELSA] and s["selected_dog_applied"] is True     # handled as (c): stored value sent
+    print(f"R5-iii state=Elsa sent={['Elsa' for _ in sent]} version {v0}->{s['state_version']}")
+
+
+def test_r5_d_values_match_nothing_is_sent(robot):
+    v0 = _stored_elsa_then_disconnect(robot)
+    sent = _reconnect_reporting(robot, ELSA, False)
+    assert sent == [] and st()["selected_dog_id"] == ELSA and st()["state_version"] == v0 + 1   # connect only
+
+
+def test_r5_iv_select_dog_to_a_sleeping_robot_does_not_wake_it(robot):
+    async def main():
+        robot.connect()
+        _asleep(robot)
+        await state_routes.post_selected_dog(DEV, state_routes.SelectedDogRequest(dog_id=BEZIK), actor=APP)
+        await until(lambda: st()["selected_dog_applied"], 2.0)
+    run(main())
+    s = st()
+    assert "set_sleep" not in robot.commands() and robot.commands() == ["select_dog"]
+    assert s["asleep"] is True and s["selected_dog_applied"] is True and s["selected_dog_id"] == BEZIK
+    assert [h for h in robot.hooks if h[0] == "robot_woke"] == []
+    print(f"R5-iv sent={robot.commands()} asleep={s['asleep']} applied={s['selected_dog_applied']}")

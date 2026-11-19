@@ -7,8 +7,8 @@ and the robot answers within 2000 ms with command_result {success, result: {asle
 `asleep` lives in the robot_state record (app/services/robot_state.py); this module only does
 wake-first:
 
-- EVERY command (any "type": "command" frame except set_sleep itself) to a robot whose state says
-  asleep is held, set_sleep {asleep: false} is sent, and the command goes out once the robot
+- EVERY command (any "type": "command" frame except NO_WAKE_COMMANDS: set_sleep, select_dog,
+  download_song) to a robot whose state says asleep is held, set_sleep {asleep: false} is sent, and the command goes out once the robot
   confirms. The wake gets WAKE_TIMEOUT_S (6000 ms); not confirmed -> robot_timeout (or the robot's
   own error, e.g. "expired") and the command is never sent. Nothing is queued or retried.
   Concurrent commands share one wake. Drive frames (motor/servo/pan_tilt, 20 Hz) are not held:
@@ -30,7 +30,9 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 WAKE_TIMEOUT_S = 6.0   # set_sleep {asleep: false} is confirmed within 6000 ms (every other command: 2000)
-NO_WAKE_COMMANDS = {"set_sleep"}   # the wake itself, and going to sleep, never wake the robot first
+# Never wake the robot first: set_sleep (the wake itself, or going to sleep), and select_dog /
+# download_song, which the robot applies while asleep (no wake, so no greeting either).
+NO_WAKE_COMMANDS = {"set_sleep", "select_dog", "download_song"}
 DRIVE_COMMANDS = {"motor", "servo", "pan_tilt"}
 
 

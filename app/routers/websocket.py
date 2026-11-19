@@ -150,7 +150,7 @@ def _status_fields(message: dict) -> dict:
     """mode / asleep / session_dog_id from a status_update, top level or inside data."""
     data = message.get("data") if isinstance(message.get("data"), dict) else {}
     out = dict(data)
-    for k in ("mode", "asleep", "session_dog_id", "selected_dog_id"):
+    for k in ("mode", "asleep", "session_dog_id", "selected_dog_id", "selected_dog_changed_locally"):
         if k in message:
             out[k] = message[k]
     return out

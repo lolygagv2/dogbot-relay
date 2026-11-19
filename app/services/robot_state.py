@@ -114,16 +114,17 @@ def _save(st: dict) -> None:
         conn.commit()
 
 
-def update(device_id: str, *, source: str, reason: Optional[str] = None, **changes: Any) -> tuple[dict, bool]:
-    """Apply changes with the R4/R5 rules; bump state_version and push when a versioned field changed.
-    Returns (state, changed)."""
+def update(device_id: str, *, source: str, reason: Optional[str] = None, force: bool = False,
+           **changes: Any) -> tuple[dict, bool]:
+    """Apply changes with the R4/R5 rules; bump state_version and push when a versioned field changed
+    (or force=True). Returns (state, changed)."""
     cur = get(device_id)
     new = {**cur, **changes}
     if new["asleep"]:                       # R5
         new["mode"], new["session_dog_id"] = "idle", None
     if new["mode"] not in SESSION_MODES:    # R4
         new["session_dog_id"] = None
-    changed = any(new[k] != cur[k] for k in _VERSIONED)
+    changed = force or any(new[k] != cur[k] for k in _VERSIONED)
     if changed:
         new["state_version"] = int(cur["state_version"]) + 1
         new["updated_at"] = now_iso()
@@ -196,19 +197,63 @@ def _greet_on_wake(device_id: str, cause: str) -> None:
 # ---------------------------------------------------------------- robot reports
 
 
+RECONCILE_FALLBACK_S = 3.0   # no selection report this long after connect -> send an unapplied selection
+_reconcile_pending: set[str] = set()   # robots whose post-connect selection report has not arrived
+
+
 def on_robot_connected(device_id: str) -> None:
+    """Reconnect rule (ROBOT-STATE v2 point 11): the selection is reconciled from the robot's first
+    report after connect (status selected_dog_id + selected_dog_changed_locally, see _reconcile).
+    A robot that reports nothing within RECONCILE_FALLBACK_S gets a stored, unapplied selection once.
+    Never a null nobody chose: a robot the relay has no selection for keeps its own (migration)."""
     _first_status_pending.add(device_id)
+    _reconcile_pending.add(device_id)
     update(device_id, source="robot", reason="robot_connected", robot_online=True)
     st = get(device_id)
-    # The stored selection, once on this connect: only a selection the relay owns (made by select_dog)
-    # and not yet confirmed. Never a null nobody chose: a robot the relay has no selection for keeps
-    # its own, and the relay adopts it from the robot's status (_adopt_selection).
     if not st["selected_dog_applied"] and owns_selection(st):
+        _spawn(_fallback_select(device_id))
+
+
+async def _fallback_select(device_id: str) -> None:
+    await asyncio.sleep(RECONCILE_FALLBACK_S)
+    from app.connection_manager import get_connection_manager
+    st = get(device_id)
+    if (device_id in _reconcile_pending and get_connection_manager().is_robot_online(device_id)
+            and owns_selection(st) and not st["selected_dog_applied"]):
+        _reconcile_pending.discard(device_id)
+        logger.info(f"[STATE] {device_id}: no selection report after connect; sending the stored one")
+        await send_select(device_id)
+
+
+def _reconcile(device_id: str, reported: Any, changed_locally: bool) -> None:
+    """The robot's first selection report after a connect, once the relay owns the selection.
+    a) changed locally, and the dog is null or the owner's -> adopt it (+1, source robot, reason
+       local_selection), echo it back with select_dog, applied on success. Wins over a stored,
+       unapplied selection.
+    b) changed locally but not the owner's dog -> ignored, handled as c.
+    c) not changed locally, and it differs from the stored value -> select_dog with the STORED value.
+    d) the same value -> nothing."""
+    st = get(device_id)
+    reported = reported if isinstance(reported, str) and reported else None
+    if changed_locally:
+        from app.database import get_dog_owner
+        if reported is None or get_dog_owner(reported) == _owner(device_id):
+            if reported == st["selected_dog_id"] and st["selected_dog_applied"]:
+                return   # already the relay's applied value: nothing to adopt
+            update(device_id, source="robot", reason="local_selection", force=True, selected_dog_id=reported,
+                   selected_dog_applied=False, select_command_id=None, select_source="robot")
+            logger.info(f"[STATE] {device_id}: robot's local selection {reported} adopted")
+            _spawn(send_select(device_id))
+            return
+        logger.warning(f"[STATE] {device_id}: local selection {reported!r} is not the owner's dog; ignored")
+    if reported != st["selected_dog_id"]:
+        logger.info(f"[STATE] {device_id}: robot reports {reported}, stored {st['selected_dog_id']}; sending stored")
         _spawn(send_select(device_id))
 
 
 def on_robot_disconnected(device_id: str) -> None:
     _first_status_pending.discard(device_id)
+    _reconcile_pending.discard(device_id)
     update(device_id, source="robot", reason="robot_disconnected", robot_online=False)
 
 
@@ -244,7 +289,12 @@ def on_status(device_id: str, data: Any) -> None:
     if not isinstance(data, dict):
         return
     if "selected_dog_id" in data:
-        _adopt_selection(device_id, data["selected_dog_id"])
+        if not owns_selection(get(device_id)):
+            _reconcile_pending.discard(device_id)
+            _adopt_selection(device_id, data["selected_dog_id"])      # migration: first ever report
+        elif device_id in _reconcile_pending:
+            _reconcile_pending.discard(device_id)
+            _reconcile(device_id, data["selected_dog_id"], data.get("selected_dog_changed_locally") is True)
     changes: dict[str, Any] = {}
     if isinstance(data.get("asleep"), bool):
         changes["asleep"] = data["asleep"]
@@ -294,7 +344,8 @@ def on_command_result(device_id: str, meta: dict, message: dict) -> None:
     elif command == "select_dog":
         st = get(device_id)
         if message.get("command_id") == st["select_command_id"] and res.get("selected_dog_id") == st["selected_dog_id"]:
-            update(device_id, source=src, reason=None, selected_dog_applied=True, select_command_id=None)
+            # the confirmation keeps the selection's own reason (e.g. local_selection)
+            update(device_id, source=src, reason=st["reason"], selected_dog_applied=True, select_command_id=None)
 
 
 # ---------------------------------------------------------------- select_dog
