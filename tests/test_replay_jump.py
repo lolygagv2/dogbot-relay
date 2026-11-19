@@ -68,7 +68,9 @@ def test_forward_jump_lands_with_newest_push_rearm_and_low_hopper(rec):
     assert len(settled) == 1 and len(pushes) == 2
     assert [h["event"] for h in hooks] == ["sg_rearm", "low_hopper"]
     assert hooks[0]["payload"]["previous_mode"] == "idle" and hooks[0]["event_id"].endswith(":4")
-    assert hooks[1]["payload"]["treats_remaining"] == 2 and hooks[1]["device_id"] == DEVICE
+    assert hooks[1]["payload"]["treats_remaining"] == 2
+    # replay lines are the dog's, not one robot's: None lets the relay pick an online robot
+    assert hooks[0]["device_id"] is None and hooks[1]["device_id"] is None
     assert {c["kind"] for c in state["catch_up"]} == {"notify", "sg_rearm", "low_hopper"}
     assert event_store._last_mode[DEVICE] == "silent_guardian"
 
@@ -219,3 +221,28 @@ def test_seed_media_links_by_file_name(quiet):
     run(r.jump(offset_s=5050))
     pushes = [p for p in quiet[1] if p["app_type"] == "bark"]
     assert pushes and pushes[-1]["data"]["image_url"] == "/api/media/download/seed_bark.jpg"
+
+
+# ---- a replay belongs to the dog, not one robot (2026-11-19) ----
+
+def test_replay_robot_online_first_then_seed_then_first(temp_db, monkeypatch):
+    from app.services import pairing
+    from app.connection_manager import get_connection_manager
+    devs = ["wimz_robot_01", "wimz_robot_04", "wimz_robot_05"]
+    monkeypatch.setattr(pairing, "dog_devices", lambda dog_id, owner=None: devs)
+    online: set[str] = set()
+    monkeypatch.setattr(get_connection_manager(), "is_robot_online", lambda d: d in online)
+    pick = rp.Replayer._resolve_device
+    assert pick("dog_t1", None, "wimz_robot_05") == "wimz_robot_05"      # seed's robot, it is the dog's
+    assert pick("dog_t1", None, "someone_elses") == "wimz_robot_01"      # not the dog's -> first
+    online.add("wimz_robot_04")
+    assert pick("dog_t1", None, "wimz_robot_05") == "wimz_robot_04"      # an online robot wins
+    assert pick("dog_t1", "wimz_robot_05", None) == "wimz_robot_05"      # an explicit robot wins
+    r = rp.Replayer()
+    r.dog_id, r.status = "dog_t1", "loaded"
+    assert r.state()["device_ids"] == devs
+
+
+def test_live_robot_hooks_keep_their_robot():
+    assert event_store._hook_device({"source": "robot", "dog_id": "d", "device_id": "wimz_robot_04"}) == "wimz_robot_04"
+    assert event_store._hook_device({"source": "replay", "dog_id": "d", "device_id": "wimz_robot_05"}) is None

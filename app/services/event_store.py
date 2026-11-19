@@ -400,10 +400,17 @@ def _agent_hooks(ev: dict, user_id: Optional[str]) -> None:
         _fire_low_hopper(ev, user_id)
 
 
+def _hook_device(ev: dict) -> Optional[str]:
+    """Robot an agent hook speaks on. Replay events are stamped with one robot, but the replay
+    belongs to the dog, so its lines go to whichever of the owner's robots is online (None lets
+    the relay pick, an online one first) (2026-11-19)."""
+    return None if ev.get("source") == "replay" and ev.get("dog_id") else ev["device_id"]
+
+
 def _fire_sg_rearm(ev: dict, prev_mode: str, user_id: Optional[str]) -> None:
     from app.services import notify_service
     # dog_id is None for device-scoped status; the agent resolves the robot's dog
-    notify_service.notify_agent("sg_rearm", ev["device_id"], user_id, ev["dog_id"],
+    notify_service.notify_agent("sg_rearm", _hook_device(ev), user_id, ev["dog_id"],
                                 {"previous_mode": prev_mode, "armed_at": ev["ts"]}, ev["event_id"])
 
 
@@ -417,7 +424,7 @@ def _fire_low_hopper(ev: dict, user_id: Optional[str]) -> None:
         cap = settings_service.effective_daily_cap(settings_service.get_value(dog_id, "treat_schedule"))
     except Exception:
         pass
-    notify_service.notify_agent("low_hopper", ev["device_id"], user_id, dog_id,
+    notify_service.notify_agent("low_hopper", _hook_device(ev), user_id, dog_id,
                                 {"treats_remaining": int(ev["data"]["treats_remaining"]), "treat_daily_cap": cap},
                                 ev["event_id"])
 

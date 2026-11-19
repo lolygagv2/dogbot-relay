@@ -112,6 +112,7 @@ class Replayer:
         return {
             "status": self.status, "seed": self.seed_name, "name": self.seed.get("name"),
             "dog_id": self.dog_id, "device_id": self.device_id, "user_id": self.user_id,
+            "device_ids": self._dog_devices(),   # every robot that shows this replay
             "date": self.date, "timezone": str(self.tz.key) if hasattr(self.tz, "key") else "UTC",
             "speed": self.speed, "cursor": self.cursor, "total": len(self.events), "emitted": self.emitted,
             "virtual_time": self.virtual_time().isoformat() if self.date else None,
@@ -155,9 +156,12 @@ class Replayer:
                 "hint": "load a seed for this dog (that stops the other replay) or reset it"})
 
     @staticmethod
-    def _resolve_device(dog_id: str, device_id: Optional[str]) -> str:
-        """The body's robot (must not belong to someone else), else the dog's own robot, else the
-        demo id. Mode time (sg_s) only counts for a robot paired to the dog's owner."""
+    def _resolve_device(dog_id: str, device_id: Optional[str], seed_device: Optional[str] = None) -> str:
+        """Robot the replay's events are stamped with. A replay belongs to the dog, not to one
+        robot: every robot of the owner's sees it (state device_ids, roll-ups, status) and agent
+        lines go to whichever is online. Picks the body's robot (must not belong to someone else),
+        else one of the dog's robots that is online, else the seed's robot if it is one of the
+        dog's, else the dog's first robot, else the demo id (2026-11-19)."""
         owner = get_dog_owner(dog_id)
         if device_id:
             dev_owner = get_device_owner(device_id)
@@ -166,7 +170,23 @@ class Replayer:
             return device_id
         from app.services import pairing
         devices = pairing.dog_devices(dog_id, owner)
+        try:
+            from app.connection_manager import get_connection_manager
+            manager = get_connection_manager()
+            online = next((d for d in devices if manager.is_robot_online(d)), None)
+        except Exception:  # pragma: no cover
+            online = None
+        if online:
+            return online
+        if seed_device and seed_device in devices:
+            return seed_device
         return devices[0] if devices else get_settings().demo_device_id
+
+    def _dog_devices(self) -> list[str]:
+        if not self.dog_id:
+            return []
+        from app.services import pairing
+        return pairing.dog_devices(self.dog_id)
 
     @staticmethod
     def _link_media(entries: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -239,7 +259,7 @@ class Replayer:
             day_start_s = int(h) * 3600 + int(m) * 60
         except ValueError:
             raise HTTPException(status_code=422, detail={"code": "bad_seed", "reason": "bad day_start"})
-        device = self._resolve_device(dog_id, device_id)
+        device = self._resolve_device(dog_id, device_id, seed.get("device_id"))
         tz = settings_service.get_timezone(dog_id)
         date = date or datetime.now(timezone.utc).astimezone(tz).date().isoformat()
         try:
