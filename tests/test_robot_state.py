@@ -987,3 +987,24 @@ def test_r5_iv_select_dog_to_a_sleeping_robot_does_not_wake_it(robot):
     assert s["asleep"] is True and s["selected_dog_applied"] is True and s["selected_dog_id"] == BEZIK
     assert [h for h in robot.hooks if h[0] == "robot_woke"] == []
     print(f"R5-iv sent={robot.commands()} asleep={s['asleep']} applied={s['selected_dog_applied']}")
+
+
+def test_r6_d_matching_report_confirms_an_unapplied_selection(robot):
+    """Point 13: owner picks Elsa while the robot is offline; it reconnects already reporting Elsa
+    (flag false) -> applied true and a robot_state frame, nothing sent to the robot."""
+    run(state_routes.post_selected_dog(DEV, state_routes.SelectedDogRequest(dog_id=ELSA), actor=APP))
+    assert st()["selected_dog_applied"] is False
+    v0 = st()["state_version"]
+    robot.selected = ELSA
+    robot.report = {"selected_dog_id": ELSA, "selected_dog_changed_locally": False}
+
+    async def main():
+        robot.connect()
+        await asyncio.sleep(3.3)      # past the 3 s fallback: it must not send either
+    run(main())
+    s = st()
+    assert s["selected_dog_id"] == ELSA and s["selected_dog_applied"] is True
+    assert robot.sent == []
+    assert s["state_version"] == v0 + 2                      # connect (+1), applied (+1)
+    assert robot.states()[-1]["selected_dog_applied"] is True
+    print(f"R6-d sent={robot.sent} applied={s['selected_dog_applied']} version {v0}->{s['state_version']}")

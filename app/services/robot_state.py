@@ -232,7 +232,7 @@ def _reconcile(device_id: str, reported: Any, changed_locally: bool) -> None:
        unapplied selection.
     b) changed locally but not the owner's dog -> ignored, handled as c.
     c) not changed locally, and it differs from the stored value -> select_dog with the STORED value.
-    d) the same value -> nothing."""
+    d) the same value -> the report confirms it: selected_dog_applied true (pushed), nothing sent."""
     st = get(device_id)
     reported = reported if isinstance(reported, str) and reported else None
     if changed_locally:
@@ -249,6 +249,9 @@ def _reconcile(device_id: str, reported: Any, changed_locally: bool) -> None:
     if reported != st["selected_dog_id"]:
         logger.info(f"[STATE] {device_id}: robot reports {reported}, stored {st['selected_dog_id']}; sending stored")
         _spawn(send_select(device_id))
+    elif not st["selected_dog_applied"]:   # d) the robot already has it: its report is the confirmation
+        update(device_id, source="robot", reason=st["reason"], selected_dog_applied=True, select_command_id=None)
+        logger.info(f"[STATE] {device_id}: robot reports the stored selection {reported}; applied")
 
 
 def on_robot_disconnected(device_id: str) -> None:
