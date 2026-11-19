@@ -123,7 +123,9 @@ LEGACY_TO_ACTIVITY_TYPE = {
 # outside the envelope below is merged into the stored payload.
 _GUARDIAN_LIKE_EVENTS = {"guardian", "sg_summary", "panic_alert"}
 # Other events whose fields may sit at the top level: flattened the same way.
-_FLATTENED_EVENTS = _GUARDIAN_LIKE_EVENTS | {"smart_plug", "ultrasonic"}
+# "alert" (2026-11-19): keep any top-level reason / alert_type the robot sends, and tag the row
+# event="alert" so the push mapper can tell a bare robot alert from unknown_dog_detected.
+_FLATTENED_EVENTS = _GUARDIAN_LIKE_EVENTS | {"smart_plug", "ultrasonic", "alert"}
 # Robot events that may arrive as {"type": X} without an "event" key; they are given
 # "event": X so they take the legacy event path (store, activity history, forward).
 _TYPE_AS_EVENT = {"smart_plug", "ultrasonic"}
@@ -237,6 +239,9 @@ def _maybe_persist_as_activity(device_id: str, owner_id: str, message: dict):
     # app but never written to history, where they would be pure noise.
     if not is_durable_event(event_name, message):
         return
+
+    if event_name == "alert":   # 2026-11-19: see what the robot actually sends (empty-payload alerts)
+        logger.info(f"[ALERT-RAW] {device_id}: {json.dumps(message, default=str)[:1000]}")
 
     try:
         event_id = message.get("event_id") or message.get("id") or str(uuid.uuid4())

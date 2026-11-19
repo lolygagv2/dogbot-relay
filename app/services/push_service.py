@@ -204,6 +204,11 @@ def _build_notification(row_type: str, payload: dict) -> Optional[tuple[str, str
 
     if row_type == "guardian_alert":
         reason = payload.get("reason") or payload.get("alert_type") or ""
+        # A bare robot `alert` (no reason / type / message) is stored and shown in the feed but
+        # doesn't buzz the phone: the robot sent these about once a minute with empty payloads
+        # (2026-11-19). unknown_dog_detected rows (no event="alert") still notify.
+        if payload.get("event") == "alert" and not (reason or payload.get("message") or payload.get("title")):
+            return None
         title = f"Guardian: {reason}" if reason else "Guardian Alert"
         return ("alert", title, "")
 
