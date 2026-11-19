@@ -390,6 +390,8 @@ class ConnectionManager:
             return 0
 
         logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): {event_type}")
+        if event_type in ("status", "status_update"):
+            event = _replay_overlay(owner_id, event)
         return await self.send_to_user_apps(owner_id, event)
 
     def set_device_owner(self, device_id: str, user_id: str):
@@ -523,3 +525,13 @@ manager = ConnectionManager()
 def get_connection_manager() -> ConnectionManager:
     """Dependency to get the connection manager."""
     return manager
+
+
+def _replay_overlay(owner_id: Optional[str], message: dict) -> dict:
+    """During a demo replay, robot status frames carry the replay's mode (see replayer)."""
+    try:
+        from app.services.replayer import get_replayer
+        return get_replayer().overlay_mode(owner_id, message)
+    except Exception as e:  # pragma: no cover - never block a status frame
+        logger.debug(f"[REPLAY] mode overlay skipped: {e}")
+        return message

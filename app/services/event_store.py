@@ -539,6 +539,52 @@ async def _forward(ev: dict, user_id: str, mirrored: Optional[tuple[str, dict]])
 # Daily roll-up
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Barking vs last week (status card line, 2026-11-19)
+# ---------------------------------------------------------------------------
+
+BARK_SAME_WITHIN_PCT = 5   # |change| below this reads "about the same"
+
+
+def bark_vs_last_week(dog_id: str, now: Optional[datetime] = None) -> Optional[dict]:
+    """Today's barking so far vs last week's average day up to the same time of day.
+
+    Metric: seconds of barking (bark_episode duration_s, counted on the day and time it started).
+    Last week = the 7 local days today-13 .. today-7 (the previous period get_trend(days=7) uses
+    today). A day with no barking counts as 0. None when last week has no barking up to this time
+    of day, so there is nothing to compare with. `now` is the replay clock during a demo replay."""
+    from datetime import time as dtime
+    tz = settings_service.get_timezone(dog_id)
+    now = (now or datetime.now(timezone.utc)).astimezone(tz)
+    today = now.date()
+    first, last = today - timedelta(days=13), today - timedelta(days=7)
+    since = datetime.combine(first, dtime(0), tz).astimezone(timezone.utc).isoformat()
+    until = now.astimezone(timezone.utc).isoformat()
+    rows = list_events(dog_id, since=since, until=until, types=["bark_episode"], limit=50000, order="asc")
+    cutoff = now.time()
+    today_s = week_s = 0.0
+    for r in rows:
+        start = _parse(r["ts"]).astimezone(tz)
+        dur = float(r.get("duration_s") or 0)
+        if start.date() == today:
+            today_s += dur
+        elif first <= start.date() <= last and start.time() <= cutoff:
+            week_s += dur
+    avg = week_s / 7
+    if avg <= 0:
+        return None
+    pct = round((today_s - avg) / avg * 100)
+    if abs(pct) < BARK_SAME_WITHIN_PCT:
+        line = "Barking about the same as last week"
+    elif pct < 0:
+        line = f"Barking down {-pct}% vs last week"
+    else:
+        line = f"Barking up {pct}% vs last week"
+    return {"line": line, "pct_change": pct, "metric": "bark_s", "today_s": round(today_s),
+            "last_week_avg_s": round(avg), "last_week": {"from": first.isoformat(), "to": last.isoformat()},
+            "as_of": now.isoformat()}
+
+
 def resolve_date(dog_id: str, token: str) -> str:
     token = (token or "today").lower()
     today = settings_service.local_now(dog_id).date()

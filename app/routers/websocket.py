@@ -1025,7 +1025,8 @@ async def websocket_device_endpoint(
                     sleep_wake.on_mode_report(device_id, status_mode, explicit=False)
                     logger.info(f"[STATUS] Robot({device_id}): mode={status_mode} battery={message.get('battery', message.get('data', {}).get('battery', '?'))}")
                 if owner_id:
-                    await manager.send_to_user_apps(owner_id, message)
+                    from app.connection_manager import _replay_overlay
+                    await manager.send_to_user_apps(owner_id, _replay_overlay(owner_id, message))
                     logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): status_update")
                 else:
                     logger.warning(f"[ROUTE] Robot({device_id}) -> ???: status_update (no owner)")
@@ -2032,7 +2033,8 @@ async def websocket_generic_endpoint(
                         sleep_wake.on_mode_report(identifier, status_mode, explicit=False)
                         logger.info(f"[STATUS] Robot({identifier}): mode={status_mode} battery={message.get('battery', message.get('data', {}).get('battery', '?'))}")
                     if owner_id:
-                        await manager.send_to_user_apps(owner_id, message)
+                        from app.connection_manager import _replay_overlay
+                        await manager.send_to_user_apps(owner_id, _replay_overlay(owner_id, message))
                         logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): status_update")
                     continue
 

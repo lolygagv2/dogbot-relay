@@ -6,6 +6,7 @@
   "dog_breed": "Pomeranian",
   "dog_id": "01a183fe-0169-7d8b-ac62-5d58727473bf",
   "device_id": "wimz_robot_05",
+  "baseline_seed": "demo_baseline_week.json",
   "timezone": "America/New_York",
   "day_start": "07:00",
   "events": [

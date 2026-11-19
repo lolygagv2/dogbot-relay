@@ -10,6 +10,7 @@ GET  /api/dogs/{dog_id}/status    latest robot status + treat/quiet-hours contex
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -126,7 +127,7 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
     manager = get_connection_manager()
     devices = pairing.dog_devices(dog_id, owner)
     online = [d for d in devices if manager.is_robot_online(d)]
-    replay_active, replay_device, replay_vt, replay_date = False, None, None, None
+    replay_active, replay_device, replay_vt, replay_date, replay_mode = False, None, None, None, None
     try:
         from app.services.replayer import get_replayer
         rp = get_replayer()
@@ -134,6 +135,7 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         if replay_active:   # the replay's clock, for this dog only (2026-11-18)
             replay_device, replay_date = rp.device_id, rp.date
             replay_vt = rp.virtual_time().isoformat()
+            replay_mode = rp.virtual_mode()
     except ImportError:
         pass
     # Robot state is the robot's own: "online" = one of the owner's robots is connected, no
@@ -160,9 +162,13 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         "dog_id": dog_id,
         "device_id": (last or {}).get("device_id") or (online[0] if online else (devices[0] if devices else None)),
         "robot_online": bool(online),
-        "mode": live_mode,
+        # during a replay: the replay's mode (silent_guardian between the seed's start and exit);
+        # live_mode is what the robot's own latest status says
+        "mode": replay_mode or live_mode,
+        "live_mode": live_mode,
         "asleep": asleep,
         "waking": bool(status_device and sleep_wake.is_waking(status_device)),
+        "mode_source": "replay" if replay_mode else "robot",
         "battery": (last or {}).get("data", {}).get("battery"),
         "last_status": (last or {}).get("data"),
         "last_status_ts": (last or {}).get("ts"),
@@ -171,6 +177,10 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         "quiet_hours": {"enabled": qh.enabled, "start": qh.start, "end": qh.end,
                         "active": settings_service.in_quiet_hours(dog_id)},
         "timezone": settings_service.get_value(dog_id, "timezone"),
+        # "Barking down X% vs last week": today so far vs last week's average day to the same
+        # time (replay clock during a replay); None when last week has nothing to compare with
+        "bark_vs_last_week": event_store.bark_vs_last_week(
+            dog_id, datetime.fromisoformat(replay_vt) if replay_vt else None),
         "replay_active": replay_active,
         "virtual_time": replay_vt,     # None unless this dog's replay is loaded
         "replay_date": replay_date,

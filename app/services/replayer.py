@@ -11,8 +11,19 @@ Per-dog targets (2026-11-18): every call names its dog, the dog must be one the 
 replay_other_dog. Load never changes the dog's settings and uses the dog's own timezone.
 A seed with "land_previous_day": true (demo_good_day) is also written in full, silently,
 onto the day before the replay date, so yesterday's recap exists while today replays.
+A seed with "baseline_seed": "<file>" (good and bad day, 2026-11-19) also writes that seed's
+events silently (no pushes, no WS frames), its offsets relative to the replay date's day_start
+(demo_baseline_week: days -13..-7 = last week), so "vs last week" always has data. Its ids are
+replay:<dog>:<replay date>:b<idx>; load clears earlier replay data on those dates too.
 Load clears earlier replay data on the dates it writes; reset clears all of the dog's
 replay-made data (events of source replay/relay and the rows linked to them, nothing else).
+
+Virtual mode (2026-11-19): while a replay is loaded, the mode the app sees for the owner's robots
+is the replay's (the newest status / mode_change mode at or before the replay clock), so screens
+show Silent Guardian between the seed's mode start and exit even when a live robot says idle.
+Used by GET /status (mode, plus live_mode / mode_source), by robot status / status_update
+frames forwarded to the owner's apps (mode rewritten, live_mode kept), and announced to the
+apps as a mode_changed frame (reason "replay") for each of the dog's robots when it changes.
 
 Seed format (seeds/demo_day.json):
   {"version": 1, "name": "...", "timezone": "America/New_York", "day_start": "07:30",
@@ -86,11 +97,60 @@ class Replayer:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._wake = asyncio.Event()
+        self.owner_id: Optional[str] = None
+        self._announced_mode: Optional[str] = None
 
     # ---- helpers ----
 
     def handles(self, dog_id: str) -> bool:
         return self.status != "idle" and dog_id == self.dog_id
+
+    def virtual_mode(self) -> Optional[str]:
+        """The replay's robot mode at its clock: newest emitted status / mode_change mode."""
+        if self.status == "idle":
+            return None
+        for item in reversed(self.events[:self.cursor]):
+            ev = item["event"]
+            if ev["type"] in ("status", "mode_change"):
+                m = str((ev.get("data") or {}).get("mode") or "").strip().lower()
+                if m:
+                    return m
+        return None
+
+    def mode_for_owner(self, owner_id: Optional[str]) -> Optional[str]:
+        """Virtual mode for robot frames going to this owner's apps (None = no replay for them)."""
+        if not owner_id or self.status == "idle" or owner_id != self.owner_id:
+            return None
+        return self.virtual_mode()
+
+    def overlay_mode(self, owner_id: Optional[str], message: dict) -> dict:
+        """A robot status frame with the replay's mode in place of the live one (a copy; the
+        original is what gets stored). live_mode keeps what the robot said."""
+        mode = self.mode_for_owner(owner_id)
+        if not mode or not isinstance(message, dict):
+            return message
+        out = dict(message)
+        data = out.get("data") if isinstance(out.get("data"), dict) else None
+        live = out.get("mode") or (data or {}).get("mode")
+        if "mode" in out or data is None or "mode" not in data:
+            out["mode"] = mode
+        if data is not None and "mode" in data:
+            out["data"] = {**data, "mode": mode}
+        out["live_mode"] = live
+        out["mode_source"] = "replay"
+        return out
+
+    async def _announce_mode(self) -> None:
+        """Tell the owner's apps when the replay's mode changed (one mode_changed per robot)."""
+        mode = self.virtual_mode()
+        if not mode or mode == self._announced_mode:
+            return
+        prev, self._announced_mode = self._announced_mode, mode
+        for device_id in self._dog_devices() or [self.device_id]:
+            await self._send_apps({"type": "event", "event": "mode_changed", "device_id": device_id,
+                                   "dog_id": self.dog_id, "mode": mode, "previous_mode": prev,
+                                   "reason": "replay", "mode_source": "replay",
+                                   "ts": self.virtual_time().isoformat()})
 
     def virtual_offset(self) -> float:
         if self._running:
@@ -113,6 +173,7 @@ class Replayer:
             "status": self.status, "seed": self.seed_name, "name": self.seed.get("name"),
             "dog_id": self.dog_id, "device_id": self.device_id, "user_id": self.user_id,
             "device_ids": self._dog_devices(),   # every robot that shows this replay
+            "virtual_mode": self.virtual_mode(),
             "date": self.date, "timezone": str(self.tz.key) if hasattr(self.tz, "key") else "UTC",
             "speed": self.speed, "cursor": self.cursor, "total": len(self.events), "emitted": self.emitted,
             "virtual_time": self.virtual_time().isoformat() if self.date else None,
@@ -211,12 +272,12 @@ class Replayer:
             out.append(entry)
         return out, missing
 
-    def _materialise(self, entries: list[dict], date: str) -> list[dict]:
+    def _materialise(self, entries: list[dict], date: str, tag: str = "") -> list[dict]:
         base = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=self.tz) + timedelta(seconds=self.day_start_s)
         ref_ids: dict[str, str] = {}
         out = []
         for idx, entry in enumerate(entries):
-            eid = f"replay:{self.dog_id}:{date}:{idx}"
+            eid = f"replay:{self.dog_id}:{date}:{tag}{idx}"
             if entry.get("id"):
                 ref_ids[str(entry["id"])] = eid
             out.append({"idx": idx, "offset_s": float(entry.get("offset_s", 0)), "entry": entry, "event_id": eid})
@@ -270,6 +331,8 @@ class Replayer:
         await self._stop()   # one replay at a time: loading here stops any other dog's replay
         self.seed_name, self.seed = path.name, seed
         self.dog_id, self.device_id, self.user_id = dog_id, device, admin.user_id
+        self.owner_id = get_dog_owner(dog_id)
+        self._announced_mode = None
         self.tz, self.day_start_s, self.date = tz, day_start_s, date
         entries = sorted(seed["events"], key=lambda e: float(e.get("offset_s", 0)))
         entries, media_missing = self._link_media(entries)
@@ -277,7 +340,27 @@ class Replayer:
             logger.warning(f"[REPLAY] {self.seed_name}: media not in seeds/media: {[m['file'] for m in media_missing]}")
 
         landed_date = (day - timedelta(days=1)).date().isoformat() if seed.get("land_previous_day") else None
-        await self._purge(dog_id, [date] + ([landed_date] if landed_date else []))
+        baseline_items, baseline_name = [], None
+        if seed.get("baseline_seed"):
+            baseline_name = Path(str(seed["baseline_seed"])).name
+            bpath = seeds_dir() / baseline_name
+            try:
+                bseed = json.loads(bpath.read_text())
+                bentries = sorted(bseed.get("events") or [], key=lambda e: float(e.get("offset_s", 0)))
+                bentries, bmissing = self._link_media(bentries)
+                media_missing += bmissing
+                baseline_items = self._materialise(bentries, date, tag="b")
+            except (OSError, ValueError) as e:
+                raise HTTPException(status_code=422, detail={"code": "bad_baseline_seed", "seed": baseline_name,
+                                                             "reason": str(e)})
+        baseline_dates = sorted({datetime.fromisoformat(i["event"]["ts"]).astimezone(tz).date().isoformat()
+                                 for i in baseline_items})
+        await self._purge(dog_id, [date] + ([landed_date] if landed_date else []) + baseline_dates)
+        baseline_landed = 0
+        if baseline_items:
+            res = await event_store.ingest_events([i["event"] for i in baseline_items], device_id=device,
+                                                  user_id=admin.user_id, source="replay", notify=False, forward=False)
+            baseline_landed = len(res["accepted"])
         landed = 0
         if landed_date:
             # yesterday's recap: the whole seed, silently (no pushes, no WS frames, no agent lines)
@@ -298,7 +381,9 @@ class Replayer:
                     + (f", landed {landed} on {landed_date}" if landed_date else "")
                     + (f", seed settings ignored: {ignored}" if ignored else ""))
         return {**self.state(), "landed": landed, "landed_date": landed_date, "settings_ignored": ignored,
-                "media_missing": media_missing}
+                "media_missing": media_missing, "baseline_seed": baseline_name,
+                "baseline_landed": baseline_landed,
+                "baseline_dates": [baseline_dates[0], baseline_dates[-1]] if baseline_dates else None}
 
     async def start(self, speed: Optional[float] = None, dog_id: Optional[str] = None) -> dict:
         self._require_target(dog_id)
@@ -379,6 +464,7 @@ class Replayer:
         self.status = "done" if self.cursor >= len(self.events) and not was_running else ("running" if was_running else "paused")
         await self._send_apps({"type": "replay_jump", "dog_id": self.dog_id,
                                "virtual_time": self.virtual_time().isoformat()})
+        await self._announce_mode()
         if was_running and self.cursor < len(self.events):
             self._running = True
             self.status = "running"
@@ -405,6 +491,7 @@ class Replayer:
         self.cursor = 0
         self.emitted = 0
         self.started_at = None
+        self._announced_mode = None
         self._anchor(0.0)
 
     async def reset_dog(self, dog_id: str, admin: Actor) -> dict:
@@ -451,6 +538,8 @@ class Replayer:
                 if res["rejected"]:
                     logger.warning(f"[REPLAY] seed event {ev['idx']} rejected: {res['rejected']}")
                 self.cursor += 1
+                if ev["event"]["type"] in ("status", "mode_change"):
+                    await self._announce_mode()
             self._running = False
             self.status = "done"
             logger.info(f"[REPLAY] done: {self.emitted} events emitted for {self.dog_id}")
