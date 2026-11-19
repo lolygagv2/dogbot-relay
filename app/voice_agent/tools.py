@@ -21,6 +21,7 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as MOVE_SPEC, MOVE_WAIT_S, move_tool_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
+from app.services.robot_control import SELECT_DOG_DESCRIPTION, select_dog_for_owner
 from app.services.robot_control import SMART_PLUG_ASSISTANT_ACTIONS, SMART_PLUG_WAIT_S, smart_plug_tool_result
 from app.services.robot_control import (LOOK_ACTIONS, LOOK_WAIT_S, ULTRASONIC_STYLES, ULTRASONIC_WAIT_S,
                                         look_tool_result, ultrasonic_tool_result)
@@ -97,15 +98,18 @@ TOOLS: list[dict] = [
                               "escalate_after_s": {"type": "integer", "description": "5-3600, or -1 to keep"}},
                              ["dog_id", "level", "min_episode_s", "escalate_after_s"]), "strict": True},
     {"name": "set_silent_guardian",
-     "description": "Turn Silent Guardian (bark watch and intervention) on or off right now. on=true starts Silent Guardian mode; on=false puts the robot in standby. To run it at a set time use schedule_mission with type silent_guardian. The robot does not confirm the change, so say it was sent.",
+     "description": "Turn Silent Guardian (bark watch and intervention) on or off right now. on=true starts Silent Guardian mode for dog_id; on=false puts the robot in standby. To run it at a set time use schedule_mission with type silent_guardian. The robot confirms the change within 2 s. Nothing is queued: if it refuses with robot_offline (or robot_timeout or expired), say it did not happen and suggest trying again later.",
      "input_schema": _schema({"dog_id": _str("dog id"), "on": {"type": "boolean", "description": "true = on, false = off"}},
                              ["dog_id", "on"]), "strict": True},
     # Not strict (the API caps strict tools at 20): optional fields may simply be omitted.
     {"name": "set_coach",
-     "description": "Turn Coach mode (active trick training) on or off right now. on=true starts Coach mode; on=false puts the robot in standby. To run it at a set time use schedule_mission with type coach. The robot does not confirm the change, so say it was sent.",
+     "description": "Turn Coach mode (active trick training) on or off right now. on=true starts Coach mode for dog_id; on=false puts the robot in standby. To run it at a set time use schedule_mission with type coach. The robot confirms the change within 2 s. Nothing is queued: if it refuses with robot_offline (or robot_timeout or expired), say it did not happen and suggest trying again later.",
      "input_schema": {"type": "object", "properties": {
          "dog_id": _str("dog id"), "on": {"type": "boolean", "description": "true = on, false = off (standby)"}},
          "required": ["dog_id", "on"]}},
+    {"name": "select_dog",   # not strict (strict cap 20)
+     "description": SELECT_DOG_DESCRIPTION + " Only when the owner asks to switch dogs.",
+     "input_schema": {"type": "object", "properties": {"dog_id": _str("dog id")}, "required": ["dog_id"]}},
     {"name": "set_smart_plug",   # not strict (strict cap 20)
      "description": "Switch or check the smart plug that powers the calming (Adaptil) diffuser. action: on, off or status. Silent Guardian turns it on by itself and off 2 hours later; on/off here is a manual override. If available is false, say the plug is not available (maybe unplugged); it is not a fault.",
      "input_schema": {"type": "object", "properties": {
@@ -282,7 +286,10 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             return {"online": st.get("robot_online"), "mode": st.get("mode"), "asleep": st.get("asleep"), "battery_pct": st.get("battery"),
                     "docked": last.get("docked"), "light_level": last.get("light_level"),
                     "treats_remaining_in_hopper": last.get("treats_remaining"), "treats_today": st.get("treats_today"),
-                    "treat_daily_cap": st.get("treat_cap"), "quiet_hours": st.get("quiet_hours")}
+                    "treat_daily_cap": st.get("treat_cap"), "quiet_hours": st.get("quiet_hours"),
+                    "robot_online": st.get("robot_online"), "selected_dog_id": st.get("selected_dog_id"),
+                    "selected_dog_applied": st.get("selected_dog_applied"), "session_dog_id": st.get("session_dog_id"),
+                    "state_version": st.get("state_version")}
         if name == "get_missions":
             setting = await c.get_setting(dog_id, "missions")
             return {"missions": [{k: m.get(k) for k in ("id", "type", "name", "enabled", "trigger")}
@@ -309,12 +316,14 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
                     "escalate_after_s": v["escalate_after_s"]}
         if name == "set_silent_guardian":
             on = bool(a.get("on"))
-            res = await c.command(dog_id, "set_mode", sg_mode_command(on))
+            res = await c.command(dog_id, "set_mode", sg_mode_command(on, dog_id))
             return sg_mode_tool_result(on, res)
         if name == "set_coach":
             on = bool(a.get("on"))
-            res = await c.command(dog_id, "set_mode", coach_mode_command(on))
+            res = await c.command(dog_id, "set_mode", coach_mode_command(on, dog_id))
             return coach_mode_tool_result(on, res)
+        if name == "select_dog":
+            return await select_dog_for_owner(c, dog_id)
         if name == "set_smart_plug":
             action = str(a.get("action") or "").strip().lower()
             if action not in SMART_PLUG_ASSISTANT_ACTIONS:
@@ -394,7 +403,7 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
                 return {"ok": False, "reason": "photo_timed_out", "photo_request_id": res.get("command_id")}
             inner = r.get("result") if isinstance(r.get("result"), dict) else {}
             image_url = inner.get("image_url") or inner.get("url")
-            out = {"ok": bool(r.get("ok", True)), "saved": bool(r.get("ok", True)), "error": r.get("error"),
+            out = {"ok": r.get("success") is True, "saved": r.get("success") is True, "error": r.get("error"),
                    "photo_request_id": res.get("command_id")}
             if image_url and out["ok"]:
                 try:
@@ -413,7 +422,7 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
             if res.get("timed_out"):
                 return {"ok": False, "reason": "trick_timed_out", "trick": a["trick"]}
             inner = r.get("result") if isinstance(r.get("result"), dict) else {}
-            return {"ok": bool(r.get("ok", True)), "trick": a["trick"], "success": inner.get("success", r.get("ok", True)),
+            return {"ok": r.get("success") is True, "trick": a["trick"], "success": inner.get("success", r.get("success") is True),
                     "error": r.get("error"), "simulated": res.get("simulated")}
         if name == "standby":
             res = await c.command(dog_id, "standby", {})

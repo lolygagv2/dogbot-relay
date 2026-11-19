@@ -129,16 +129,28 @@ async def health():
             "tts": "elevenlabs" if s.elevenlabs_api_key and s.elevenlabs_voice_id else None}
 
 
-async def _run_text(caller: Caller, dog_id: str, text: str, want_tts: bool) -> tuple[dict, dict]:
-    role = _dog_access(caller.user_id, dog_id)
+NO_DOG_CONTEXT = {"selected_dog": None,
+                  "note": "No dog is selected in the app. Do not name a dog unless the owner asks about one; "
+                          "use get_dogs if a tool needs a dog_id."}
+
+
+async def _run_text(caller: Caller, dog_id: Optional[str], text: str, want_tts: bool) -> tuple[dict, dict]:
+    if dog_id:
+        role = _dog_access(caller.user_id, dog_id)
+    else:   # a robot with no dog selected: its owner is speaking (tools still check each dog)
+        role = "owner"
     allow_physical = caller.source == "robot" or role in ("owner", "caretaker")
     ctx = ToolContext(user_id=caller.user_id, source=caller.source, role=role, allow_physical=allow_physical)
     timing: dict[str, int] = {}
-    _bg(ctx.client.transcript(dog_id, "user", text))
+    if dog_id:
+        _bg(ctx.client.transcript(dog_id, "user", text))
     t = time.monotonic()
-    out = await get_brain().respond(user_text=text, ctx=ctx, memory_key=f"{caller.user_id}:{dog_id}", dog_hint=dog_id)
+    out = await get_brain().respond(user_text=text, ctx=ctx,
+                                    memory_key=f"{caller.user_id}:{dog_id or 'robot:' + str(caller.device_id)}",
+                                    dog_hint=dog_id, extra_data=None if dog_id else NO_DOG_CONTEXT)
     timing["brain_ms"] = int((time.monotonic() - t) * 1000)
-    _bg(ctx.client.transcript(dog_id, "agent", out["text_out"]))
+    if dog_id:
+        _bg(ctx.client.transcript(dog_id, "agent", out["text_out"]))
     audio = {"audio_url": None, "clip_id": None, "expires_at": None}
     if want_tts:
         t = time.monotonic()
@@ -158,11 +170,12 @@ async def utterance(file: UploadFile = File(...), dog_id: Optional[str] = Form(d
                     caller: Caller = Depends(jwt_or_device)):
     t_all = time.monotonic()
     if not dog_id:
-        # a robot may omit dog_id: fall back to its owner's oldest dog (or placeholder)
-        from app.services import pairing
-        dog_id = pairing.primary_dog_id(caller.device_id) if caller.source == "robot" else None
-        if not dog_id:
+        # a robot may omit dog_id: the dog selected in the app (ROBOT-STATE v2 section 9). No
+        # selection -> the conversation runs with no dog (nothing else is looked up). Phones must say.
+        if caller.source != "robot" or not caller.device_id:
             raise HTTPException(status_code=422, detail={"code": "dog_id_required"})
+        from app.services import robot_state
+        dog_id = robot_state.get(caller.device_id)["selected_dog_id"]
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail={"code": "empty_audio"})

@@ -37,11 +37,11 @@ def test_look_rejected(temp_db, data, code):
 def test_look_wiring_and_result():
     assert authz.TOOL_SCOPES["look"] == "physical" and "look" in PHYSICAL_TOOLS
     assert any(t["name"] == "look" for t in TOOLS)
-    out = robot_control.look_tool_result("pan_left", {"command_id": "c", "result": {"ok": True, "result": {
+    out = robot_control.look_tool_result("pan_left", {"command_id": "c", "result": {"success": True, "result": {
         "pan": -15, "tilt": 0, "limit_reached": False, "moved_degrees": 15}}})
     assert out == {"ok": True, "action": "pan_left", "command_id": "c", "pan": -15, "tilt": 0,
                    "limit_reached": False, "moved_degrees": 15}
-    busy = robot_control.look_tool_result("tilt_up", {"result": {"ok": False, "error": {"code": "gimbal_busy"}}})
+    busy = robot_control.look_tool_result("tilt_up", {"result": {"success": False, "error": {"code": "gimbal_busy"}}})
     assert busy["ok"] is False and busy["error"] == "gimbal_busy"
 
 

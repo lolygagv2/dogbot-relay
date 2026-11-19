@@ -329,7 +329,7 @@ class Brain:
         if change["tool"] == "set_silent_guardian":
             if r.get("simulated"):
                 return f"Silent Guardian {r.get('silent_guardian')} was simulated, because no live robot is connected."
-            return f"I've told the robot to turn Silent Guardian {r.get('silent_guardian')}."
+            return f"Silent Guardian is now {r.get('silent_guardian')}."   # the robot confirmed it (v2)
         if change["tool"] == "schedule_mission":
             from app.services.schedule_tools import type_label
             what = f"{type_label(str(r.get('type')))} at {r.get('time')} for {r.get('duration_min'):g} minutes"
@@ -344,8 +344,8 @@ class Brain:
         if change["tool"] == "set_coach":
             if r.get("simulated"):
                 return f"Coach mode {r.get('coach')} was simulated, because no live robot is connected."
-            return ("I've told the robot to start Coach mode." if r.get("coach") == "on"
-                    else "I've told the robot to stop Coach mode and go to standby.")
+            return ("Coach mode is now on." if r.get("coach") == "on"
+                    else "Coach mode is now off and the robot is in standby.")   # the robot confirmed it (v2)
         if change["tool"] == "set_treat_schedule" and (
                 r.get("daily_cap") != r.get("previous_daily_cap")
                 or r.get("max_per_hour") != r.get("previous_max_per_hour")):

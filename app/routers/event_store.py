@@ -38,19 +38,15 @@ async def post_events(batch: EventBatchIn, actor: Actor = Depends(resolve_actor)
         user_id = actor.user_id
 
     # Robot may only post for dogs its owner has; admin may post for anything.
-    # A robot may omit dog_id only when its owner has exactly one dog (the relay fills it in);
-    # with several, it must say which -- never guess on recorded data. Status stays
-    # device-scoped with dog_id NULL, and so does mode_change (robot mode, 2026-11-07).
+    # A robot that omits dog_id: with exactly one dog the relay fills it in (A5); with several the
+    # row is stored with dog_id NULL (ROBOT-STATE v2 rule A6): it counts in no per-dog total and the
+    # relay never guesses. Status and mode_change are always device-scoped (dog_id NULL).
     owner_dogs = pairing.device_dog_ids(device_id) if actor.kind == "robot" else []
     rejected, allowed = [], []
     for ev in batch.events:
         try:
             item = ev.model_dump()
-            if item["dog_id"] is None and ev.type not in ("status", "mode_change"):
-                if len(owner_dogs) != 1:
-                    rejected.append({"event_id": ev.event_id,
-                                     "reason": f"dog_id required (owner has {len(owner_dogs)} dogs)"})
-                    continue
+            if item["dog_id"] is None and ev.type not in ("status", "mode_change") and len(owner_dogs) == 1:
                 item["dog_id"] = owner_dogs[0]
             if actor.kind == "robot" and item["dog_id"] is not None:
                 check_dog_access(actor, item["dog_id"])
@@ -140,35 +136,31 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         pass
     # Robot state is the robot's own: "online" = one of the owner's robots is connected, no
     # matter which dog is asked about. The latest status row is read by device_id (an online
-    # robot first), never by dog_id (contract fix 2026-11-06).
+    # robot first), never by dog_id (contract fix 2026-11-06). ROBOT-STATE v2: mode / asleep /
+    # dogs come from the relay's state record for that robot, never from a replay.
     candidates = online or devices
     if replay_device:
         candidates = [*candidates, replay_device]
     last = get_latest_status_for_devices(candidates)
-    # Sleep (2026-11-19): the relay's own view (it sent sleep, or the robot reported it) wins over a
-    # stale "idle" in the last status row; any spelling the robot used reads as "sleep".
-    from app.services import sleep_wake
-    status_device = (last or {}).get("device_id") or (online[0] if online else None)
-    live_mode = sleep_wake.normalize_mode((last or {}).get("data", {}).get("mode"))
-    asleep = bool(status_device and status_device in online and sleep_wake.is_asleep(status_device))
-    if asleep:
-        live_mode = sleep_wake.SLEEP_MODE
-    elif live_mode == sleep_wake.SLEEP_MODE:
-        asleep = status_device in online   # an offline robot's last row doesn't make it asleep now
+    status_device = (last or {}).get("device_id")
+    if status_device not in devices:   # a replay's demo robot is never the state's robot
+        status_device = online[0] if online else (devices[0] if devices else None)
+    from app.services import robot_state, sleep_wake
+    st = robot_state.get(status_device) if status_device else None
     used, _ = settings_service.treats_used_today(dog_id)
     cap = settings_service.effective_daily_cap(settings_service.get_value(dog_id, "treat_schedule"))
     qh = QuietHours.model_validate(settings_service.get_value(dog_id, "quiet_hours"))
     return {
         "dog_id": dog_id,
-        "device_id": (last or {}).get("device_id") or (online[0] if online else (devices[0] if devices else None)),
+        "device_id": status_device,
         "robot_online": bool(online),
-        # during a replay: the replay's mode (silent_guardian between the seed's start and exit);
-        # live_mode is what the robot's own latest status says
-        "mode": replay_mode or live_mode,
-        "live_mode": live_mode,
-        "asleep": asleep,
+        "mode": st["mode"] if st else None,
+        "asleep": st["asleep"] if st else False,
         "waking": bool(status_device and sleep_wake.is_waking(status_device)),
-        "mode_source": "replay" if replay_mode else "robot",
+        "selected_dog_id": st["selected_dog_id"] if st else None,
+        "selected_dog_applied": st["selected_dog_applied"] if st else False,
+        "session_dog_id": st["session_dog_id"] if st else None,
+        "state_version": st["state_version"] if st else None,
         "battery": (last or {}).get("data", {}).get("battery"),
         "last_status": (last or {}).get("data"),
         "last_status_ts": (last or {}).get("ts"),
@@ -181,9 +173,9 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         # time (replay clock during a replay); None when last week has nothing to compare with
         "bark_vs_last_week": event_store.bark_vs_last_week(
             dog_id, datetime.fromisoformat(replay_vt) if replay_vt else None),
-        "replay_active": replay_active,
-        "virtual_time": replay_vt,     # None unless this dog's replay is loaded
-        "replay_date": replay_date,
+        # replay data only here (ROBOT-STATE v2, section 8); null unless this dog's replay is loaded
+        "replay": {"active": replay_active, "virtual_mode": replay_mode, "virtual_time": replay_vt,
+                   "date": replay_date},
     }
 
 

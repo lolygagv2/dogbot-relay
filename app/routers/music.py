@@ -137,17 +137,23 @@ async def upload_music(
     # The robot will call GET /api/music/file/{file_id} to download
     download_url = f"/api/music/file/{file_id}"
 
-    await manager.send_to_robot(device_id, {
+    # ROBOT-STATE v2: a command like any other (command_id, source stamped by the relay, wake-first
+    # if the robot is asleep); sent in the background so the upload answers at once.
+    import uuid as _uuid
+    from app.services import sleep_wake
+    background_tasks.add_task(sleep_wake.send_awake, device_id, {
         "type": "command",
         "command": "download_song",
+        "command_id": str(_uuid.uuid4()),
         "data": {
             "url": download_url,
             "file_id": file_id,
             "filename": filename,
             "dog_id": dog_id,
-            "size": file_size
+            "size": file_size,
+            "source": "app",
         }
-    })
+    }, "app")
 
     logger.info(f"[UPLOAD] Notified robot {device_id} to download file {file_id}")
 

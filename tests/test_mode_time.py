@@ -22,8 +22,9 @@ def at(day: str, hm: str) -> str:
     return local.astimezone(timezone.utc).isoformat()
 
 
-def mode(eid, ts, m, dog_id=None):
-    return {"event_id": eid, "type": "mode_change", "dog_id": dog_id, "ts": ts, "data": {"mode": m}}
+def mode(eid, ts, m, session_dog_id=None):
+    return {"event_id": eid, "type": "mode_change", "dog_id": None, "ts": ts,
+            "data": {"mode": m, "session_dog_id": session_dog_id}}
 
 
 def beat(eid, ts, m):
@@ -51,11 +52,19 @@ def totals(dog, day):
 
 # ---- validation + route ----
 
-def test_mode_change_is_device_scoped_and_needs_mode():
-    ev, reason = event_store.validate_event(mode("m1", "2026-11-03T10:00:00Z", " Silent_Guardian "))
-    assert reason is None and ev["dog_id"] is None and ev["data"]["mode"] == "silent_guardian"
-    ev, reason = event_store.validate_event({"event_id": "m2", "type": "mode_change", "ts": "2026-11-03T10:00:00Z", "data": {}})
-    assert ev is None and "data.mode" in reason
+def test_mode_change_is_device_scoped_and_needs_one_of_five_modes(home):
+    ev, reason = event_store.validate_event(mode("m1", "2026-11-03T10:00:00Z", "silent_guardian"))
+    assert reason is None and ev["data"]["mode"] == "silent_guardian"
+    for bad in ({}, {"mode": " Silent_Guardian "}, {"mode": "sleep"}, {"mode": "night_sentry"}):
+        ev, reason = event_store.validate_event({"event_id": "m2", "type": "mode_change",
+                                                 "ts": "2026-11-03T10:00:00Z", "data": bad})
+        assert ev is None and reason == "invalid_mode"
+    # ROBOT-STATE v2 E1: a robot's mode_change is stored with dog_id null, even if it named a dog
+    run(event_store.ingest_events([{**mode("m3", at(D, "09:00"), "coach", "dog_t1"), "dog_id": "dog_t1"}],
+                                  device_id="robot_t", user_id="user_t1", source="robot", notify=False, forward=False))
+    from app.database import list_device_events
+    row = list_device_events("robot_t", ["mode_change"])[-1]
+    assert row["dog_id"] is None and row["data"]["session_dog_id"] == "dog_t1"
 
 
 def test_post_events_accepts_mode_change_without_dog_for_two_dog_owner(home):
@@ -74,7 +83,7 @@ def test_sg_and_coach_seconds_carry_across_midnight(home):
     ingest([
         mode("a", at(D_PREV, "22:00"), "silent_guardian"),   # 2 h on D_PREV, carries into D
         mode("b", at(D, "02:00"), "idle"),
-        mode("c", at(D, "10:00"), "coach", "dog_t1"),        # Coach for dog_t1 only
+        mode("c", at(D, "10:00"), "coach", "dog_t1"),        # Coach session for dog_t1 only
         mode("d", at(D, "10:30"), "idle"),
         mode("e", at(D, "20:00"), "silent_guardian"),        # runs to the end of D
         mode("f", at("2026-11-04", "06:00"), "idle"),

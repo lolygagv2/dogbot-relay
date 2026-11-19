@@ -665,6 +665,26 @@ def init_db():
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_mission_drafts_dog ON mission_drafts(dog_id, status, created_at DESC)")
 
+        # ROBOT-STATE v2 (2026-11-19): the relay-owned state record, one row per robot
+        # (app/services/robot_state.py). select_command_id = the select_dog in flight.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS robot_state (
+                device_id            TEXT PRIMARY KEY,
+                robot_online         INTEGER NOT NULL DEFAULT 0,
+                mode                 TEXT NOT NULL DEFAULT 'idle',
+                asleep               INTEGER NOT NULL DEFAULT 0,
+                selected_dog_id      TEXT,
+                selected_dog_applied INTEGER NOT NULL DEFAULT 0,
+                session_dog_id       TEXT,
+                state_version        INTEGER NOT NULL DEFAULT 0,
+                updated_at           TEXT NOT NULL,
+                source               TEXT NOT NULL DEFAULT 'relay',
+                reason               TEXT,
+                select_command_id    TEXT,
+                select_source        TEXT
+            )
+        """)
+
         conn.commit()
 
 
@@ -1900,7 +1920,7 @@ def set_scheduling_enabled(user_id: str, enabled: bool) -> bool:
 
 STORABLE_EVENT_TYPES = {
     "mission_progress", "mission_complete", "mission_stopped",
-    "mode_changed", "dog_detected", "treat_dispensed", "bark_detected", "bark",
+    "dog_detected", "treat_dispensed", "bark_detected", "bark",
     "upload_complete", "upload_error", "upload_result",
     "audio_state",
     "schedule_created", "schedule_updated", "schedule_deleted", "schedule_triggered",

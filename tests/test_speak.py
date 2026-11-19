@@ -47,6 +47,11 @@ def rig(temp_db, tmp_path, monkeypatch):
 
     async def fake_send(device_id, message):
         sent.append((device_id, message))
+        # ROBOT-STATE v2: the robot answers every command within 2000 ms
+        from app.services import command_results
+        if message.get("command_id"):
+            asyncio.get_running_loop().call_soon(command_results.resolve, message["command_id"],
+                                                 {"command_id": message["command_id"], "success": True, "result": {}})
         return True
 
     class FakeClient:

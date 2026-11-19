@@ -21,6 +21,8 @@ Hard rules:
 BOOT_GREETING_INTENT = """The robot just started up and the owner may be nearby. Greet them by the local time of day, mention {dog_name} by name, and summarise yesterday in one or two sentences using ONLY the numbers in the roll-up JSON below (for example barking episodes, longest episode minutes, treats given, missions). If the roll-up is empty or all zeros, just greet and say yesterday was quiet. You may add one light, dry joke. Do not call tools. Local time now: {local_time}. Roll-up for {date}:
 {rollup}"""
 
+BOOT_GREETING_NO_DOG_INTENT = """The robot just started up and the owner may be nearby. Greet them by the local time of day in one or two short sentences. No dog is selected in the app, so do not name any dog and do not summarise any day. You may add one light, dry joke. Do not call tools. Local time now: {local_time}."""
+
 SG_REARM_INTENT = """Silent Guardian just re-armed for {dog_name} (the robot is back on watch). Say so in one short sentence. Do not call tools. Data: {payload}"""
 
 LOW_HOPPER_INTENT = """The treat hopper is running low for {dog_name}. Say so in one sentence, quoting only the number of treats remaining from the data, and ask the owner to top it up. Do not call tools. Data: {payload}"""

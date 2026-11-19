@@ -1,6 +1,6 @@
-"""Replay virtual mode (2026-11-19): while a demo replay is loaded, the app sees the replay's mode
-(silent_guardian between the seed's mode start and exit) in GET /status, in robot status frames
-forwarded to the owner's apps, and as mode_changed frames when it changes."""
+"""Replay virtual mode (2026-11-19; ROBOT-STATE v2): the replay's mode (silent_guardian between the
+seed's mode start and exit) appears ONLY as GET /status replay.virtual_mode. status.mode is always
+the real robot's, and no mode frame is sent to the apps for replay mode changes."""
 import asyncio
 import json
 
@@ -8,7 +8,7 @@ import pytest
 
 import app.database as db
 from app.auth import Actor
-from app.connection_manager import _replay_overlay, get_connection_manager
+from app.connection_manager import get_connection_manager
 from app.routers import event_store as routes
 from app.services import push_service, replayer as rp
 
@@ -56,10 +56,6 @@ def replay(temp_db, tmp_path, monkeypatch):
     return r, sent
 
 
-def _modes(sent):
-    return [(m["device_id"], m["mode"]) for m in sent if m.get("event") == "mode_changed"]
-
-
 def test_virtual_mode_follows_the_replay_clock(replay):
     r, sent = replay
     assert r.virtual_mode() is None                   # nothing emitted yet
@@ -71,40 +67,35 @@ def test_virtual_mode_follows_the_replay_clock(replay):
     assert r.virtual_mode() == "idle"
     run(r.jump(to="10:00"))                           # back again
     assert r.virtual_mode() == "silent_guardian"
-    # one mode_changed per robot of the dog, only when the mode changes
-    assert _modes(sent) == [("robot_a", "idle"), ("robot_b", "idle"),
-                            ("robot_a", "silent_guardian"), ("robot_b", "silent_guardian"),
-                            ("robot_a", "idle"), ("robot_b", "idle"),
-                            ("robot_a", "silent_guardian"), ("robot_b", "silent_guardian")]
-    assert all(m["reason"] == "replay" for m in sent if m.get("event") == "mode_changed")
+    # E3: no legacy mode frame, and no robot_state frame either (the replay never changes state)
+    assert not [m for m in sent if m.get("event") == "mode_" + "changed" or m.get("type") == "robot_state"]
 
 
-def test_status_route_and_live_frames_carry_replay_mode(replay):
+def test_status_mode_is_the_real_robot_and_replay_only_under_replay(replay):
+    from app.services import robot_state
     r, _ = replay
-    # a live robot keeps saying idle, newer than anything on the replay clock
-    run(__import__("app.services.event_store", fromlist=["x"]).ingest_events(
-        [{"event_id": "live1", "type": "status", "ts": "2026-11-19T00:00:00Z",
-          "data": {"battery": 55, "mode": "idle"}}],
-        device_id="robot_b", user_id="user_t1", source="robot", notify=False, forward=False))
+    # the real robot is in coach (its state record), the replay clock says silent_guardian
+    robot_state.update("robot_a", source="app", mode="coach")
     run(r.jump(to="10:00"))
     st = run(routes.get_dog_status("dog_t1", actor=APP))
-    assert st["mode"] == "silent_guardian" and st["mode_source"] == "replay" and st["live_mode"] == "idle"
-    frame = {"type": "event", "event": "status", "device_id": "robot_b", "mode": "idle",
-             "data": {"mode": "idle", "battery": 55}}
-    out = _replay_overlay("user_t1", frame)
-    assert out["mode"] == "silent_guardian" and out["data"]["mode"] == "silent_guardian"
-    assert out["data"]["battery"] == 55 and out["live_mode"] == "idle" and out["mode_source"] == "replay"
-    assert frame["mode"] == "idle"                    # the original (stored) frame is untouched
-    assert _replay_overlay("someone_else", frame) is frame   # other owners' robots are left alone
+    assert st["mode"] == "coach"
+    assert st["replay"]["active"] is True and st["replay"]["virtual_mode"] == "silent_guardian"
+    assert st["replay"]["date"] == "2026-11-03" and st["replay"]["virtual_time"].startswith("2026-11-03T10:00")
+    for gone in ("replay_active", "demo_replay_active", "virtual_time", "replay_date", "live_mode", "mode_source"):
+        assert gone not in st
+    for k in ("asleep", "robot_online", "selected_dog_id", "selected_dog_applied", "session_dog_id", "state_version"):
+        assert k in st
+    # robot state frames are forwarded unchanged (no overlay)
+    from app import connection_manager
+    assert not hasattr(connection_manager, "_replay_overlay")
 
 
-def test_no_replay_no_override(replay):
+def test_no_replay(replay):
     r, _ = replay
     run(r.reset_dog("dog_t1", ADMIN))
-    frame = {"type": "event", "event": "status", "mode": "idle"}
-    assert _replay_overlay("user_t1", frame) is frame
     st = run(routes.get_dog_status("dog_t1", actor=APP))
-    assert st["mode_source"] == "robot"
+    assert st["replay"] == {"active": False, "virtual_mode": None, "virtual_time": None, "date": None}
+    assert st["mode"] == "idle"
 
 
 # ---- "Barking down X% vs last week" + baseline week landed on load ----

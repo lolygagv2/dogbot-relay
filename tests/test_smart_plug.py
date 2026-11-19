@@ -57,15 +57,15 @@ def test_assistants_only_on_off_status(temp_db, actor, action):
 
 
 def test_tool_result():
-    ok = robot_control.smart_plug_tool_result("on", {"command_id": "c", "result": {"ok": True, "result": {
+    ok = robot_control.smart_plug_tool_result("on", {"command_id": "c", "result": {"success": True, "result": {
         "configured": True, "alias": "Diffuser", "device_id": "8006AB", "on": True, "reachable": True,
         "owner": "manual", "auto_off_in_s": None, "trigger_level": 2, "auto_off_minutes": 120}}})
     assert ok == {"ok": True, "action": "on", "command_id": "c", "configured": True, "alias": "Diffuser",
                   "on": True, "reachable": True, "owner": "manual", "trigger_level": 2, "auto_off_minutes": 120}
     gone = robot_control.smart_plug_tool_result("status", {"command_id": "c", "result": {
-        "ok": False, "error": {"code": "plug_unreachable", "message": "timeout"}}})
+        "success": False, "error": {"code": "plug_unreachable", "message": "timeout"}}})
     assert gone["ok"] is False and gone["error"] == "plug_unreachable" and gone["available"] is False
-    none = robot_control.smart_plug_tool_result("status", {"result": {"ok": True, "result": {"configured": False}}})
+    none = robot_control.smart_plug_tool_result("status", {"result": {"success": True, "result": {"configured": False}}})
     assert none["configured"] is False and "No smart plug" in none["message"]
     assert robot_control.smart_plug_tool_result("off", {"timed_out": True})["reason"] == "smart_plug_timed_out"
 

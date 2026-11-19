@@ -65,8 +65,8 @@ def test_ultrasonic_scope_is_opt_in_and_tools_wired():
 
 
 def test_ultrasonic_result_passes_robot_reply():
-    out = robot_control.ultrasonic_tool_result({"command_id": "c", "result": {"ok": False, "error": {
+    out = robot_control.ultrasonic_tool_result({"command_id": "c", "result": {"success": False, "error": {
         "code": "cooldown", "retry_after_s": 12}}})
     assert out == {"ok": False, "command_id": "c", "error": {"code": "cooldown", "retry_after_s": 12}}
-    ok = robot_control.ultrasonic_tool_result({"command_id": "c", "result": {"ok": True, "result": {"style": "before_quiet"}}})
+    ok = robot_control.ultrasonic_tool_result({"command_id": "c", "result": {"success": True, "result": {"style": "before_quiet"}}})
     assert ok["ok"] is True and ok["result"] == {"style": "before_quiet"}

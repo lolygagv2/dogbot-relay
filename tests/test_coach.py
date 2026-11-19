@@ -155,10 +155,12 @@ def test_trend_weekly_has_coaching_fields(monkeypatch):
 # ---- set_coach ----
 
 def test_coach_mode_command_and_result():
-    assert robot_control.coach_mode_command(True) == {"mode": "coach"}
-    assert robot_control.coach_mode_command(False) == {"mode": "idle"}
-    r = robot_control.coach_mode_tool_result(False, {"delivered": True, "command_id": "c1"})
-    assert r["coach"] == "off" and r["mode"] == "idle" and r["delivered"] and "Coach mode off" in r["message"]
+    assert robot_control.coach_mode_command(True) == {"mode": "coach", "dog_id": None}
+    assert robot_control.coach_mode_command(True, "dog_t1") == {"mode": "coach", "dog_id": "dog_t1"}
+    assert robot_control.coach_mode_command(False) == {"mode": "idle", "dog_id": None}
+    r = robot_control.coach_mode_tool_result(False, {"delivered": True, "command_id": "c1",
+                                                     "result": {"success": True, "result": {"mode": "idle"}}})
+    assert r["coach"] == "off" and r["mode"] == "idle" and r["delivered"] and r["message"] == "Coach mode is off."
     assert "coach" in robot_control.SAFE_MODES
 
 
@@ -180,18 +182,19 @@ def test_agent_set_coach_dispatch(temp_db):
     class C:
         async def command(self, dog_id, command, data, wait_s=None):
             sent.append((command, data))
-            return {"delivered": True, "command_id": "c9"}
+            return {"delivered": True, "command_id": "c9",
+                    "result": {"success": True, "result": {"mode": "coach", "session_dog_id": "dog_t1"}}}
 
     ctx = vt.ToolContext(user_id="user_t1", source="phone")
     ctx.client = C()
     r = run(vt.dispatch(ctx, "set_coach", {"dog_id": "dog_t1", "on": True}))
-    assert r["ok"] and r["coach"] == "on" and sent == [("set_mode", {"mode": "coach"})]
+    assert r["ok"] and r["coach"] == "on" and sent == [("set_mode", {"mode": "coach", "dog_id": "dog_t1"})]
 
 
 def test_agent_readback():
     from app.voice_agent.brain import Brain
     on = {"tool": "set_coach", "result": {"ok": True, "coach": "on"}}
     off = {"tool": "set_coach", "result": {"ok": True, "coach": "off"}}
-    assert Brain._readback_sentence(on) == "I've told the robot to start Coach mode."
+    assert Brain._readback_sentence(on) == "Coach mode is now on."
     assert any(t in Brain._readback_sentence(on) for t in Brain._readback_tokens(on))
     assert any(t in Brain._readback_sentence(off) for t in Brain._readback_tokens(off))

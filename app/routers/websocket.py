@@ -4,7 +4,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 
@@ -14,6 +14,7 @@ from app.connection_manager import ConnectionManager, get_connection_manager
 from app.event_buffer import is_durable_event, replay_manager
 from app.database import (
     get_device_owner as db_get_device_owner,
+    get_dog_owner,
     get_device_secret as db_get_device_secret,
     get_metrics as db_get_metrics,
     get_user_dogs,
@@ -72,8 +73,7 @@ TRACKED_EVENTS = {
     "mission_progress",
     "mission_complete",
     "mission_stopped",
-    # Mode/detection events
-    "mode_changed",
+    # Detection events
     "dog_detected",
     "treat_dispensed",
     # Upload events (Robot -> App)
@@ -135,6 +135,107 @@ def _normalize_robot_event(message: dict) -> None:
     t = message.get("type")
     if t in _TYPE_AS_EVENT and "event" not in message:
         message["event"] = t
+
+
+# ROBOT-STATE v2 (E3): the legacy mode frame is retired. If an old robot still sends one it is
+# dropped on arrival: never stored, buffered or forwarded. robot_state frames replace it.
+_RETIRED_ROBOT_FRAMES = frozenset({"mode_" + "changed"})
+
+
+def _is_retired_frame(message: dict) -> bool:
+    return message.get("event") in _RETIRED_ROBOT_FRAMES or message.get("type") in _RETIRED_ROBOT_FRAMES
+
+
+def _status_fields(message: dict) -> dict:
+    """mode / asleep / session_dog_id from a status_update, top level or inside data."""
+    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+    out = dict(data)
+    for k in ("mode", "asleep", "session_dog_id", "selected_dog_id"):
+        if k in message:
+            out[k] = message[k]
+    return out
+
+
+async def _handle_robot_command_result(device_id: str, message: dict) -> None:
+    """A robot command_result (or photo_ready, turned into one): resolve waiters, apply it to the
+    robot state (C1 / C2 / C3) and forward it to the owner's apps."""
+    from app.services import command_results, photo_gallery, robot_state
+    manager = get_connection_manager()
+    if message.get("type") == "photo_ready":
+        # Deferred take_photo (capture > 8 s): the final result for that command_id.
+        message = command_results.from_photo_ready(message)
+    cid = str(message.get("command_id") or "")
+    if not cid:
+        logger.warning(f"[CMD-RESULT] {device_id}: missing command_id")
+        return
+    meta = command_results.resolve(cid, message) or {}
+    if not command_results.is_interim(message):
+        robot_state.on_command_result(device_id, meta, message)
+    command = meta.get("command") or message.get("command")
+    logger.info(f"[CMD-RESULT] {device_id}: {command or '?'} {cid} success={message.get('success')}")
+    gallery_id = photo_gallery.record_take_photo(cid, meta, message)
+    owner_id = manager.get_device_owner(device_id)
+    if owner_id:
+        await manager.send_to_user_apps(owner_id, {
+            "type": "command_result",
+            "command_id": cid,
+            "command": command,
+            "gallery_photo_id": gallery_id,
+            "dog_id": meta.get("dog_id") or message.get("dog_id"),
+            "device_id": device_id,
+            "success": message.get("success") is True,
+            "result": message.get("result"),
+            "error": message.get("error"),
+            "duration_ms": message.get("duration_ms"),
+            "timestamp": message.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        })
+
+
+async def _app_command_preflight(websocket: WebSocket, user_id: str, target_device: str,
+                                 message: dict) -> tuple[bool, Optional[Any], Optional[Any]]:
+    """ROBOT-STATE v2 for one app command frame. Returns (handled, on_sent, on_fail).
+
+    handled=True: the relay already answered (select_dog stored; or a command_result with
+    success false: robot_offline, invalid_mode, ...) and nothing goes to the robot. Otherwise
+    set_mode / set_sleep have been rewritten into C1 / C3, and on_sent / on_fail report
+    robot_timeout (2000 ms) or a failed wake back to this app socket. Nothing is queued."""
+    from app.services import robot_state
+    manager = get_connection_manager()
+    command = message.get("command")
+    if manager.get_device_owner(target_device) != user_id:
+        return False, None, None   # the forwarder refuses it (not authorized)
+    send = websocket.send_json
+    if command == "select_dog":
+        data = message.get("data") if isinstance(message.get("data"), dict) else {}
+        dog_id = data.get("dog_id") or None
+        if dog_id is not None and get_dog_owner(dog_id) != user_id:
+            await _safe_send_json(websocket, robot_state.command_result_frame(
+                target_device, command, message.get("command_id"), "unknown_dog"))
+        else:
+            await robot_state.select_dog(target_device, dog_id, "app")   # E2 frames follow
+        return True, None, None
+    if not manager.is_robot_online(target_device):
+        await _safe_send_json(websocket, robot_state.command_result_frame(
+            target_device, command, message.get("command_id"), robot_state.ERR_OFFLINE))
+        return True, None, None
+    async def on_fail(error: str) -> None:   # a failed wake-first: the command was never sent
+        await _safe_send_json(websocket, robot_state.command_result_frame(
+            target_device, command, message.get("command_id"), error))
+
+    if command not in ("set_mode", "set_sleep"):
+        robot_state.stamp_app_frame(message)   # data.source = "app"; the caller's source -> data.reason
+        return False, None, on_fail
+    err = robot_state.prepare_app_state_command(user_id, target_device, message)
+    if err:
+        await _safe_send_json(websocket, robot_state.command_result_frame(
+            target_device, command, message.get("command_id"), err))
+        return True, None, None
+    cid = message["command_id"]
+
+    async def on_sent() -> None:
+        asyncio.get_running_loop().create_task(
+            robot_state.watch_app_command(target_device, command, cid, send))
+    return False, on_sent, on_fail
 
 # Message-envelope keys — routing/transport metadata that must never be copied
 # into an activity payload when flattening a top-level robot event.
@@ -920,7 +1021,8 @@ async def websocket_device_endpoint(
     # Connect the robot
     await manager.connect_robot(websocket, device_id, owner_id, ip=client_ip)
     update_device_online_status(device_id, True)
-    sleep_wake.on_robot_connected(device_id)
+    from app.services import robot_state
+    robot_state.on_robot_connected(device_id)   # robot_online, E2 push, pending select_dog
 
     # Broadcast robot_connected event to owner's apps
     owner_id = manager.get_device_owner(device_id)
@@ -976,6 +1078,8 @@ async def websocket_device_endpoint(
                 continue
 
             msg_type = message.get("type")
+            if _is_retired_frame(message):
+                continue
             _normalize_robot_event(message)
 
             # Buffer event for offline replay (stamps seq/ts_server in-place)
@@ -1026,12 +1130,12 @@ async def websocket_device_endpoint(
                 owner_id = manager.get_device_owner(device_id)
                 # Log mode field for passthrough verification
                 status_mode = message.get("mode") or message.get("data", {}).get("mode")
+                from app.services import robot_state
+                robot_state.on_status(device_id, _status_fields(message))
                 if status_mode:
-                    sleep_wake.on_mode_report(device_id, status_mode, explicit=False)
                     logger.info(f"[STATUS] Robot({device_id}): mode={status_mode} battery={message.get('battery', message.get('data', {}).get('battery', '?'))}")
                 if owner_id:
-                    from app.connection_manager import _replay_overlay
-                    await manager.send_to_user_apps(owner_id, _replay_overlay(owner_id, message))
+                    await manager.send_to_user_apps(owner_id, message)
                     logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): status_update")
                 else:
                     logger.warning(f"[ROUTE] Robot({device_id}) -> ???: status_update (no owner)")
@@ -1105,38 +1209,8 @@ async def websocket_device_endpoint(
             # Phase 3 / A3 — Activity event ingest (persist + forward to user's apps)
             # Robot reply to a relay-issued command (amendment 2026-11-06): resolve the
             # awaitable, forward to the owner's apps.
-            if msg_type == "photo_ready":
-                # Deferred take_photo (capture > 8 s): the final result for that command_id.
-                from app.services import command_results
-                message = command_results.from_photo_ready(message)
-                msg_type = "command_result"
-
-            if msg_type == "command_result":
-                from app.services import command_results
-                cid = str(message.get("command_id") or "")
-                if not cid:
-                    logger.warning(f"[CMD-RESULT] {device_id}: missing command_id")
-                    continue
-                meta = command_results.resolve(cid, message) or {}
-                if meta.get("command") in ("sleep", "wake") and not command_results.is_interim(message):
-                    sleep_wake.on_command_result(device_id, meta.get("command"), message)
-                owner_id = manager.get_device_owner(device_id)
-                logger.info(f"[CMD-RESULT] {device_id}: {meta.get('command') or '?'} {cid} ok={message.get('ok')}")
-                from app.services import photo_gallery
-                gallery_id = photo_gallery.record_take_photo(cid, meta, message)
-                if owner_id:
-                    await manager.send_to_user_apps(owner_id, {
-                        "type": "command_result",
-                        "command_id": cid,
-                        "command": meta.get("command"),
-                        "gallery_photo_id": gallery_id,
-                        "dog_id": meta.get("dog_id") or message.get("dog_id"),
-                        "device_id": device_id,
-                        "ok": bool(message.get("ok", True)),
-                        "result": message.get("result"),
-                        "error": message.get("error"),
-                        "timestamp": message.get("timestamp") or datetime.now(timezone.utc).isoformat(),
-                    })
+            if msg_type in ("command_result", "photo_ready"):
+                await _handle_robot_command_result(device_id, message)
                 continue
 
             if msg_type == "activity_event":
@@ -1259,11 +1333,8 @@ async def websocket_device_endpoint(
                             f"fields: status={data.get('status')}, action={data.get('action')}, "
                             f"stage={data.get('stage_number')}/{data.get('total_stages')}"
                         )
-                elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
+                elif event_name in ("bark_detected", "dog_detected", "treat_dispensed"):
                     logger.info(f"[EVENT] {event_name} from {device_id}: {message.get('data', {})}")
-                if event_name == "mode_changed":
-                    sleep_wake.on_mode_report(device_id, (message.get("data") or {}).get("mode") or message.get("mode"),
-                                              explicit=True)
                 if event_name == "treat_dispensed":
                     get_treat_watchdog().treat_dispensed(device_id)
 
@@ -1345,6 +1416,8 @@ async def websocket_device_endpoint(
 
         await manager.disconnect_robot(websocket)
         update_device_online_status(device_id, False)
+        from app.services import robot_state
+        robot_state.on_robot_disconnected(device_id)
 
         # Broadcast robot_disconnected event and robot_status offline to owner's apps
         if owner_id:
@@ -1454,6 +1527,10 @@ async def websocket_app_endpoint(
                 "user_id": user_id
             })
             logger.info(f"[CONNECT] Sent user_connected to robot {paired_device_id} for user {user_id} from {client_ip}")
+
+    # ROBOT-STATE v2 (E2): the state of every paired robot on client connect
+    from app.services import robot_state
+    await robot_state.send_all_to_app(websocket.send_json, user_devices)
 
     # Deliver retained network_state for the session's device (local-mode
     # contract 2026-07-27) — unconditional, so an app connecting after a relay
@@ -1668,8 +1745,13 @@ async def websocket_app_endpoint(
                     logger.warning(f"[ROUTE] App({user_id}) -> ???: {cmd_type} (no device)")
                     continue
 
+                handled, on_sent, on_fail = await _app_command_preflight(websocket, user_id, target_device, message)
+                if handled:
+                    continue
+
                 # Forward command to robot
-                success = await manager.forward_command_to_robot(user_id, target_device, message, ip=client_ip)
+                success = await manager.forward_command_to_robot(user_id, target_device, message, ip=client_ip,
+                                                                 on_sent=on_sent, on_fail=on_fail)
 
                 if success:
                     if is_drive_cmd:
@@ -1702,11 +1784,9 @@ async def websocket_app_endpoint(
                 else:
                     # Check why it failed
                     if not manager.is_robot_online(target_device):
-                        await websocket.send_json({
-                            "type": "error",
-                            "code": "DEVICE_OFFLINE",
-                            "message": f"Device {target_device} is offline"
-                        })
+                        from app.services import robot_state
+                        await _safe_send_json(websocket, robot_state.command_result_frame(
+                            target_device, cmd_type, message.get("command_id"), robot_state.ERR_OFFLINE))
                         logger.warning(f"[ROUTE] App({user_id}) -> Robot({target_device}): {cmd_type} FAILED (offline)")
                     else:
                         await websocket.send_json({
@@ -1841,8 +1921,9 @@ async def websocket_generic_endpoint(
                 manager.device_owners[device_id] = owner_id
 
             logger.info(f"Robot {device_id} connected from {client_ip} (generic endpoint)")
-            sleep_wake.on_robot_connected(device_id)
             update_device_online_status(device_id, True)
+            from app.services import robot_state
+            robot_state.on_robot_connected(device_id)
 
         else:
             # App connection - token is JWT
@@ -1955,6 +2036,10 @@ async def websocket_generic_endpoint(
                             f"for device {device_id} (legacy, replay_from={replay_from})"
                         )
 
+            # ROBOT-STATE v2 (E2): the state of every paired robot on client connect
+            from app.services import robot_state
+            await robot_state.send_all_to_app(websocket.send_json, manager.get_user_devices(identifier))
+
             # Send today's metrics for each of the user's dogs
             try:
                 user_dogs_list = get_user_dogs(identifier)
@@ -1987,6 +2072,8 @@ async def websocket_generic_endpoint(
 
             # Buffer event for offline replay (legacy /ws robot path)
             if connection_type == "robot":
+                if _is_retired_frame(message):
+                    continue
                 _normalize_robot_event(message)
                 maybe_buffer_event(identifier, message)
                 # Retain latest network_state for late-connecting app sessions
@@ -2034,13 +2121,17 @@ async def websocket_generic_endpoint(
                     owner_id = manager.get_device_owner(identifier)
                     # Log mode field for passthrough verification
                     status_mode = message.get("mode") or message.get("data", {}).get("mode")
+                    from app.services import robot_state
+                    robot_state.on_status(identifier, _status_fields(message))
                     if status_mode:
-                        sleep_wake.on_mode_report(identifier, status_mode, explicit=False)
                         logger.info(f"[STATUS] Robot({identifier}): mode={status_mode} battery={message.get('battery', message.get('data', {}).get('battery', '?'))}")
                     if owner_id:
-                        from app.connection_manager import _replay_overlay
-                        await manager.send_to_user_apps(owner_id, _replay_overlay(owner_id, message))
+                        await manager.send_to_user_apps(owner_id, message)
                         logger.info(f"[ROUTE] Robot({identifier}) -> App({owner_id}): status_update")
+                    continue
+
+                if msg_type in ("command_result", "photo_ready"):
+                    await _handle_robot_command_result(identifier, message)
                     continue
 
                 # Handle video_ready from robot (may contain large base64 payload)
@@ -2154,11 +2245,8 @@ async def websocket_generic_endpoint(
                                 f"fields: status={data.get('status')}, action={data.get('action')}, "
                                 f"stage={data.get('stage_number')}/{data.get('total_stages')}"
                             )
-                    elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
+                    elif event_name in ("bark_detected", "dog_detected", "treat_dispensed"):
                         logger.info(f"[EVENT] {event_name} from {identifier}: {message.get('data', {})}")
-                    if event_name == "mode_changed":
-                        sleep_wake.on_mode_report(identifier, (message.get("data") or {}).get("mode") or message.get("mode"),
-                                                  explicit=True)
                     if event_name == "treat_dispensed":
                         get_treat_watchdog().treat_dispensed(identifier)
 
@@ -2311,7 +2399,11 @@ async def websocket_generic_endpoint(
                                 logger.info(f"[ROUTE] No device specified, defaulting to: {target_device}")
 
                     if target_device:
-                        success = await manager.forward_command_to_robot(identifier, target_device, message, ip=client_ip)
+                        handled, on_sent, on_fail = await _app_command_preflight(websocket, identifier, target_device, message)
+                        if handled:
+                            continue
+                        success = await manager.forward_command_to_robot(identifier, target_device, message, ip=client_ip,
+                                                                         on_sent=on_sent, on_fail=on_fail)
                         if success:
                             if is_drive_cmd:
                                 logger.debug(f"[ROUTE] App({identifier}) -> Robot({target_device}): {cmd_type}")
@@ -2355,6 +2447,8 @@ async def websocket_generic_endpoint(
                 cleanup_sessions_for_device(identifier, manager)
                 await manager.disconnect_robot(websocket)
                 update_device_online_status(identifier, False)
+                from app.services import robot_state
+                robot_state.on_robot_disconnected(identifier)
             elif connection_type == "app":
                 # Collect WebRTC session data for this websocket BEFORE removing
                 saved_sessions = []

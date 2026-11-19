@@ -18,12 +18,9 @@ replay:<dog>:<replay date>:b<idx>; load clears earlier replay data on those date
 Load clears earlier replay data on the dates it writes; reset clears all of the dog's
 replay-made data (events of source replay/relay and the rows linked to them, nothing else).
 
-Virtual mode (2026-11-19): while a replay is loaded, the mode the app sees for the owner's robots
-is the replay's (the newest status / mode_change mode at or before the replay clock), so screens
-show Silent Guardian between the seed's mode start and exit even when a live robot says idle.
-Used by GET /status (mode, plus live_mode / mode_source), by robot status / status_update
-frames forwarded to the owner's apps (mode rewritten, live_mode kept), and announced to the
-apps as a mode_changed frame (reason "replay") for each of the dog's robots when it changes.
+Virtual mode (2026-11-19; ROBOT-STATE v2): the replay's mode at its clock (the newest status /
+mode_change mode at or before it) appears ONLY as GET /status replay.virtual_mode. It never
+replaces the real robot's mode, in /status or in frames forwarded to the apps.
 
 Seed format (seeds/demo_day.json):
   {"version": 1, "name": "...", "timezone": "America/New_York", "day_start": "07:30",
@@ -67,6 +64,7 @@ from app.database import (
     get_user_dog_role,
 )
 from app.services import event_store, media_files, settings_service
+from app.services.robot_state import normalize_mode, source_for
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +96,6 @@ class Replayer:
         self._task: Optional[asyncio.Task] = None
         self._wake = asyncio.Event()
         self.owner_id: Optional[str] = None
-        self._announced_mode: Optional[str] = None
 
     # ---- helpers ----
 
@@ -112,45 +109,10 @@ class Replayer:
         for item in reversed(self.events[:self.cursor]):
             ev = item["event"]
             if ev["type"] in ("status", "mode_change"):
-                m = str((ev.get("data") or {}).get("mode") or "").strip().lower()
-                if m:
-                    return m
+                m = (ev.get("data") or {}).get("mode")
+                if isinstance(m, str) and m.strip():
+                    return normalize_mode(m)   # one of the five modes
         return None
-
-    def mode_for_owner(self, owner_id: Optional[str]) -> Optional[str]:
-        """Virtual mode for robot frames going to this owner's apps (None = no replay for them)."""
-        if not owner_id or self.status == "idle" or owner_id != self.owner_id:
-            return None
-        return self.virtual_mode()
-
-    def overlay_mode(self, owner_id: Optional[str], message: dict) -> dict:
-        """A robot status frame with the replay's mode in place of the live one (a copy; the
-        original is what gets stored). live_mode keeps what the robot said."""
-        mode = self.mode_for_owner(owner_id)
-        if not mode or not isinstance(message, dict):
-            return message
-        out = dict(message)
-        data = out.get("data") if isinstance(out.get("data"), dict) else None
-        live = out.get("mode") or (data or {}).get("mode")
-        if "mode" in out or data is None or "mode" not in data:
-            out["mode"] = mode
-        if data is not None and "mode" in data:
-            out["data"] = {**data, "mode": mode}
-        out["live_mode"] = live
-        out["mode_source"] = "replay"
-        return out
-
-    async def _announce_mode(self) -> None:
-        """Tell the owner's apps when the replay's mode changed (one mode_changed per robot)."""
-        mode = self.virtual_mode()
-        if not mode or mode == self._announced_mode:
-            return
-        prev, self._announced_mode = self._announced_mode, mode
-        for device_id in self._dog_devices() or [self.device_id]:
-            await self._send_apps({"type": "event", "event": "mode_changed", "device_id": device_id,
-                                   "dog_id": self.dog_id, "mode": mode, "previous_mode": prev,
-                                   "reason": "replay", "mode_source": "replay",
-                                   "ts": self.virtual_time().isoformat()})
 
     def virtual_offset(self) -> float:
         if self._running:
@@ -332,7 +294,6 @@ class Replayer:
         self.seed_name, self.seed = path.name, seed
         self.dog_id, self.device_id, self.user_id = dog_id, device, admin.user_id
         self.owner_id = get_dog_owner(dog_id)
-        self._announced_mode = None
         self.tz, self.day_start_s, self.date = tz, day_start_s, date
         entries = sorted(seed["events"], key=lambda e: float(e.get("offset_s", 0)))
         entries, media_missing = self._link_media(entries)
@@ -464,7 +425,6 @@ class Replayer:
         self.status = "done" if self.cursor >= len(self.events) and not was_running else ("running" if was_running else "paused")
         await self._send_apps({"type": "replay_jump", "dog_id": self.dog_id,
                                "virtual_time": self.virtual_time().isoformat()})
-        await self._announce_mode()
         if was_running and self.cursor < len(self.events):
             self._running = True
             self.status = "running"
@@ -491,7 +451,6 @@ class Replayer:
         self.cursor = 0
         self.emitted = 0
         self.started_at = None
-        self._announced_mode = None
         self._anchor(0.0)
 
     async def reset_dog(self, dog_id: str, admin: Actor) -> dict:
@@ -538,8 +497,6 @@ class Replayer:
                 if res["rejected"]:
                     logger.warning(f"[REPLAY] seed event {ev['idx']} rejected: {res['rejected']}")
                 self.cursor += 1
-                if ev["event"]["type"] in ("status", "mode_change"):
-                    await self._announce_mode()
             self._running = False
             self.status = "done"
             logger.info(f"[REPLAY] done: {self.emitted} events emitted for {self.dog_id}")
@@ -555,8 +512,7 @@ class Replayer:
     async def simulate_command(self, dog_id: str, message: dict, actor: Actor) -> None:
         cmd, data = message.get("command"), message.get("data") or {}
         now = self.virtual_time() if self.status != "idle" else datetime.now(timezone.utc)
-        src = {"app": "app", "admin": "app", "connector": "connector", "agent": "agent",
-               "relay": "schedule"}.get(actor.kind, "relay")
+        src = source_for(actor.kind)
         events: list[dict] = []
         if cmd == "dispense_treat":
             events.append({"type": "treat", "ts": now.isoformat(),
@@ -576,11 +532,9 @@ class Replayer:
         elif cmd == "set_mode":
             events.append({"type": "status", "ts": now.isoformat(),
                            "data": {"battery": 80, "mode": data.get("mode"), "treats_remaining": 8}})
-        elif cmd in ("sleep", "wake"):   # 2026-11-19
-            events.append({"type": "mode_change", "ts": now.isoformat(),
-                           "data": {"mode": "sleep" if cmd == "sleep" else "idle", "source": src}})
+        elif cmd == "set_sleep":   # sleep is not a mode: asleep true/false, mode idle
             events.append({"type": "status", "ts": now.isoformat(),
-                           "data": {"battery": 80, "mode": "sleep" if cmd == "sleep" else "idle",
+                           "data": {"battery": 80, "mode": "idle", "asleep": bool(data.get("asleep")),
                                     "treats_remaining": 8}})
         elif cmd == "go_to":
             events.append({"type": "status", "ts": now.isoformat(),

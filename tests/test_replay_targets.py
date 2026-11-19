@@ -192,12 +192,14 @@ def test_status_carries_the_replay_clock_for_that_dog_only(r, monkeypatch):
     monkeypatch.setattr(rp, "get_replayer", lambda: r)
     owner = Actor(kind="app", id="user_t1", user_id="user_t1")
     st = run(routes.get_dog_status("dog_t1", actor=owner))
-    assert st["replay_active"] is False and st["virtual_time"] is None and st["replay_date"] is None
+    assert st["replay"] == {"active": False, "virtual_mode": None, "virtual_time": None, "date": None}
+    for gone in ("replay_active", "demo_replay_active", "virtual_time", "replay_date", "live_mode", "mode_source"):
+        assert gone not in st
     run(r.load("bad.json", ADMIN, dog_id="dog_t1"))
     run(r.jump(to="10:00", dog_id="dog_t1"))
     st = run(routes.get_dog_status("dog_t1", actor=owner))
-    assert st["replay_active"] is True and st["replay_date"] == today().isoformat()
+    assert st["replay"]["active"] is True and st["replay"]["date"] == today().isoformat()
     tz = settings_service.get_timezone("dog_t1")
-    assert datetime.fromisoformat(st["virtual_time"]).astimezone(tz).strftime("%H:%M") == "10:00"
+    assert datetime.fromisoformat(st["replay"]["virtual_time"]).astimezone(tz).strftime("%H:%M") == "10:00"
     other = run(routes.get_dog_status("dog_t3", actor=owner))
-    assert other["replay_active"] is False and other["virtual_time"] is None
+    assert other["replay"]["active"] is False and other["replay"]["virtual_time"] is None

@@ -25,12 +25,13 @@ def _ingest(events, device_id="robot_t", user_id="user_t1"):
                                                  source="robot", notify=False, forward=False))
 
 
-def test_dog_id_required_for_non_status_unless_owner_has_one_dog(temp_db):
+def test_dogless_event_stored_for_a_two_dog_owner_and_counted_for_no_dog(temp_db):
+    """ROBOT-STATE v2 rule A6: the robot could not tell which dog -> dog_id null, stored, in no
+    per-dog total."""
     assert EventIn.model_validate(_status("s0")).dog_id is None
-    # validate_event (replayer/admin/internal paths) still requires it for non-status
-    assert event_store.validate_event({"event_id": "t2", "type": "treat", "ts": "2026-11-06T18:00:00Z",
-                                       "data": {"source": "auto"}}) == (None, "dog_id required")
-    # a robot whose owner has two dogs must say which dog
+    ev, reason = event_store.validate_event({"event_id": "t2", "type": "treat", "ts": "2026-11-06T18:00:00Z",
+                                             "data": {"source": "auto"}})
+    assert reason is None and ev["dog_id"] is None
     db.create_device_pairing("user_t1", "robot_t")
     db.create_dog(dog_id="dog_t3", name="Bea", user_id="user_t1")
     db.add_user_dog("user_t1", "dog_t3", "owner")
@@ -38,7 +39,12 @@ def test_dog_id_required_for_non_status_unless_owner_has_one_dog(temp_db):
     batch = EventBatchIn.model_validate({"events": [{"event_id": "t0", "type": "treat", "ts": "2026-11-06T18:00:00Z",
                                                      "data": {"source": "auto"}}]})
     res = asyncio.run(routes.post_events(batch, actor=robot))
-    assert res["accepted"] == [] and res["rejected"][0]["reason"].startswith("dog_id required")
+    assert res["accepted"] == ["t0"] and res["rejected"] == []
+    row = db.get_event("t0")
+    assert row["dog_id"] is None and row["local_date"] == "2026-11-06"
+    for dog in ("dog_t1", "dog_t3"):
+        s = event_store.get_summary(dog, "2026-11-06", refresh=True)
+        assert s["counts"].get("treat", 0) == 0 and s["event_count"] == 0
 
 
 def test_status_without_dog_stored_once_with_null_dog(temp_db):

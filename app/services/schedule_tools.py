@@ -70,7 +70,7 @@ async def robot_schedule(client: RelayClient, dog_id: str) -> dict:
     r = res.get("result")
     if res.get("timed_out") or not isinstance(r, dict):
         return {"confirmed": False, "reason": "robot_did_not_confirm"}
-    if not r.get("ok", True):
+    if not r.get("success"):
         return {"confirmed": False, "reason": "robot_error", "error": str(r.get("error") or "")[:120]}
     inner = r.get("result") if isinstance(r.get("result"), dict) else {}
     raw = inner.get("missions")
@@ -230,6 +230,7 @@ async def schedule_mission(client: RelayClient, dog_id: str, type: str, time: st
         "type": type, "name": label[:120], "enabled": True,
         "trigger": trigger,
         "duration_s": max(10, minutes * 60), "reward_treats": treats, "goal": (goal or "")[:240],
+        "data": {"dog_id": dog_id},   # ROBOT-STATE v2 R3: the session's dog when it fires
     }
     warnings: list[str] = []
 

@@ -99,9 +99,8 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
     if not event_id or len(event_id) > 128:
         return None, "event_id required"
     dog_id = str(ev.get("dog_id") or "").strip() or None
-    if dog_id is None and etype not in ("status", "mode_change"):
-        # status / mode_change are device-scoped (contract fix 2026-11-06); resolved on ingest
-        return None, "dog_id required"
+    # dog_id null is allowed for every type (ROBOT-STATE v2 rule A6: the robot could not tell which
+    # dog). Such rows count in no per-dog total; status / mode_change are device-scoped anyway.
     dt = normalize_ts(ev.get("ts"))
     if dt is None:
         return None, "ts unparsable"
@@ -178,19 +177,22 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
             except (TypeError, ValueError):
                 data.pop("latency_ms", None)
     elif etype == "mode_change":
-        mode = data.get("mode")
-        if not isinstance(mode, str) or not mode.strip() or len(mode) > 32:
-            return None, "mode_change requires data.mode"
-        data["mode"] = mode.strip().lower()
-        if data["mode"] in ("sleeping", "asleep"):   # 2026-11-19: one spelling for sleep
-            data["mode"] = "sleep"
+        # ROBOT-STATE v2 (E1): one of the five modes, exactly; data.session_dog_id names the
+        # session's dog. dog_id is forced null on ingest (except replay-made rows; see ingest_events).
+        from app.services.robot_state import ERR_INVALID_MODE, valid_mode
+        if valid_mode(data.get("mode")) is None:
+            return None, ERR_INVALID_MODE
     elif etype == "status":
         if not isinstance(data.get("battery"), (int, float)):
             return None, "status requires data.battery"
         if not data.get("mode"):
             return None, "status requires data.mode"
+        # ROBOT-STATE v2: sleep is not a mode, and only the five modes are kept (R6: anything else
+        # reads "idle"). A legacy "sleep" mode becomes mode idle + asleep true.
+        from app.services.robot_state import normalize_mode
         if isinstance(data["mode"], str) and data["mode"].strip().lower() in ("sleep", "sleeping", "asleep"):
-            data["mode"] = "sleep"
+            data.setdefault("asleep", True)
+        data["mode"] = normalize_mode(data["mode"])
         # amendment 2026-11-06 (6): docked (bool) and light_level (0-255) ride along; never rolled up
         if "docked" in data:
             data["docked"] = bool(data["docked"])
@@ -268,10 +270,16 @@ async def ingest_events(
             continue
         if dog_id_override:
             ev["dog_id"] = dog_id_override
+        if ev["type"] == "mode_change" and source != "replay":
+            # E1: dog_id null always. Replay-made rows keep the replay's dog so replay reset finds
+            # them; the roll-up attributes mode time by data.session_dog_id either way.
+            ev["dog_id"] = None
         if source == "robot" and ev["type"] in ("status", "mode_change"):
-            from app.services import sleep_wake
-            sleep_wake.on_mode_report(device_id, (ev.get("data") or {}).get("mode"),
-                                      explicit=ev["type"] == "mode_change")
+            from app.services import robot_state
+            if ev["type"] == "mode_change":
+                robot_state.on_mode_change(device_id, ev["data"])
+            else:
+                robot_state.on_status(device_id, ev["data"])
 
         # A status with no dog_id is device-scoped: stored once, dog_id NULL, keyed by
         # device_id (no per-dog copies). Status reads go by the dog's paired robot.
@@ -319,16 +327,28 @@ def record_ws_device_event(device_id: str, user_id: Optional[str], etype: str, e
         return 0
 
 
+def _home_timezone(user_id: Optional[str]) -> ZoneInfo:
+    """local_date for a row with no dog: the owner's dogs' timezone if they all share one, else the
+    default timezone."""
+    zones = {settings_service.get_value(d["id"], "timezone")
+             for d in get_user_dogs(user_id or "") if d.get("role") == "owner"}
+    zone = zones.pop() if len(zones) == 1 else None
+    try:
+        return ZoneInfo(zone or get_settings().default_timezone)
+    except Exception:
+        return ZoneInfo(get_settings().default_timezone)
+
+
 async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], source: str, notify: bool,
                       forward: bool, tz_cache: dict) -> bool:
     """Insert one validated event row and run the side effects. Returns False on duplicate."""
     from app.services import notify_service
 
     dog_id = ev["dog_id"]
-    tz_key = dog_id or ""
+    tz_key = dog_id or f"home:{user_id or ''}"
     tz = tz_cache.get(tz_key)
     if tz is None:
-        tz = settings_service.get_timezone(dog_id) if dog_id else ZoneInfo(get_settings().default_timezone)
+        tz = settings_service.get_timezone(dog_id) if dog_id else _home_timezone(user_id)
         tz_cache[tz_key] = tz
     local_date = local_date_for(ev["_dt"], tz)
     ev["local_date"] = local_date
@@ -363,7 +383,7 @@ async def _ingest_one(ev: dict, *, device_id: str, user_id: Optional[str], sourc
         # a mode change shifts mode time for that day and every later day it carries into
         dogs = [dog_id] if dog_id else [d["id"] for d in get_user_dogs(user_id or "") if d.get("role") == "owner"]
         mark_summaries_dirty_from(dogs, (ev["_dt"] - timedelta(days=1)).date().isoformat())
-    elif ev["type"] != "status":  # status is never rolled up
+    elif ev["type"] != "status" and dog_id:  # status is never rolled up; a dog-less row is in no dog's
         mark_summary_dirty(dog_id, local_date)
 
     mirrored_payload = None
@@ -624,7 +644,7 @@ def _device_mode_periods(device_id: str, start: datetime, end: datetime) -> tupl
         if r["type"] == "mode_change":
             if cur:
                 periods.append((*cur, t))
-            cur = (mode, r["dog_id"], t)
+            cur = (mode, _mode_dog(mode, r), t)
         elif cur and mode and mode != cur[0]:   # heartbeat contradicts the open period
             periods.append((*cur, t))
             cur = None
@@ -635,9 +655,17 @@ def _device_mode_periods(device_id: str, start: datetime, end: datetime) -> tupl
     return periods, running
 
 
+def _mode_dog(mode: str, row: dict) -> Optional[str]:
+    """The one dog a mode period counts for, or None = every dog in the home (ROBOT-STATE v2):
+    sg_s counts for every dog; coach_s only for data.session_dog_id when it is set."""
+    if mode == "coach":
+        return (row.get("data") or {}).get("session_dog_id") or None
+    return None
+
+
 def mode_seconds(dog_id: str, start: datetime, end_of_day: datetime, now: datetime) -> tuple[dict, bool]:
     """Seconds the owner's robots spent in each MODE_TOTALS mode on [start, end_of_day), counting
-    periods whose mode_change named no dog or named this dog. Overlapping robots are counted once."""
+    periods that count for every dog or for this dog (_mode_dog). Overlapping robots are counted once."""
     out = {k: 0 for k in MODE_TOTALS.values()}
     end = min(now, end_of_day)
     owner = get_dog_owner(dog_id)

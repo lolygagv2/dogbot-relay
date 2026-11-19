@@ -35,7 +35,8 @@ async def get_command_result(dog_id: str, command_id: str, actor: Actor = Depend
     res = command_results.get(command_id)
     if not res or (res.get("dog_id") and res["dog_id"] != dog_id):
         raise HTTPException(status_code=404, detail={"code": "result_not_available"})
-    return {k: res.get(k) for k in ("command_id", "command", "device_id", "ok", "result", "error", "timestamp")}
+    return {k: res.get(k) for k in ("command_id", "command", "device_id", "success", "result", "error",
+                                    "duration_ms", "timestamp")}
 
 
 @router.post("/api/dogs/{dog_id}/speak", status_code=202)

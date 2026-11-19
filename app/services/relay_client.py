@@ -134,6 +134,15 @@ class RelayClient:
             raise RelayError(f"relay unreachable: {e}") from e
         return self._handle(resp)
 
+    async def select_dog(self, device_id: str, dog_id: Optional[str]) -> dict:
+        """H2: store the selected dog for one robot (ROBOT-STATE v2). Returns the robot_state object."""
+        return await self.request("POST", f"/api/devices/{device_id}/selected_dog", json={"dog_id": dog_id})
+
+    async def device_command(self, device_id: str, command: str, data: Optional[dict] = None) -> dict:
+        """A robot command that needs no dog (play_tts with no dog selected)."""
+        return await self.request("POST", f"/api/devices/{device_id}/command", json={"command": command,
+                                                                                     "data": data or {}})
+
     async def speak(self, dog_id: str, text: str) -> dict:
         """Robot says `text` in the WIM-Z voice. The relay picks the voice; there is no voice parameter."""
         return await self.request("POST", f"/api/dogs/{dog_id}/speak", json={"text": text})

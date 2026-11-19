@@ -1,7 +1,7 @@
 """MCP tools exposed to outside assistants (Dec 9 demo build, 2026-11-06).
 
 Read tools: get_dogs, get_day_summary, get_events, get_trend, get_trick_history, get_missions, get_robot_status, get_schedule
-Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_coach, set_smart_plug, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, look, speak
+Control tools: set_quiet_hours, set_music, set_sg_sensitivity, set_silent_guardian, set_coach, select_dog, set_smart_plug, set_treat_schedule, set_notify_rule, schedule_mission, cancel_mission, give_treat, go_to, move, look, speak
 Media tools: get_event_photo (photos), take_photo (camera), listen (listen)
 Ultrasonic: play_ultrasonic (opt-in ultrasonic scope; only when the owner asks)
 
@@ -31,7 +31,7 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
-from app.services.robot_control import SLEEP_CONFIRM_WAIT_S, sleep_tool_result
+from app.services.robot_control import select_dog_for_owner, sleep_tool_result
 from app.services.robot_control import SMART_PLUG_ASSISTANT_ACTIONS, SMART_PLUG_WAIT_S, smart_plug_tool_result
 from app.services.robot_control import (LOOK_ACTIONS, LOOK_WAIT_S, ULTRASONIC_STYLES, ULTRASONIC_WAIT_S,
                                         look_tool_result, ultrasonic_tool_result)
@@ -316,7 +316,10 @@ def register_tools(mcp: MCPServer) -> None:
                 "treats_remaining_in_hopper": last.get("treats_remaining"),
                 "treats_today": st.get("treats_today"), "treat_daily_cap": st.get("treat_cap"),
                 "quiet_hours": st.get("quiet_hours"), "timezone": st.get("timezone"),
-                "last_seen": st.get("last_status_ts"), "demo_replay_active": st.get("replay_active")}
+                "last_seen": st.get("last_status_ts"), "robot_online": st.get("robot_online"),
+                "selected_dog_id": st.get("selected_dog_id"), "selected_dog_applied": st.get("selected_dog_applied"),
+                "session_dog_id": st.get("session_dog_id"), "state_version": st.get("state_version"),
+                "replay": st.get("replay")}
 
     # --------------------------------------------------------------- control
 
@@ -401,13 +404,14 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("set_silent_guardian")
     async def set_silent_guardian(dog_id: str, on: bool) -> dict:
         """Turn Silent Guardian (bark watch and intervention) on or off right now. on=true puts the
-        robot into Silent Guardian mode; on=false puts it in standby (idle). To run SG at a set time,
-        use schedule_mission with type silent_guardian. The robot does not confirm the change, so
-        report it as sent, and use get_robot_status to check the mode."""
+        robot into Silent Guardian mode for dog_id (the session's dog; it does not change the dog
+        selected in the app); on=false puts it in standby (idle). To run SG at a set time, use
+        schedule_mission with type silent_guardian. The robot confirms the change within 2 s.
+        Nothing is queued: if the robot is offline this returns refused with reason robot_offline (robot_timeout if it did not answer in time, expired if it could not start it in time); try again later rather than assuming it will happen."""
         client, user_id = _client("set_silent_guardian")
         _check_dog(user_id, dog_id)
         try:
-            res = await client.command(dog_id, "set_mode", sg_mode_command(bool(on)))
+            res = await client.command(dog_id, "set_mode", sg_mode_command(bool(on), dog_id))
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return sg_mode_tool_result(bool(on), res)
@@ -416,13 +420,13 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("set_coach")
     async def set_coach(dog_id: str, on: bool) -> dict:
         """Turn Coach mode (active trick training) on or off right now. on=true puts the robot into
-        Coach mode; on=false puts it in standby (idle). To run Coach at a set time, use
-        schedule_mission with type coach. The robot does not confirm the change, so report it as
-        sent, and use get_robot_status to check the mode."""
+        Coach mode for dog_id (the session's dog); on=false puts it in standby (idle). To run Coach
+        at a set time, use schedule_mission with type coach. The robot confirms the change within 2 s.
+        Nothing is queued: if the robot is offline this returns refused with reason robot_offline (robot_timeout if it did not answer in time, expired if it could not start it in time); try again later rather than assuming it will happen."""
         client, user_id = _client("set_coach")
         _check_dog(user_id, dog_id)
         try:
-            res = await client.command(dog_id, "set_mode", coach_mode_command(bool(on)))
+            res = await client.command(dog_id, "set_mode", coach_mode_command(bool(on), dog_id))
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return coach_mode_tool_result(bool(on), res)
@@ -431,20 +435,29 @@ def register_tools(mcp: MCPServer) -> None:
     @audited("set_sleep")
     async def set_sleep(dog_id: str, asleep: bool) -> dict:
         """Put WIM-Z to sleep (asleep=true) or wake it up (asleep=false) right now. While asleep the
-        robot rests and its status mode reads "sleep". You rarely need to wake it yourself: any
+        robot rests: get_robot_status shows asleep true and mode idle. Nothing is queued: if the robot is offline this returns refused with reason robot_offline (robot_timeout if it did not answer in time, expired if it could not start it in time); try again later rather than assuming it will happen. You rarely need to wake it yourself: any
         action (a treat, a photo, a move, a mode or mission start) wakes it first and waits until
-        it is ready, and so does a scheduled mission. Wake reports ready=true once the robot can
-        take commands. The robot may refuse to sleep mid-mission; then say so plainly."""
+        it is awake, and so does a scheduled mission. The robot confirms within 2 s (waking: 6 s). It may refuse to
+        sleep mid-mission; then say so plainly."""
         client, user_id = _client("set_sleep")
         _check_dog(user_id, dog_id)
         try:
-            if asleep:
-                res = await client.command(dog_id, "sleep", {}, wait_s=SLEEP_CONFIRM_WAIT_S)
-            else:
-                res = await client.command(dog_id, "wake", {})
+            res = await client.command(dog_id, "set_sleep", {"asleep": bool(asleep)})
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return sleep_tool_result(bool(asleep), res)
+
+    @mcp.tool(name="select_dog", annotations=CONTROL)
+    @audited("select_dog")
+    async def select_dog(dog_id: str) -> dict:
+        """Choose which dog WIM-Z is with: the same choice as the dog picker in the app. WIM-Z names
+        this dog in its greetings and recaps, and it is the dog a mode is for when no other dog is
+        given. Starting or stopping a mode never changes it. The choice is stored at once and sent to
+        every robot of the owner; selected_dog_applied is true once a robot has confirmed it. A robot
+        that is offline gets this one stored choice when it reconnects; nothing else is queued."""
+        client, user_id = _client("select_dog")
+        _check_dog(user_id, dog_id)
+        return await select_dog_for_owner(client, dog_id)
 
     @mcp.tool(name="set_smart_plug", annotations=CONTROL)
     @audited("set_smart_plug")

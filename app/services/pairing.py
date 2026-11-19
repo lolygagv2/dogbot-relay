@@ -76,13 +76,6 @@ def device_dog_ids(device_id: Optional[str]) -> list[str]:
         return get_owned_dog_ids(owner)
 
 
-def primary_dog_id(device_id: Optional[str]) -> Optional[str]:
-    """Fallback dog when a robot omits dog_id where a guess is harmless (speech): the owner's
-    oldest dog. Data-recording paths (POST /events) refuse to guess instead."""
-    dogs = device_dog_ids(device_id)
-    return dogs[0] if dogs else None
-
-
 def dog_devices(dog_id: str, owner: Optional[str] = None) -> list[str]:
     """Robots that serve a dog = all of its owner's robots."""
     owner = owner or get_dog_owner(dog_id)

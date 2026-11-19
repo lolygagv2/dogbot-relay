@@ -41,7 +41,7 @@ def record_take_photo(command_id: str, meta: Optional[dict], message: dict) -> O
     meta = meta or {}
     if meta.get("command") != "take_photo" or not command_id:
         return None
-    if not message.get("ok", True):
+    if message.get("success") is not True:
         return None
     result = message.get("result")
     if isinstance(result, dict) and result.get("deferred") is True:

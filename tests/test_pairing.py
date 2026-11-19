@@ -105,8 +105,8 @@ def test_dog_id_inferred_only_when_owner_has_one_dog(temp_db):
     treat = {"event_id": "t1", "type": "treat", "ts": "2026-11-06T15:00:00Z", "data": {"source": "auto"}}
     assert _post([treat])["accepted"] == ["t1"] and db.get_event("t1")["dog_id"] == "dog_t1"
     _second_dog()
-    res = _post([{**treat, "event_id": "t2"}])
-    assert res["accepted"] == [] and res["rejected"][0]["reason"] == "dog_id required (owner has 2 dogs)"
+    res = _post([{**treat, "event_id": "t2"}])   # two dogs: stored with dog_id null (rule A6), never guessed
+    assert res["accepted"] == ["t2"] and db.get_event("t2")["dog_id"] is None
     assert _post([{**treat, "event_id": "t3", "dog_id": "dog_t3"}])["accepted"] == ["t3"]
 
 
@@ -138,9 +138,8 @@ def test_placeholder_works_end_to_end(temp_db):
     st = asyncio.run(routes.get_dog_status(PH, actor=OWNER))
     assert st["battery"] == 64 and st["device_id"] == "wimz_robot_05"
     assert robot_control._pick_device("user_t1", None, PH)[0] == "wimz_robot_05"
-    assert pairing.primary_dog_id("wimz_robot_05") == PH
-    from app.voice_agent.events import _pick_dog
-    assert _pick_dog("user_t1", None, "wimz_robot_05")["id"] == PH
+    # ROBOT-STATE v2 section 9: the voice agent no longer falls back to the owner's oldest dog
+    assert not hasattr(pairing, "primary_dog_id")
 
 
 def test_rename_keeps_events_and_merge_moves_them(temp_db):

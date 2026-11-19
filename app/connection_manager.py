@@ -328,6 +328,8 @@ class ConnectionManager:
         device_id: str,
         command: dict,
         ip: str = "unknown",
+        on_sent=None,
+        on_fail=None,
     ) -> bool:
         """
         Forward a command from app to robot.
@@ -345,36 +347,27 @@ class ConnectionManager:
             logger.warning(f"[ROUTE DENIED] User {user_id} not authorized for device {device_id} (owner: {owner})")
             return False
 
-        # Sleep / wake (2026-11-19): set_mode sleep -> `sleep`; an explicit `wake` or any action
-        # command to a sleeping robot is held in the background (the read loop must not block),
-        # the robot is woken, and the command goes out once it is ready. Drive frames just start
-        # the wake and are dropped (the app's 20 Hz stream resumes once the robot is up).
+        # Wake-first (2026-11-19, ROBOT-STATE v2): an action command to a sleeping robot is held
+        # in the background (the read loop must not block), set_sleep false is sent, and the
+        # command goes out once the robot confirms; a failed wake drops it and calls on_fail.
+        # Drive frames just start the wake and are dropped (the app's 20 Hz stream resumes).
         from app.services import sleep_wake
-        sleep_wake.translate(command)
         name = command.get("command")
-        if name == "sleep":   # so the robot's command_result (ok, or a refusal) updates the sleep state
-            from app.services import command_results
-            command.setdefault("command_id", str(uuid.uuid4()))
-            command_results.register(command["command_id"], device_id=device_id, command="sleep")
-        if name == "wake":
-            asyncio.get_running_loop().create_task(sleep_wake.ensure_awake(
-                device_id, reason="owner", force=True, source=f"app:{user_id}",
-                command_id=command.get("command_id")))
-            return True
         if sleep_wake.needs_wake(device_id, name):
             if name in sleep_wake.DRIVE_COMMANDS:
                 if not sleep_wake.is_waking(device_id):
-                    asyncio.get_running_loop().create_task(sleep_wake.ensure_awake(device_id, reason=name))
+                    asyncio.get_running_loop().create_task(sleep_wake.ensure_awake(device_id, reason=name,
+                                                                                   source="app"))
                 return True
 
             async def _send(msg: dict) -> None:
-                if await self.send_to_robot(device_id, msg):
-                    sleep_wake.note_sent(device_id, msg)
-            sleep_wake.hold_until_awake(device_id, command, reason=name, send=_send)
+                if await self.send_to_robot(device_id, msg) and on_sent:
+                    await on_sent()
+            sleep_wake.hold_until_awake(device_id, command, reason=name, send=_send, on_fail=on_fail)
             return True
         ok = await self.send_to_robot(device_id, command)
-        if ok:
-            sleep_wake.note_sent(device_id, command)
+        if ok and on_sent:
+            await on_sent()
         return ok
 
     async def forward_event_to_owner(self, device_id: str, event: dict) -> int:
@@ -390,8 +383,6 @@ class ConnectionManager:
             return 0
 
         logger.info(f"[ROUTE] Robot({device_id}) -> App({owner_id}): {event_type}")
-        if event_type in ("status", "status_update"):
-            event = _replay_overlay(owner_id, event)
         return await self.send_to_user_apps(owner_id, event)
 
     def set_device_owner(self, device_id: str, user_id: str):
@@ -525,13 +516,3 @@ manager = ConnectionManager()
 def get_connection_manager() -> ConnectionManager:
     """Dependency to get the connection manager."""
     return manager
-
-
-def _replay_overlay(owner_id: Optional[str], message: dict) -> dict:
-    """During a demo replay, robot status frames carry the replay's mode (see replayer)."""
-    try:
-        from app.services.replayer import get_replayer
-        return get_replayer().overlay_mode(owner_id, message)
-    except Exception as e:  # pragma: no cover - never block a status frame
-        logger.debug(f"[REPLAY] mode overlay skipped: {e}")
-        return message

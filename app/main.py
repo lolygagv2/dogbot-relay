@@ -9,6 +9,7 @@ from app.connection_manager import get_connection_manager
 from app.models import HealthResponse
 from app.routers import activity, auth, device, dogs, events, media, metrics, music, push, releases, schedule, sync, turn, user, voice_commands, websocket
 from app.routers import ai, dog_settings, event_store, mission_drafts, replay, robot_control  # Dec 9 demo build (2026-11-06)
+from app.routers import robot_state as robot_state_routes  # ROBOT-STATE v2 (2026-11-19)
 
 # Configure logging
 logging.basicConfig(
@@ -60,6 +61,7 @@ app.include_router(robot_control.router)
 app.include_router(replay.router)
 app.include_router(mission_drafts.router)
 app.include_router(ai.router)
+app.include_router(robot_state_routes.router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])

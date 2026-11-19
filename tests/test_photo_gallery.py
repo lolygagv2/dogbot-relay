@@ -20,7 +20,7 @@ def media(tmp_path, monkeypatch):
 
 
 def ok_result(url="/api/media/download/wimz_robot_t_abc123.jpg"):
-    return {"type": "command_result", "command_id": "cmd1", "ok": True, "result": {"image_url": url}}
+    return {"type": "command_result", "command_id": "cmd1", "success": True, "result": {"image_url": url}}
 
 
 def test_records_final_photo_and_pins_it(temp_db, media):
@@ -41,9 +41,9 @@ def test_repeat_result_is_one_entry(temp_db, media):
 @pytest.mark.parametrize("meta,msg", [
     ({**META, "command": "dispense_treat"}, ok_result()),                          # not a photo
     (None, ok_result()),                                                          # app passthrough: no meta
-    (META, {**ok_result(), "ok": False}),                                         # failed capture
-    (META, {"ok": True, "result": {"deferred": True}}),                           # interim
-    (META, {"ok": True, "result": {}}),                                           # no image url
+    (META, {**ok_result(), "success": False}),                                         # failed capture
+    (META, {"success": True, "result": {"deferred": True}}),                           # interim
+    (META, {"success": True, "result": {}}),                                           # no image url
     (META, ok_result("/api/media/download/wimz_robot_t_missing.jpg")),           # file not stored
     ({**META, "dog_id": None}, ok_result()),                                      # no dog
 ])

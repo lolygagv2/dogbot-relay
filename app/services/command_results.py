@@ -1,7 +1,8 @@
 """Awaitable robot command results (amendment 2026-11-06, item 1).
 
 The robot answers every relay command with
-`{"type": "command_result", "command_id", "ok", "result", "error"}` over its WebSocket.
+`{"type": "command_result", "command_id", "command", "success", "result", "error", "duration_ms"}`
+over its WebSocket (ROBOT-STATE v2: the key is "success"; "ok" is not used in command_result).
 `robot_control.dispatch` registers the command_id before sending; the WS handler calls
 `resolve`; HTTP callers can wait (`wait_s`) or poll the stored result (kept 10 minutes).
 In-process only (single relay worker).
@@ -27,8 +28,10 @@ _meta: dict[str, dict] = {}
 
 
 def register(command_id: str, *, dog_id: Optional[str] = None, device_id: Optional[str] = None,
-             command: Optional[str] = None) -> None:
-    _meta[command_id] = {"dog_id": dog_id, "device_id": device_id, "command": command, "sent_at": time.time()}
+             command: Optional[str] = None, source: Optional[str] = None,
+             reason: Optional[str] = None) -> None:
+    _meta[command_id] = {"dog_id": dog_id, "device_id": device_id, "command": command, "source": source,
+                         "reason": reason, "sent_at": time.time()}
     try:
         loop = asyncio.get_running_loop()
         if command_id not in _pending:
@@ -42,9 +45,10 @@ def resolve(command_id: str, payload: dict) -> Optional[dict]:
     """Store a result and wake any waiter. Returns the meta (dog_id/device_id/command) if known."""
     result = {
         "command_id": command_id,
-        "ok": bool(payload.get("ok", True)),
+        "success": payload.get("success") is True,
         "result": payload.get("result"),
         "error": payload.get("error"),
+        "duration_ms": payload.get("duration_ms"),
         "timestamp": payload.get("timestamp"),
         "received_at": time.time(),
     }
@@ -68,7 +72,8 @@ def is_interim(payload: dict) -> bool:
 def from_photo_ready(message: dict) -> dict:
     """photo_ready {command_id, photo_id, image_url} -> the final command_result payload."""
     image_url = message.get("image_url")
-    return {"type": "command_result", "command_id": message.get("command_id"), "ok": bool(image_url),
+    return {"type": "command_result", "command_id": message.get("command_id"), "command": "take_photo",
+            "success": bool(image_url),
             "result": {"image_url": image_url, "photo_id": message.get("photo_id"), "deferred": False},
             "error": None if image_url else (message.get("error") or "no_image_url"),
             "timestamp": message.get("timestamp")}

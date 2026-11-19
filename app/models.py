@@ -672,6 +672,13 @@ TRAINING_MAX_DURATION_S = 3600
 MODE_MAX_DURATION_S = 12 * 3600
 
 
+class MissionData(BaseModel):
+    """ROBOT-STATE v2: data.dog_id = the session's dog when the mission fires (R3); null = the
+    robot uses selected_dog_id."""
+    model_config = ConfigDict(extra="forbid")
+    dog_id: Optional[str] = Field(default=None, max_length=64)
+
+
 class MissionDef(BaseModel):
     id: str = Field(..., min_length=1, max_length=64)
     type: str = Field(..., min_length=1, max_length=64)
@@ -681,6 +688,7 @@ class MissionDef(BaseModel):
     duration_s: int = Field(default=120, ge=10, le=MODE_MAX_DURATION_S)
     reward_treats: int = Field(default=1, ge=0, le=3)
     goal: str = Field(default="", max_length=240)
+    data: Optional[MissionData] = None
 
     @model_validator(mode="after")
     def _training_duration_cap(self):
@@ -724,7 +732,7 @@ class CommandRequest(BaseModel):
         "dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move",
         "take_photo", "standby", "run_trick", "listen", "play_tts",  # play_tts: voice agent only (allowlist)
         "schedule_sync", "smart_plug", "ultrasonic", "look",
-        "sleep", "wake",   # 2026-11-19; set_mode {mode: sleep} also works
+        "set_sleep",   # ROBOT-STATE v2 (2026-11-19): data {asleep: bool}; sleep is not a mode
     ]
     data: dict = Field(default_factory=dict)
     device_id: Optional[str] = None

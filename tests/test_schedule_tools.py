@@ -48,7 +48,7 @@ class FakeRelay:
         else:                       # the robot has whatever the relay holds
             missions = [{"id": m["id"], "enabled": True, "next_fire_at": f"2026-11-08T{m['trigger']['time']}:00-05:00"}
                         for m in self.missions]
-        return {"delivered": True, "result": {"ok": True, "result": {"missions": missions}}}
+        return {"delivered": True, "result": {"success": True, "result": {"missions": missions}}}
 
 
 def run(coro):
@@ -175,7 +175,7 @@ def test_cancel_robot_still_has_it():
     stale = [dict(m) for m in c.missions]
 
     async def still_there(*a, **k):
-        return {"delivered": True, "result": {"ok": True, "result": {"missions": [{"id": stale[0]["id"]}]}}}
+        return {"delivered": True, "result": {"success": True, "result": {"missions": [{"id": stale[0]["id"]}]}}}
     c.command = still_there
     r = run(st.cancel_mission(c, "dog_t1", mid))
     assert r["cancelled"] and r["confirmed_by_robot"] is False and r["robot_reason"] == "robot_still_has_mission"
@@ -188,7 +188,7 @@ def test_get_schedule_merges_robot_view():
     run(st.schedule_mission(c, "dog_t1", "silent_guardian", "18:00"))
 
     async def robot(*a, **k):
-        return {"delivered": True, "result": {"ok": True, "result": {"missions": [
+        return {"delivered": True, "result": {"success": True, "result": {"missions": [
             {"id": c.missions[0]["id"], "enabled": True, "next_fire_at": "2026-11-08T18:00:00-05:00"},
             {"id": "legacy_1", "enabled": True, "next_fire_at": None}]}}}
     c.command = robot
@@ -210,7 +210,7 @@ def test_malformed_robot_reply():
     c = FakeRelay()
 
     async def bad(*a, **k):
-        return {"delivered": True, "result": {"ok": True, "result": {"schedules": []}}}
+        return {"delivered": True, "result": {"success": True, "result": {"schedules": []}}}
     c.command = bad
     assert run(st.robot_schedule(c, "dog_t1")) == {"confirmed": False, "reason": "robot_reply_malformed"}
 
@@ -252,7 +252,7 @@ def test_real_robot_reply_shape():
     c = FakeRelay()
 
     async def real(*a, **k):
-        return {"delivered": True, "result": {"ok": True, "result": {
+        return {"delivered": True, "result": {"success": True, "result": {
             "missions": [], "count": 0, "active": None,
             "scheduler": {"enabled": True, "now": "2026-11-07T12:10:48.783283-05:00", "check_interval_s": 5.0}}}}
     c.command = real
@@ -261,7 +261,7 @@ def test_real_robot_reply_shape():
     assert r["robot_time"].startswith("2026-11-07T12:10") and "warning" not in r
 
     async def off(*a, **k):
-        return {"delivered": True, "result": {"ok": True, "result": {
+        return {"delivered": True, "result": {"success": True, "result": {
             "missions": [], "scheduler": {"enabled": False}, "active": {"id": "m_x", "type": "coach"}}}}
     c.command = off
     r = run(st.get_schedule(c, "dog_t1"))
@@ -273,7 +273,7 @@ def test_unsupported_type_reason_passed_through():
     c = FakeRelay()
 
     async def robot(*a, **k):
-        return {"delivered": True, "result": {"ok": True, "result": {"missions": [
+        return {"delivered": True, "result": {"success": True, "result": {"missions": [
             {"id": m["id"], "enabled": True, "next_fire_at": None, "reason": "unsupported: no mission program"}
             for m in c.missions]}}}
     c.command = robot
