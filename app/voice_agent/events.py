@@ -1,5 +1,9 @@
 """Agent-initiated speech: boot greeting, Silent Guardian re-arm, low hopper.
 
+The boot greeting fires on power-on (`robot_connected`) and on wake from sleep (`robot_woke`,
+2026-11-19) the same way: same delay, quiet-hours rule and one shared 10-minute debounce, so a
+robot that boots and is woken straight away greets once.
+
 Hooks arrive from the relay at POST /agent/hooks/robot-event (loopback + internal token).
 Each is debounced, checked against quiet hours, spoken through one no-tool Claude call,
 synthesised, and pushed to the robot as a `play_tts` command through the relay.
@@ -23,7 +27,8 @@ from app.voice_agent.prompts import BOOT_GREETING_INTENT, LOW_HOPPER_INTENT, SG_
 
 logger = logging.getLogger(__name__)
 
-DEBOUNCE_S = {"robot_connected": 600, "low_hopper": 6 * 3600, "sg_rearm": 60}
+DEBOUNCE_S = {"robot_connected": 600, "robot_woke": 600, "low_hopper": 6 * 3600, "sg_rearm": 60}
+GREETING_EVENTS = {"robot_connected", "robot_woke"}
 _seen_ids: "OrderedDict[str, float]" = OrderedDict()
 _last_spoken: dict[tuple[str, str], float] = {}
 
@@ -96,7 +101,7 @@ async def handle(hook: dict) -> dict:
         return {"skipped": "no_dog"}
     dog_id = dog.get("id") or dog.get("dog_id")
     dog_name = dog.get("name") or "your dog"
-    if _debounced(event, f"{device_id or dog_id}"):
+    if _debounced("robot_connected" if event in GREETING_EVENTS else event, f"{device_id or dog_id}"):
         return {"skipped": "debounced"}
 
     s = get_settings()
@@ -110,7 +115,7 @@ async def handle(hook: dict) -> dict:
     tz = ZoneInfo(status.get("timezone") or s.default_timezone)
     now_local = datetime.now(timezone.utc).astimezone(tz)
 
-    if event == "robot_connected":
+    if event in GREETING_EVENTS:
         if quiet_active:
             return {"skipped": "quiet_hours"}
         await asyncio.sleep(s.agent_boot_greeting_delay_seconds)
@@ -142,7 +147,7 @@ async def handle(hook: dict) -> dict:
             text = f"The treat hopper is running low for {dog_name}" + (f", {tr} left." if tr is not None else ".")
 
     try:
-        out = await say(user_id, dog_id, text, device_id=device_id if event != "robot_connected" else device_id)
+        out = await say(user_id, dog_id, text, device_id=device_id)
     except Exception as e:
         logger.error(f"[AGENT] speech delivery failed: {e}")
         return {"event": event, "text": text, "error": str(e)[:120]}

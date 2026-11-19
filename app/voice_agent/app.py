@@ -3,7 +3,7 @@
 POST /agent/utterance            robot (HMAC) or phone (JWT): one WAV in -> reply text + TTS url
 POST /agent/text                 internal: text in (no STT) -> reply text (+ TTS url if configured)
 POST /agent/speak                internal: say arbitrary text on the robot
-POST /agent/hooks/robot-event    internal + loopback: robot_connected | sg_rearm | low_hopper
+POST /agent/hooks/robot-event    internal + loopback: robot_connected | robot_woke | sg_rearm | low_hopper
 GET  /agent/audio/{clip}.mp3     TTS clips only (unguessable id, short TTL)
 GET  /agent/health
 

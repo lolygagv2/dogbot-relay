@@ -182,11 +182,15 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
         if not isinstance(mode, str) or not mode.strip() or len(mode) > 32:
             return None, "mode_change requires data.mode"
         data["mode"] = mode.strip().lower()
+        if data["mode"] in ("sleeping", "asleep"):   # 2026-11-19: one spelling for sleep
+            data["mode"] = "sleep"
     elif etype == "status":
         if not isinstance(data.get("battery"), (int, float)):
             return None, "status requires data.battery"
         if not data.get("mode"):
             return None, "status requires data.mode"
+        if isinstance(data["mode"], str) and data["mode"].strip().lower() in ("sleep", "sleeping", "asleep"):
+            data["mode"] = "sleep"
         # amendment 2026-11-06 (6): docked (bool) and light_level (0-255) ride along; never rolled up
         if "docked" in data:
             data["docked"] = bool(data["docked"])
@@ -264,6 +268,10 @@ async def ingest_events(
             continue
         if dog_id_override:
             ev["dog_id"] = dog_id_override
+        if source == "robot" and ev["type"] in ("status", "mode_change"):
+            from app.services import sleep_wake
+            sleep_wake.on_mode_report(device_id, (ev.get("data") or {}).get("mode"),
+                                      explicit=ev["type"] == "mode_change")
 
         # A status with no dog_id is device-scoped: stored once, dog_id NULL, keyed by
         # device_id (no per-dog copies). Status reads go by the dog's paired robot.

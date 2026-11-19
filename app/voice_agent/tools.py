@@ -279,7 +279,7 @@ async def _run(ctx: ToolContext, name: str, a: dict) -> dict:
         if name == "get_robot_status":
             st = await c.get_status(dog_id)
             last = st.get("last_status") or {}
-            return {"online": st.get("robot_online"), "mode": st.get("mode"), "battery_pct": st.get("battery"),
+            return {"online": st.get("robot_online"), "mode": st.get("mode"), "asleep": st.get("asleep"), "battery_pct": st.get("battery"),
                     "docked": last.get("docked"), "light_level": last.get("light_level"),
                     "treats_remaining_in_hopper": last.get("treats_remaining"), "treats_today": st.get("treats_today"),
                     "treat_daily_cap": st.get("treat_cap"), "quiet_hours": st.get("quiet_hours")}

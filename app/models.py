@@ -724,6 +724,7 @@ class CommandRequest(BaseModel):
         "dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move",
         "take_photo", "standby", "run_trick", "listen", "play_tts",  # play_tts: voice agent only (allowlist)
         "schedule_sync", "smart_plug", "ultrasonic", "look",
+        "sleep", "wake",   # 2026-11-19; set_mode {mode: sleep} also works
     ]
     data: dict = Field(default_factory=dict)
     device_id: Optional[str] = None

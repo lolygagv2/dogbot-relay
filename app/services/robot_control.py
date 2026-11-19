@@ -18,11 +18,12 @@ from fastapi import HTTPException
 from app.auth import Actor
 from app.database import get_dog_owner, get_user_paired_devices
 from app.models import Missions, Sounds
-from app.services import settings_service
+from app.services import settings_service, sleep_wake
 
 logger = logging.getLogger(__name__)
 
 SAFE_MODES = {"idle", "silent_guardian", "coach", "mission"}  # never "manual" (drive) over HTTP
+# set_mode {mode: sleep} (or sleeping / asleep) is sent as the robot's `sleep` command (2026-11-19)
 KNOWN_MISSION_TYPES = {"recall", "sit_stay", "find_treat", "place", "quiet", "down_stay", "spin", "sit", "down", "stay"}
 KNOWN_TRICKS = {"sit", "down", "stay", "spin", "place", "paw", "speak"}
 KNOWN_TARGETS = {"dog", "dock"}   # go_to: drive toward the detected dog, or return to dock
@@ -35,13 +36,13 @@ MOVE_ACTIONS: dict[str, tuple[str, int, int, int]] = {
 # What each actor kind may ask for. "relay" = the relay's own internal callers (not reachable
 # over HTTP); since the departure triggers went (2026-11-18) only speak() uses it.
 ACTOR_ALLOWED: dict[str, set[str]] = {
-    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
-    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
-    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
+    "app":       {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look", "sleep", "wake"},
+    "admin":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look", "sleep", "wake"},
+    "agent":     {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "take_photo", "standby", "run_trick", "play_tts", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look", "sleep", "wake"},
     # PHOTO ACCESS (2026-11-06): connectors may take a still (camera scope, enforced by the MCP
     # server) — never with HUD, max one per 0.5 s per assistant. (Quiet hours no longer apply:
     # since 2026-11-07 they suppress only music, proactive speech and non-urgent pushes.)
-    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look"},
+    "connector": {"dispense_treat", "set_mode", "play_sound", "start_mission", "go_to", "move", "standby", "run_trick", "take_photo", "listen", "schedule_sync", "smart_plug", "ultrasonic", "look", "sleep", "wake"},
     # play_tts for "relay" = speak(): the URL is always a relay-made WIM-Z voice clip.
     "relay":     {"start_mission", "play_music", "play_tts"},
 }
@@ -87,6 +88,42 @@ def sg_mode_tool_result(on: bool, res: dict) -> dict:
     out["message"] = ("Simulated (demo dog, no live robot)." if out["simulated"] else
                       f"Sent to the robot: Silent Guardian {out['silent_guardian']}.")
     return out
+
+SLEEP_CONFIRM_WAIT_S = 5   # the robot answers sleep with a command_result
+
+
+def sleep_tool_result(asleep: bool, res: dict) -> dict:
+    """Shape a dispatch() result for the set_sleep tool (sleep = asleep true, wake = false)."""
+    out: dict[str, Any] = {"ok": True, "asleep": asleep, "delivered": bool(res.get("delivered")),
+                           "simulated": bool(res.get("simulated")), "command_id": res.get("command_id")}
+    if out["simulated"]:
+        out["message"] = "Simulated (demo dog, no live robot)."
+        return out
+    r = res.get("result") or {}
+    err = r.get("error")
+    code = err.get("code") if isinstance(err, dict) else err
+    if asleep:
+        if res.get("timed_out"):
+            out["confirmed"] = False
+            out["message"] = "Sent to the robot: sleep. It has not confirmed yet; check get_robot_status."
+        elif r and not r.get("ok", True):
+            out.update(ok=False, confirmed=False, error=str(code or "refused")[:64],
+                       message=f"The robot did not go to sleep ({code or 'refused'}).")
+        else:
+            out["confirmed"] = True
+            out["message"] = "WIM-Z is asleep."
+        return out
+    w = res.get("wake") or {}
+    out["ready"] = bool(w.get("ready"))
+    if w.get("ready"):
+        out["message"] = "WIM-Z is awake and ready." if w.get("woke") else "WIM-Z was already awake."
+    elif w.get("timed_out"):
+        out["message"] = "Sent wake; the robot did not say it was ready in time. Check get_robot_status."
+    else:
+        out.update(ok=False, error=str(w.get("error") or "not_ready")[:64],
+                   message=f"The robot did not wake ({w.get('error') or 'not ready'}).")
+    return out
+
 
 def coach_mode_command(on: bool) -> dict:
     """set_coach: on -> coach, off -> idle (standby). Nothing else is reachable."""
@@ -305,6 +342,13 @@ def build_robot_message(command: str, data: dict, actor: Actor, dog_id: str) -> 
         case "schedule_sync":
             # The robot answers with command_result {result: {missions: [{id, enabled, next_fire_at}]}}
             out = ("schedule_sync", {"dog_id": dog_id, "source": source})
+        case "sleep":
+            out = ("sleep", {"source": source, "timestamp": _iso()})
+        case "wake":
+            out = ("wake", {"source": source, "reason": "owner" if actor.kind in ("app", "admin") else source,
+                            "timestamp": _iso()})
+        case "set_mode" if sleep_wake.normalize_mode(data.get("mode")) == sleep_wake.SLEEP_MODE:
+            out = ("sleep", {"source": source, "timestamp": _iso()})
         case "set_mode":
             mode = str(data.get("mode") or "")
             if mode not in SAFE_MODES:
@@ -512,13 +556,36 @@ async def dispatch(dog_id: str, command: str, data: dict, actor: Actor,
 
     from app.connection_manager import get_connection_manager
     message["device_id"] = target
+
+    # Sleep / wake (2026-11-19): an explicit wake waits for the robot's ready; any action command
+    # to a sleeping robot wakes it first (wait for ready), then goes out.
+    if message["command"] == "wake":
+        command_results.register(message["command_id"], dog_id=dog_id, device_id=target, command="wake")
+        w = await sleep_wake.ensure_awake(target, reason=message["data"].get("reason") or "owner", force=True,
+                                          source=actor.label, command_id=message["command_id"])
+        if w.get("error") == "robot_offline":
+            raise HTTPException(status_code=409, detail={"code": "robot_offline", "device_id": target})
+        logger.info(f"[CONTROL] {actor.label} -> {target}: wake ({message['command_id']}) ready={w.get('ready')}")
+        return {"command_id": message["command_id"], "device_id": target, "command_sent": "wake",
+                "delivered": True, "simulated": False, "guard": guard, "wake": w,
+                "result": {"ok": bool(w.get("ready")), "result": {k: w[k] for k in ("ready", "woke", "mode") if k in w},
+                           "error": w.get("error") or ("timed_out" if w.get("timed_out") else None),
+                           "timestamp": _iso()}}
+    wake_info = None
+    if sleep_wake.needs_wake(target, message["command"]):
+        wake_info = await sleep_wake.ensure_awake(target, reason=message["command"], source=actor.label)
+        sleep_wake.restamp(message)
+
     command_results.register(message["command_id"], dog_id=dog_id, device_id=target, command=message["command"])
     delivered = await get_connection_manager().send_to_robot(target, message)
     if not delivered:
         raise HTTPException(status_code=409, detail={"code": "robot_offline", "device_id": target})
+    sleep_wake.note_sent(target, message)
     logger.info(f"[CONTROL] {actor.label} -> {target}: {message['command']} ({message['command_id']})")
     out = {"command_id": message["command_id"], "device_id": target, "command_sent": message["command"],
            "delivered": True, "simulated": False, "guard": guard}
+    if wake_info is not None:
+        out["wake"] = wake_info
     if wait_s:
         res = await command_results.wait(message["command_id"], float(wait_s))
         if res is None:

@@ -345,7 +345,37 @@ class ConnectionManager:
             logger.warning(f"[ROUTE DENIED] User {user_id} not authorized for device {device_id} (owner: {owner})")
             return False
 
-        return await self.send_to_robot(device_id, command)
+        # Sleep / wake (2026-11-19): set_mode sleep -> `sleep`; an explicit `wake` or any action
+        # command to a sleeping robot is held in the background (the read loop must not block),
+        # the robot is woken, and the command goes out once it is ready. Drive frames just start
+        # the wake and are dropped (the app's 20 Hz stream resumes once the robot is up).
+        from app.services import sleep_wake
+        sleep_wake.translate(command)
+        name = command.get("command")
+        if name == "sleep":   # so the robot's command_result (ok, or a refusal) updates the sleep state
+            from app.services import command_results
+            command.setdefault("command_id", str(uuid.uuid4()))
+            command_results.register(command["command_id"], device_id=device_id, command="sleep")
+        if name == "wake":
+            asyncio.get_running_loop().create_task(sleep_wake.ensure_awake(
+                device_id, reason="owner", force=True, source=f"app:{user_id}",
+                command_id=command.get("command_id")))
+            return True
+        if sleep_wake.needs_wake(device_id, name):
+            if name in sleep_wake.DRIVE_COMMANDS:
+                if not sleep_wake.is_waking(device_id):
+                    asyncio.get_running_loop().create_task(sleep_wake.ensure_awake(device_id, reason=name))
+                return True
+
+            async def _send(msg: dict) -> None:
+                if await self.send_to_robot(device_id, msg):
+                    sleep_wake.note_sent(device_id, msg)
+            sleep_wake.hold_until_awake(device_id, command, reason=name, send=_send)
+            return True
+        ok = await self.send_to_robot(device_id, command)
+        if ok:
+            sleep_wake.note_sent(device_id, command)
+        return ok
 
     async def forward_event_to_owner(self, device_id: str, event: dict) -> int:
         """

@@ -487,6 +487,12 @@ class Replayer:
         elif cmd == "set_mode":
             events.append({"type": "status", "ts": now.isoformat(),
                            "data": {"battery": 80, "mode": data.get("mode"), "treats_remaining": 8}})
+        elif cmd in ("sleep", "wake"):   # 2026-11-19
+            events.append({"type": "mode_change", "ts": now.isoformat(),
+                           "data": {"mode": "sleep" if cmd == "sleep" else "idle", "source": src}})
+            events.append({"type": "status", "ts": now.isoformat(),
+                           "data": {"battery": 80, "mode": "sleep" if cmd == "sleep" else "idle",
+                                    "treats_remaining": 8}})
         elif cmd == "go_to":
             events.append({"type": "status", "ts": now.isoformat(),
                            "data": {"battery": 80, "mode": "mission", "location": data.get("target")}})

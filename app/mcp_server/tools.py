@@ -31,6 +31,7 @@ from app.services.relay_client import RelayClient, RelayError, RelayRefusal
 from app.services.robot_control import MOVE_ACTIONS as _MOVE_SPEC, MOVE_WAIT_S, move_tool_result as _move_result
 from app.services.robot_control import LISTEN_EXTRA_WAIT_S, LISTEN_MAX_S, listen_tool_result
 from app.services.robot_control import coach_mode_command, coach_mode_tool_result, sg_mode_command, sg_mode_tool_result
+from app.services.robot_control import SLEEP_CONFIRM_WAIT_S, sleep_tool_result
 from app.services.robot_control import SMART_PLUG_ASSISTANT_ACTIONS, SMART_PLUG_WAIT_S, smart_plug_tool_result
 from app.services.robot_control import (LOOK_ACTIONS, LOOK_WAIT_S, ULTRASONIC_STYLES, ULTRASONIC_WAIT_S,
                                         look_tool_result, ultrasonic_tool_result)
@@ -311,7 +312,7 @@ def register_tools(mcp: MCPServer) -> None:
             return e.as_result(_status=e.status)
         last = st.get("last_status") or {}
         return {"dog_id": dog_id, "online": st.get("robot_online"), "mode": st.get("mode"),
-                "battery_pct": st.get("battery"), "docked": last.get("docked"), "light_level": last.get("light_level"),
+                "asleep": st.get("asleep"), "battery_pct": st.get("battery"), "docked": last.get("docked"), "light_level": last.get("light_level"),
                 "treats_remaining_in_hopper": last.get("treats_remaining"),
                 "treats_today": st.get("treats_today"), "treat_daily_cap": st.get("treat_cap"),
                 "quiet_hours": st.get("quiet_hours"), "timezone": st.get("timezone"),
@@ -425,6 +426,25 @@ def register_tools(mcp: MCPServer) -> None:
         except RelayRefusal as e:
             return e.as_result(_status=e.status)
         return coach_mode_tool_result(bool(on), res)
+
+    @mcp.tool(name="set_sleep", annotations=CONTROL)
+    @audited("set_sleep")
+    async def set_sleep(dog_id: str, asleep: bool) -> dict:
+        """Put WIM-Z to sleep (asleep=true) or wake it up (asleep=false) right now. While asleep the
+        robot rests and its status mode reads "sleep". You rarely need to wake it yourself: any
+        action (a treat, a photo, a move, a mode or mission start) wakes it first and waits until
+        it is ready, and so does a scheduled mission. Wake reports ready=true once the robot can
+        take commands. The robot may refuse to sleep mid-mission; then say so plainly."""
+        client, user_id = _client("set_sleep")
+        _check_dog(user_id, dog_id)
+        try:
+            if asleep:
+                res = await client.command(dog_id, "sleep", {}, wait_s=SLEEP_CONFIRM_WAIT_S)
+            else:
+                res = await client.command(dog_id, "wake", {})
+        except RelayRefusal as e:
+            return e.as_result(_status=e.status)
+        return sleep_tool_result(bool(asleep), res)
 
     @mcp.tool(name="set_smart_plug", annotations=CONTROL)
     @audited("set_smart_plug")

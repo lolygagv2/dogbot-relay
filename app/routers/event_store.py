@@ -143,6 +143,16 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
     if replay_device:
         candidates = [*candidates, replay_device]
     last = get_latest_status_for_devices(candidates)
+    # Sleep (2026-11-19): the relay's own view (it sent sleep, or the robot reported it) wins over a
+    # stale "idle" in the last status row; any spelling the robot used reads as "sleep".
+    from app.services import sleep_wake
+    status_device = (last or {}).get("device_id") or (online[0] if online else None)
+    live_mode = sleep_wake.normalize_mode((last or {}).get("data", {}).get("mode"))
+    asleep = bool(status_device and status_device in online and sleep_wake.is_asleep(status_device))
+    if asleep:
+        live_mode = sleep_wake.SLEEP_MODE
+    elif live_mode == sleep_wake.SLEEP_MODE:
+        asleep = status_device in online   # an offline robot's last row doesn't make it asleep now
     used, _ = settings_service.treats_used_today(dog_id)
     cap = settings_service.effective_daily_cap(settings_service.get_value(dog_id, "treat_schedule"))
     qh = QuietHours.model_validate(settings_service.get_value(dog_id, "quiet_hours"))
@@ -150,7 +160,9 @@ async def get_dog_status(dog_id: str, actor: Actor = Depends(resolve_actor)):
         "dog_id": dog_id,
         "device_id": (last or {}).get("device_id") or (online[0] if online else (devices[0] if devices else None)),
         "robot_online": bool(online),
-        "mode": (last or {}).get("data", {}).get("mode"),
+        "mode": live_mode,
+        "asleep": asleep,
+        "waking": bool(status_device and sleep_wake.is_waking(status_device)),
         "battery": (last or {}).get("data", {}).get("battery"),
         "last_status": (last or {}).get("data"),
         "last_status_ts": (last or {}).get("ts"),

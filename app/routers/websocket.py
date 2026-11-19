@@ -26,7 +26,7 @@ from app.database import (
     store_event as db_store_event,
 )
 from app.routers.device import get_device_data, update_device_online_status
-from app.services import event_store as typed_event_store, push_service, settings_service
+from app.services import event_store as typed_event_store, push_service, settings_service, sleep_wake
 from app.services.treat_watchdog import get_treat_watchdog
 from app.services.turn_service import turn_service
 
@@ -915,6 +915,7 @@ async def websocket_device_endpoint(
     # Connect the robot
     await manager.connect_robot(websocket, device_id, owner_id, ip=client_ip)
     update_device_online_status(device_id, True)
+    sleep_wake.on_robot_connected(device_id)
 
     # Broadcast robot_connected event to owner's apps
     owner_id = manager.get_device_owner(device_id)
@@ -1021,6 +1022,7 @@ async def websocket_device_endpoint(
                 # Log mode field for passthrough verification
                 status_mode = message.get("mode") or message.get("data", {}).get("mode")
                 if status_mode:
+                    sleep_wake.on_mode_report(device_id, status_mode, explicit=False)
                     logger.info(f"[STATUS] Robot({device_id}): mode={status_mode} battery={message.get('battery', message.get('data', {}).get('battery', '?'))}")
                 if owner_id:
                     await manager.send_to_user_apps(owner_id, message)
@@ -1110,6 +1112,8 @@ async def websocket_device_endpoint(
                     logger.warning(f"[CMD-RESULT] {device_id}: missing command_id")
                     continue
                 meta = command_results.resolve(cid, message) or {}
+                if meta.get("command") in ("sleep", "wake") and not command_results.is_interim(message):
+                    sleep_wake.on_command_result(device_id, meta.get("command"), message)
                 owner_id = manager.get_device_owner(device_id)
                 logger.info(f"[CMD-RESULT] {device_id}: {meta.get('command') or '?'} {cid} ok={message.get('ok')}")
                 from app.services import photo_gallery
@@ -1251,6 +1255,9 @@ async def websocket_device_endpoint(
                         )
                 elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                     logger.info(f"[EVENT] {event_name} from {device_id}: {message.get('data', {})}")
+                if event_name == "mode_changed":
+                    sleep_wake.on_mode_report(device_id, (message.get("data") or {}).get("mode") or message.get("mode"),
+                                              explicit=True)
                 if event_name == "treat_dispensed":
                     get_treat_watchdog().treat_dispensed(device_id)
 
@@ -1574,7 +1581,8 @@ async def websocket_app_endpoint(
                         "type": "status_response",
                         "device_id": status_device_id,
                         "device_paired": device_paired,
-                        "robot_online": robot_online
+                        "robot_online": robot_online,
+                        "asleep": device_paired and sleep_wake.is_asleep(status_device_id),
                     })
                     logger.info(f"[ROUTE] App({user_id}) get_status: device={status_device_id}, paired={device_paired}, online={robot_online}")
                 continue
@@ -1827,6 +1835,7 @@ async def websocket_generic_endpoint(
                 manager.device_owners[device_id] = owner_id
 
             logger.info(f"Robot {device_id} connected from {client_ip} (generic endpoint)")
+            sleep_wake.on_robot_connected(device_id)
             update_device_online_status(device_id, True)
 
         else:
@@ -2020,6 +2029,7 @@ async def websocket_generic_endpoint(
                     # Log mode field for passthrough verification
                     status_mode = message.get("mode") or message.get("data", {}).get("mode")
                     if status_mode:
+                        sleep_wake.on_mode_report(identifier, status_mode, explicit=False)
                         logger.info(f"[STATUS] Robot({identifier}): mode={status_mode} battery={message.get('battery', message.get('data', {}).get('battery', '?'))}")
                     if owner_id:
                         await manager.send_to_user_apps(owner_id, message)
@@ -2139,6 +2149,9 @@ async def websocket_generic_endpoint(
                             )
                     elif event_name in ("mode_changed", "bark_detected", "dog_detected", "treat_dispensed"):
                         logger.info(f"[EVENT] {event_name} from {identifier}: {message.get('data', {})}")
+                    if event_name == "mode_changed":
+                        sleep_wake.on_mode_report(identifier, (message.get("data") or {}).get("mode") or message.get("mode"),
+                                                  explicit=True)
                     if event_name == "treat_dispensed":
                         get_treat_watchdog().treat_dispensed(identifier)
 
@@ -2224,7 +2237,8 @@ async def websocket_generic_endpoint(
                             "type": "status_response",
                             "device_id": status_device_id,
                             "device_paired": device_paired,
-                            "robot_online": robot_online
+                            "robot_online": robot_online,
+                            "asleep": device_paired and sleep_wake.is_asleep(status_device_id),
                         })
                         logger.info(f"[ROUTE] App({identifier}) get_status: device={status_device_id}, paired={device_paired}, online={robot_online}")
                     continue
