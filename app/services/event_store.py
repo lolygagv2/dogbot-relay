@@ -45,6 +45,7 @@ MEDIA_PREFIX = "/api/media/download/"
 SETTLE_WINDOW_S = 600  # a settle within episode end + 10 min counts for that episode
 LOW_HOPPER_THRESHOLD = 3
 TRICK_RESULTS = ("success", "fail", "no_response")
+TRICK_NO_RESPONSE = {"timeout", "timed_out", "no_response", "none", "no_dog"}
 # mode time (2026-11-07): totals.<key> = seconds the robot spent in that mode on the local day.
 # sg_s is the day's time on guard; it replaced alone_s (departure -> arrival) on 2026-11-18.
 MODE_TOTALS = {"silent_guardian": "sg_s", "coach": "coach_s"}
@@ -175,13 +176,20 @@ def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
     elif etype == "trick_attempt":
         # one cue: data.trick (e.g. "sit") and the outcome, as data.result success|fail|no_response
         # or data.success (bool). Optional: latency_ms, session_id (the coach_session event_id), treat.
-        trick = data.get("trick")
+        # The robot names the trick it cued as data.cue (seen 2026-11-20: {"cue": "come",
+        # "behavior": "sit", "result": "success", ...}); data.trick is the older spelling.
+        trick = data.get("trick") if data.get("trick") is not None else data.get("cue")
         if not isinstance(trick, str) or not trick.strip() or len(trick) > 64:
-            return None, "trick_attempt requires data.trick"
+            return None, "trick_attempt requires data.trick (or data.cue)"
         data["trick"] = trick.strip().lower()
         result = data.get("result")
         if result is None and isinstance(data.get("success"), bool):
             result = "success" if data["success"] else "fail"
+        # The robot's own failure reasons (seen 2026-11-20: "wrong_pose") count as fail, or
+        # no_response for a timeout; the robot's word is kept as data.result_detail.
+        if isinstance(result, str) and result.strip() and result not in TRICK_RESULTS:
+            data["result_detail"] = result.strip()[:64]
+            result = "no_response" if result.strip().lower() in TRICK_NO_RESPONSE else "fail"
         if result not in TRICK_RESULTS:
             return None, "trick_attempt requires data.result in success|fail|no_response (or data.success)"
         data["result"], data["success"] = result, result == "success"

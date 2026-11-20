@@ -56,9 +56,9 @@ def a_day_of_coaching(day=D, prefix=""):
 @pytest.mark.parametrize("ev,reason", [
     ({"type": "coach_session", "data": {}}, "coach_session requires duration_s"),
     ({"type": "coach_session", "duration_s": 60, "data": {"cues": "many"}}, "coach_session data.cues must be an integer"),
-    ({"type": "trick_attempt", "data": {"result": "success"}}, "trick_attempt requires data.trick"),
+    ({"type": "trick_attempt", "data": {"result": "success"}}, "trick_attempt requires data.trick (or data.cue)"),
     ({"type": "trick_attempt", "data": {"trick": "sit"}}, "trick_attempt requires data.result"),
-    ({"type": "trick_attempt", "data": {"trick": "sit", "result": "great"}}, "trick_attempt requires data.result"),
+    ({"type": "trick_attempt", "data": {"trick": "sit", "result": 7}}, "trick_attempt requires data.result"),
 ])
 def test_bad_events_rejected(ev, reason):
     out, why = event_store.validate_event({"event_id": "x", "dog_id": "dog_t1", "ts": "2026-10-27T10:00:00Z", **ev})
@@ -213,3 +213,31 @@ def test_rejected_event_is_logged_with_reason_and_contents(temp_db, caplog):
     assert out["rejected"][0]["reason"].startswith("trick_attempt requires data.result")
     line = next(r.message for r in caplog.records if "[EVENTS-REJECTED]" in r.message)
     assert "type='trick_attempt'" in line and "data_keys=['outcome', 'trick']" in line and '"outcome":"success"' in line
+
+
+def test_trick_attempt_with_cue_as_the_robot_sends_it(temp_db):
+    """The robot's real shape (2026-11-20): data.cue is the trick; behavior / confidence are kept."""
+    from app.services import event_store
+    ev, reason = event_store.validate_event({
+        "event_id": "01a1f680", "type": "trick_attempt", "dog_id": "dog_t1", "ts": "2026-11-20T01:09:34.991Z",
+        "data": {"time": "2026-11-20T01:09:34.986Z", "cue": "Come", "result": "success", "confidence": 0.958,
+                 "source": "coach", "attempt": 1, "behavior": "sit", "id_method": "qr"}})
+    assert reason is None, reason
+    assert ev["data"]["trick"] == "come" and ev["data"]["result"] == "success" and ev["data"]["success"] is True
+    assert ev["data"]["behavior"] == "sit" and ev["data"]["cue"] == "Come"
+    _, reason = event_store.validate_event({"event_id": "x", "type": "trick_attempt", "ts": "2026-11-20T01:09:34Z",
+                                            "data": {"result": "success", "behavior": "sit"}})
+    assert reason == "trick_attempt requires data.trick (or data.cue)"
+
+
+@pytest.mark.parametrize("raw,result", [("wrong_pose", "fail"), ("timeout", "no_response"), ("success", "success")])
+def test_trick_attempt_robot_result_words(temp_db, raw, result):
+    """The robot's failed Spin (2026-11-20): {"cue": "spin", "behavior": "stand", "result": "wrong_pose"}."""
+    from app.services import event_store
+    ev, reason = event_store.validate_event({
+        "event_id": "s1", "type": "trick_attempt", "dog_id": "dog_t1", "ts": "2026-11-20T01:10:37.513Z",
+        "data": {"cue": "spin", "behavior": "stand", "result": raw, "attempt": 1}})
+    assert reason is None, reason
+    assert ev["data"]["trick"] == "spin" and ev["data"]["result"] == result
+    assert ev["data"]["success"] is (result == "success")
+    assert ev["data"].get("result_detail") == (None if raw == "success" else raw)
