@@ -160,8 +160,11 @@ def _spawn(coro) -> None:
 def _after_change(cur: dict, new: dict) -> None:
     device_id = new["device_id"]
     _spawn(push(device_id, new))
-    if cur["asleep"] and not new["asleep"]:
-        _greet_on_wake(device_id, new.get("reason") or new["source"])
+    # The wake greeting is NOT fired here: only an explicit wake's command_result fires it (see
+    # on_command_result). Going to sleep, or a new selection while asleep, has the voice agent
+    # record the wake greeting ahead of time so it can go out within 1000 ms of the wake.
+    if new["asleep"] and (not cur["asleep"] or new["selected_dog_id"] != cur["selected_dog_id"]):
+        _agent_hook("greeting_prepare", device_id, {"cause": "asleep" if not cur["asleep"] else "selection"})
 
 
 async def push(device_id: str, st: Optional[dict] = None) -> int:
@@ -183,15 +186,36 @@ async def send_all_to_app(send: Callable, device_ids: list[str]) -> None:
             return
 
 
-def _greet_on_wake(device_id: str, cause: str) -> None:
-    """Wake greeting (section 9): the voice agent names the selected dog read from this table."""
+EXPLICIT_WAKE_SOURCES = {"app", "connector"}
+
+
+def _agent_hook(event: str, device_id: str, payload: dict) -> None:
     try:
         from app.services.notify_service import notify_agent
         owner = _owner(device_id)
         if owner:
-            notify_agent("robot_woke", device_id, owner, None, {"cause": cause}, None)
+            notify_agent(event, device_id, owner, None, payload, f"{event}:{device_id}:{uuid.uuid4().hex[:8]}")
     except Exception as e:  # never let a greeting break a state change
-        logger.debug(f"[AGENT-HOOK] robot_woke hook failed: {e}")
+        logger.debug(f"[AGENT-HOOK] {event} hook failed: {e}")
+
+
+def mark_explicit_wake(command_id: str, device_id: str, source: Optional[str]) -> None:
+    """An explicit wake (set_sleep {asleep: false} from the app or a connector, NOT the relay's
+    wake-first): its successful command_result fires the wake greeting. The agent is told now so it
+    can refresh the prepared greeting while the robot wakes."""
+    from app.services import command_results
+    meta = command_results._meta.get(command_id)
+    if meta is None or source not in EXPLICIT_WAKE_SOURCES:
+        return
+    meta["explicit_wake"] = True
+    _agent_hook("greeting_prepare", device_id, {"cause": "wake_requested"})
+
+
+def _greet_on_wake(device_id: str, cause: Optional[str]) -> None:
+    """Wake greeting (section 9): the voice agent names the selected dog read from this table."""
+    import time
+    logger.info(f"[STATE] {device_id}: explicit wake confirmed; wake greeting requested")
+    _agent_hook("robot_woke", device_id, {"cause": cause, "result_at": time.time()})
 
 
 # ---------------------------------------------------------------- robot reports
@@ -341,9 +365,12 @@ def on_command_result(device_id: str, meta: dict, message: dict) -> None:
         update(device_id, source=src, reason=reason, mode=mode, asleep=False,
                session_dog_id=res.get("session_dog_id") or None)
     elif command == "set_sleep":
-        if not isinstance(res.get("asleep"), bool):
-            return
-        update(device_id, source=src, reason=reason, asleep=res["asleep"], mode=normalize_mode(res.get("mode")))
+        if isinstance(res.get("asleep"), bool):
+            update(device_id, source=src, reason=reason, asleep=res["asleep"], mode=normalize_mode(res.get("mode")))
+        # Wake greeting: only an explicit wake (app / connector) that succeeded; never the relay's
+        # wake-first (ensure_awake does not mark it), never select_dog / download_song.
+        if meta.get("explicit_wake") and meta.get("asleep") is False and res.get("asleep") is not True:
+            _greet_on_wake(device_id, reason or src)
     elif command == "select_dog":
         st = get(device_id)
         if message.get("command_id") == st["select_command_id"] and res.get("selected_dog_id") == st["selected_dog_id"]:
@@ -460,6 +487,8 @@ def prepare_app_state_command(user_id: str, device_id: str, message: dict) -> Op
                              reason=reason)
     if command == "set_sleep":
         command_results._meta[message["command_id"]]["asleep"] = payload["asleep"]
+        if payload["asleep"] is False:
+            mark_explicit_wake(message["command_id"], device_id, "app")
     return None
 
 

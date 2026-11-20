@@ -640,6 +640,9 @@ async def _deliver(message: dict, guard: dict, target: str, dog_id: Optional[str
 
     command_results.register(message["command_id"], dog_id=dog_id, device_id=target, command=message["command"],
                              source=message["data"].get("source"), reason=message["data"].get("reason"))
+    if message["command"] == "set_sleep" and message["data"].get("asleep") is False:
+        command_results._meta[message["command_id"]]["asleep"] = False
+        robot_state.mark_explicit_wake(message["command_id"], target, actor.kind)   # app / connector only
     delivered = await get_connection_manager().send_to_robot(target, message)
     if not delivered:
         raise refusal(robot_state.ERR_OFFLINE)

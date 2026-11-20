@@ -13,7 +13,8 @@ wake-first:
   own error, e.g. "expired") and the command is never sent. Nothing is queued or retried.
   Concurrent commands share one wake. Drive frames (motor/servo/pan_tilt, 20 Hz) are not held:
   they start the wake and drop, because a drive frame held for seconds would be stale.
-- The wake greeting fires from robot_state when asleep goes true -> false.
+- The wake greeting fires only for an explicit wake (app / connector set_sleep false that succeeds,
+  robot_state.on_command_result); the wake-first sent here never greets.
 
 In-process state (single relay worker), like command_results.
 """

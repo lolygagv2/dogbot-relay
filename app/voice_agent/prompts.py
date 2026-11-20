@@ -18,10 +18,10 @@ Hard rules:
 - schedule_mission repeats weekly unless you give a date (a one-time mission). look turns only the camera.
 - For supervised movement: take a photo, decide one move, take another photo. Turn to face away before driving away from something. Stop and explain after 8 move cycles, or after a full 360-degree search finds nothing."""
 
-BOOT_GREETING_INTENT = """The robot just started up and the owner may be nearby. Greet them by the local time of day, mention {dog_name} by name, and summarise yesterday in one or two sentences using ONLY the numbers in the roll-up JSON below (for example barking episodes, longest episode minutes, treats given, missions). If the roll-up is empty or all zeros, just greet and say yesterday was quiet. You may add one light, dry joke. Do not call tools. Local time now: {local_time}. Roll-up for {date}:
+BOOT_GREETING_INTENT = """The robot just {event_phrase} and the owner may be nearby. Greet them by the local time of day, mention {dog_name} by name, and summarise yesterday in one or two sentences using ONLY the numbers in the roll-up JSON below (for example barking episodes, longest episode minutes, treats given, missions). If the roll-up is empty or all zeros, just greet and say yesterday was quiet. You may add one light, dry joke. Do not call tools. Local time now: {local_time}. Roll-up for {date}:
 {rollup}"""
 
-BOOT_GREETING_NO_DOG_INTENT = """The robot just started up and the owner may be nearby. Greet them by the local time of day in one or two short sentences. No dog is selected in the app, so do not name any dog and do not summarise any day. You may add one light, dry joke. Do not call tools. Local time now: {local_time}."""
+BOOT_GREETING_NO_DOG_INTENT = """The robot just {event_phrase} and the owner may be nearby. Greet them by the local time of day in one or two short sentences. No dog is selected in the app, so do not name any dog and do not summarise any day. You may add one light, dry joke. Do not call tools. Local time now: {local_time}."""
 
 SG_REARM_INTENT = """Silent Guardian just re-armed for {dog_name} (the robot is back on watch). Say so in one short sentence. Do not call tools. Data: {payload}"""
 

@@ -398,14 +398,11 @@ def test_e2_on_app_connect(robot):
 @pytest.mark.parametrize("dog,name", [(BEZIK, "Bezik"), (ELSA, "Elsa"), (None, None)])
 def test_t8_wake_greeting_names_the_selected_dog(robot, monkeypatch, dog, name):
     from app.voice_agent import events as agent_events
-    seen = {"summary": [], "intent": None, "said": None}
+    seen = {"summary": [], "intent": None, "pushed": None}
 
     class Client:
         def __init__(self, actor, user_id):
             pass
-
-        async def get_status(self, dog_id):
-            return {"timezone": "UTC", "quiet_hours": {"active": False}}
 
         async def get_summary(self, dog_id, day):
             seen["summary"].append((dog_id, day))
@@ -416,28 +413,41 @@ def test_t8_wake_greeting_names_the_selected_dog(robot, monkeypatch, dog, name):
             seen["intent"] = intent
             return None   # use the fallback line
 
-    async def say(user_id, dog_id, text, device_id=None, cache_key=None):
-        seen["said"] = text
+    async def synth(text, cache_key=None):
+        return "clip", "https://x/clip.mp3"
+
+    async def push_clip(user_id, dog_id, clip_id, url, device_id=None):
+        seen["pushed"] = dog_id
         return {"delivered": True}
 
     monkeypatch.setattr(agent_events, "RelayClient", Client)
     monkeypatch.setattr(agent_events, "get_brain", lambda: Brain())
-    monkeypatch.setattr(agent_events, "say", say)
-    monkeypatch.setattr(agent_events.get_settings(), "agent_boot_greeting_delay_seconds", 0)
-    agent_events._last_spoken.clear()
+    monkeypatch.setattr(agent_events.tts, "synthesize", synth)
+    monkeypatch.setattr(agent_events.tts, "clip_path", lambda cid: cid)
+    monkeypatch.setattr(agent_events, "push_clip", push_clip)
+    for d in (agent_events._greeting_sent, agent_events._prepared):
+        d.clear()
     robot_state.update(DEV, source="app", selected_dog_id=dog)
-    robot_state.update(DEV, source="app", asleep=True)
-    robot_state.update(DEV, source="app", reason="wake_button", asleep=False)   # a real wake
+
+    async def wake():
+        robot.connect()
+        _asleep(robot)
+        await robot_control.dispatch(BEZIK, "set_sleep", {"asleep": False}, APP)   # a real wake
+    run(wake())
     assert robot.hooks and robot.hooks[-1][0] == "robot_woke"
-    run(agent_events.handle({"event": "robot_woke", "event_id": f"w-{dog}", "device_id": DEV, "user_id": "user_t1"}))
+    out = run(agent_events.handle({"event": "robot_woke", "event_id": f"w-{dog}", "device_id": DEV,
+                                   "user_id": "user_t1", "payload": robot.hooks[-1][3]}))
+    said = out["text"]
+    assert seen["pushed"] == dog
     if name:
-        assert seen["summary"] == [(dog, "yesterday")] and name in seen["intent"] and name in seen["said"]
+        assert seen["summary"] == [(dog, "yesterday")] and name in seen["intent"] and name in said
         other = "Elsa" if name == "Bezik" else "Bezik"
-        assert other not in seen["intent"] and other not in seen["said"]
+        assert other not in seen["intent"] and other not in said
     else:
-        assert seen["summary"] == [] and "Elsa" not in seen["said"] and "Bezik" not in seen["said"]
-        assert "Rex" not in seen["said"]
-    agent_events._last_spoken.clear()
+        assert seen["summary"] == [] and "Elsa" not in said and "Bezik" not in said
+        assert "Rex" not in said
+    for d in (agent_events._greeting_sent, agent_events._prepared):
+        d.clear()
 
 
 # ---------------------------------------------------------------- T9 replay, T10 sleep

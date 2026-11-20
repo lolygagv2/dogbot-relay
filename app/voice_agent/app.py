@@ -3,7 +3,7 @@
 POST /agent/utterance            robot (HMAC) or phone (JWT): one WAV in -> reply text + TTS url
 POST /agent/text                 internal: text in (no STT) -> reply text (+ TTS url if configured)
 POST /agent/speak                internal: say arbitrary text on the robot
-POST /agent/hooks/robot-event    internal + loopback: robot_connected | robot_woke | sg_rearm | low_hopper
+POST /agent/hooks/robot-event    internal + loopback: robot_connected | robot_woke | greeting_prepare | sg_rearm | low_hopper
 GET  /agent/audio/{clip}.mp3     TTS clips only (unguessable id, short TTL)
 GET  /agent/health
 
@@ -109,6 +109,7 @@ async def _startup() -> None:
     oauth_db.init_oauth_tables()
     tts.audio_dir()
     app.state.sweep = asyncio.create_task(tts.sweep_loop())
+    app.state.prepare = asyncio.create_task(events.prepare_loop())   # wake greetings ready ahead
     s = get_settings()
     logger.info(f"[AGENT] model={s.agent_model} stt={s.openai_stt_model if s.openai_api_key else 'MISSING KEY'} "
                 f"tts={'ok' if s.elevenlabs_api_key and s.elevenlabs_voice_id else 'MISSING KEY/VOICE'} "
@@ -117,9 +118,10 @@ async def _startup() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-    task = getattr(app.state, "sweep", None)
-    if task:
-        task.cancel()
+    for name in ("sweep", "prepare"):
+        task = getattr(app.state, name, None)
+        if task:
+            task.cancel()
 
 
 @app.get("/agent/health")
