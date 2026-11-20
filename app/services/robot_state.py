@@ -157,9 +157,21 @@ def _spawn(coro) -> None:
         coro.close()   # no loop (sync test code): nothing to push
 
 
+_woke_at: dict[str, float] = {}   # device -> monotonic time it last went asleep -> awake (in-process)
+
+
+def woke_within(device_id: Optional[str], seconds: float) -> bool:
+    import time
+    t = _woke_at.get(device_id or "")
+    return t is not None and time.monotonic() - t < seconds
+
+
 def _after_change(cur: dict, new: dict) -> None:
+    import time
     device_id = new["device_id"]
     _spawn(push(device_id, new))
+    if cur["asleep"] and not new["asleep"]:
+        _woke_at[device_id] = time.monotonic()
     # The wake greeting is NOT fired here: only an explicit wake's command_result fires it (see
     # on_command_result). Going to sleep, or a new selection while asleep, has the voice agent
     # record the wake greeting ahead of time so it can go out within 1000 ms of the wake.

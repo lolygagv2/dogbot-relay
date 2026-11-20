@@ -654,7 +654,7 @@ async def _deliver(message: dict, guard: dict, target: str, dog_id: Optional[str
     # Every command is answered within 2000 ms (set_sleep false: 6000 ms); silence -> robot_timeout.
     # Commands whose result arrives when the work is done (listen, take_photo, move, run_trick,
     # smart_plug, ...) keep their caller's longer wait and report timed_out as before.
-    budget = command_budget_s(message)
+    budget = command_budget_s(message, target)
     long_wait = bool(wait_s) and float(wait_s) > budget
     res = await command_results.wait(message["command_id"], float(wait_s) if long_wait else budget)
     if res is None:
@@ -678,9 +678,15 @@ def refusal(code: str) -> HTTPException:
     return HTTPException(status_code=_REFUSAL_STATUS.get(code, 409), detail={"code": code})
 
 
-def command_budget_s(message: dict) -> float:
-    """How long the robot has to answer: set_sleep {asleep: false} 6000 ms, every other command 2000 ms."""
+POST_WAKE_AUDIO_WINDOW_S = 10.0   # a robot that just woke is slow to start audio (3.5 s seen 2026-11-20)
+
+
+def command_budget_s(message: dict, device_id: Optional[str] = None) -> float:
+    """How long the robot has to answer: set_sleep {asleep: false} 6000 ms; play_sound within 10 s of
+    a wake (e.g. the wake greeting) 6000 ms; every other command 2000 ms."""
     if message.get("command") == "set_sleep" and (message.get("data") or {}).get("asleep") is False:
+        return sleep_wake.WAKE_TIMEOUT_S
+    if message.get("command") == "play_sound" and robot_state.woke_within(device_id, POST_WAKE_AUDIO_WINDOW_S):
         return sleep_wake.WAKE_TIMEOUT_S
     return robot_state.COMMAND_TIMEOUT_S
 

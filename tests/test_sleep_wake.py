@@ -380,3 +380,22 @@ def test_5_wake_greetings_are_not_debounced_against_each_other(robot, agent):
     assert run(agent_events.handle(_woke(6)))["delivered"]
     assert run(agent_events.handle(_woke(7)))["delivered"]
     assert agent["synth"] == 1 and len(agent["pushed"]) == 2   # one recording, played twice
+
+
+def test_play_sound_right_after_a_wake_gets_6_s(robot):
+    """The robot took 3.5 s to answer the wake greeting's play_sound (2026-11-20): within 10 s of a
+    wake, play_sound gets the 6000 ms budget; otherwise the usual 2000 ms."""
+    agent = Actor(kind="agent", id="voice", user_id="user_t1")
+
+    async def main():
+        robot.connect()
+        asleep_now(robot)
+        await robot_control.dispatch(BEZIK, "set_sleep", {"asleep": False}, CONN)
+        robot.delay = 3.0
+        out = await robot_control.dispatch(BEZIK, "play_tts", {"url": "https://x/c.mp3", "clip_id": "c"}, agent)
+        assert out["result"]["success"] is True
+        robot_state._woke_at.clear()
+        with pytest.raises(HTTPException) as e:
+            await robot_control.dispatch(BEZIK, "play_tts", {"url": "https://x/c.mp3", "clip_id": "c"}, agent)
+        assert e.value.detail["code"] == "robot_timeout"
+    run(main())
