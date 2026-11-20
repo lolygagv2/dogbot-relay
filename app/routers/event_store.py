@@ -52,7 +52,9 @@ async def post_events(batch: EventBatchIn, actor: Actor = Depends(resolve_actor)
                 check_dog_access(actor, item["dog_id"])
             allowed.append(item)
         except HTTPException as e:
-            rejected.append({"event_id": ev.event_id, "reason": str(e.detail.get("code") if isinstance(e.detail, dict) else e.detail)})
+            reason = str(e.detail.get("code") if isinstance(e.detail, dict) else e.detail)
+            rejected.append({"event_id": ev.event_id, "reason": reason})
+            event_store.log_rejected(device_id, ev.model_dump(), reason)
 
     result = await event_store.ingest_events(allowed, device_id=device_id, user_id=user_id, source="robot")
     result["rejected"].extend(rejected)

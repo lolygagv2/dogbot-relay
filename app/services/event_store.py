@@ -90,6 +90,20 @@ def _clean_media(data: dict) -> dict:
     return data
 
 
+def log_rejected(device_id: Optional[str], raw: Any, reason: str) -> None:
+    """2026-11-20: a rejected event is logged with its reason and what it carried (the robot only
+    got the reason back before, so a mismatch could not be seen here)."""
+    import json
+    try:
+        body = json.dumps(raw, default=str, separators=(",", ":"))
+    except Exception:
+        body = repr(raw)
+    raw = raw if isinstance(raw, dict) else {}
+    data = raw.get("data") if isinstance(raw.get("data"), dict) else {}
+    logger.warning(f"[EVENTS-REJECTED] {device_id}: type={raw.get('type')!r} reason={reason!r} "
+                   f"data_keys={sorted(data)} event={body[:800]}")
+
+
 def validate_event(ev: dict) -> tuple[Optional[dict], Optional[str]]:
     """Return (normalised_event, None) or (None, reason)."""
     etype = ev.get("type")
@@ -267,6 +281,7 @@ async def ingest_events(
         ev, reason = validate_event(raw)
         if ev is None:
             result["rejected"].append({"event_id": str((raw or {}).get("event_id", "")), "reason": reason})
+            log_rejected(device_id, raw, reason)
             continue
         if dog_id_override:
             ev["dog_id"] = dog_id_override

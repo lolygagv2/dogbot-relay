@@ -198,3 +198,18 @@ def test_agent_readback():
     assert Brain._readback_sentence(on) == "Coach mode is now on."
     assert any(t in Brain._readback_sentence(on) for t in Brain._readback_tokens(on))
     assert any(t in Brain._readback_sentence(off) for t in Brain._readback_tokens(off))
+
+
+def test_rejected_event_is_logged_with_reason_and_contents(temp_db, caplog):
+    """2026-11-20: coach events were rejected with no trace on the relay; now each is logged."""
+    import asyncio
+    import logging
+    from app.services import event_store
+    with caplog.at_level(logging.WARNING, logger="app.services.event_store"):
+        out = asyncio.run(event_store.ingest_events(
+            [{"event_id": "t1", "type": "trick_attempt", "ts": "2026-11-20T00:55:05+00:00",
+              "data": {"trick": "sit", "outcome": "success"}}],
+            device_id="robot_t", user_id="user_t1", source="robot", notify=False, forward=False))
+    assert out["rejected"][0]["reason"].startswith("trick_attempt requires data.result")
+    line = next(r.message for r in caplog.records if "[EVENTS-REJECTED]" in r.message)
+    assert "type='trick_attempt'" in line and "data_keys=['outcome', 'trick']" in line and '"outcome":"success"' in line
