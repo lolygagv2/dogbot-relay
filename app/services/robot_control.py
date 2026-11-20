@@ -632,7 +632,7 @@ async def _deliver(message: dict, guard: dict, target: str, dog_id: Optional[str
     # sends set_sleep false first and waits up to 6000 ms for it. Not confirmed -> robot_timeout (or
     # the robot's own error, e.g. expired) and the command is never sent. No retry.
     wake_info = None
-    if sleep_wake.needs_wake(target, message["command"]):
+    if sleep_wake.needs_wake(target, message["command"], message):
         wake_info = await sleep_wake.ensure_awake(target, reason=message["command"], source=actor.kind)
         if not wake_info.get("ready"):
             raise refusal(wake_info.get("error") or "not_awake")

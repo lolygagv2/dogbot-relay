@@ -353,7 +353,7 @@ class ConnectionManager:
         # Drive frames just start the wake and are dropped (the app's 20 Hz stream resumes).
         from app.services import sleep_wake
         name = command.get("command")
-        if sleep_wake.needs_wake(device_id, name):
+        if sleep_wake.needs_wake(device_id, name, command):
             if name in sleep_wake.DRIVE_COMMANDS:
                 if not sleep_wake.is_waking(device_id):
                     asyncio.get_running_loop().create_task(sleep_wake.ensure_awake(device_id, reason=name,

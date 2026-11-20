@@ -8,7 +8,7 @@ and the robot answers within 2000 ms with command_result {success, result: {asle
 wake-first:
 
 - EVERY command (any "type": "command" frame except NO_WAKE_COMMANDS: set_sleep, select_dog,
-  download_song) to a robot whose state says asleep is held, set_sleep {asleep: false} is sent, and the command goes out once the robot
+  download_song, sg_config, reload_dogs; and smart_plug status) to a robot whose state says asleep is held, set_sleep {asleep: false} is sent, and the command goes out once the robot
   confirms. The wake gets WAKE_TIMEOUT_S (6000 ms); not confirmed -> robot_timeout (or the robot's
   own error, e.g. "expired") and the command is never sent. Nothing is queued or retried.
   Concurrent commands share one wake. Drive frames (motor/servo/pan_tilt, 20 Hz) are not held:
@@ -33,7 +33,12 @@ logger = logging.getLogger(__name__)
 WAKE_TIMEOUT_S = 6.0   # set_sleep {asleep: false} is confirmed within 6000 ms (every other command: 2000)
 # Never wake the robot first: set_sleep (the wake itself, or going to sleep), and select_dog /
 # download_song, which the robot applies while asleep (no wake, so no greeting either).
-NO_WAKE_COMMANDS = {"set_sleep", "select_dog", "download_song"}
+NO_WAKE_COMMANDS = {"set_sleep", "select_dog", "download_song",
+                    # 2026-11-20: the app re-sends these when it is reopened; they reach a sleeping
+                    # robot as they are, so opening the app does not wake it.
+                    "sg_config", "reload_dogs"}
+# smart_plug wakes the robot except for the app's status check on reopen.
+NO_WAKE_ACTIONS = {"smart_plug": {"status"}}
 DRIVE_COMMANDS = {"motor", "servo", "pan_tilt"}
 
 
@@ -67,10 +72,19 @@ def reset() -> None:
     _state.clear()
 
 
-def needs_wake(device_id: Optional[str], command: Optional[str]) -> bool:
-    """Every command except set_sleep, while the state says asleep (or a wake is in flight)."""
-    return (bool(device_id) and bool(command) and command not in NO_WAKE_COMMANDS
-            and (is_asleep(device_id) or is_waking(device_id)))
+def _action(message: Optional[dict]) -> Optional[str]:
+    if not isinstance(message, dict):
+        return None
+    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+    return data.get("action") or message.get("action")
+
+
+def needs_wake(device_id: Optional[str], command: Optional[str], message: Optional[dict] = None) -> bool:
+    """Every command except NO_WAKE_COMMANDS (and a smart_plug status check), while the state says
+    asleep (or a wake is in flight)."""
+    if command in NO_WAKE_COMMANDS or _action(message) in NO_WAKE_ACTIONS.get(command or "", ()):
+        return False
+    return bool(device_id) and bool(command) and (is_asleep(device_id) or is_waking(device_id))
 
 
 def restamp(message: dict) -> dict:
@@ -129,7 +143,7 @@ async def send_awake(device_id: str, message: dict, source: str = "relay") -> Op
     """A relay-made command (select_dog, download_song): wake first if asleep, then send.
     Returns None when sent, else the error (robot_offline / robot_timeout / the robot's error)."""
     from app.connection_manager import get_connection_manager
-    if needs_wake(device_id, message.get("command")):
+    if needs_wake(device_id, message.get("command"), message):
         res = await ensure_awake(device_id, reason=str(message.get("command")), source=source)
         if not res.get("ready"):
             logger.warning(f"[SLEEP] {device_id}: {message.get('command')} not sent ({res.get('error')})")

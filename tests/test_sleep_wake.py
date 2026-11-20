@@ -257,8 +257,8 @@ def test_2_no_greeting_for_wake_first_select_dog_download_song(robot, how):
         if how == "wake_first_dispatch":
             await robot_control.dispatch(BEZIK, "take_photo", {}, CONN)
         elif how == "wake_first_app_ws":
-            await manager.forward_command_to_robot("user_t1", DEV, {"type": "command", "command": "sg_config",
-                                                                   "data": {}})
+            await manager.forward_command_to_robot("user_t1", DEV, {"type": "command", "command": "look",
+                                                                   "data": {"action": "center"}})
             await asyncio.sleep(0.2)
         elif how == "select_dog":
             await robot_state.select_dog(DEV, BEZIK, "app")
@@ -399,3 +399,36 @@ def test_play_sound_right_after_a_wake_gets_6_s(robot):
             await robot_control.dispatch(BEZIK, "play_tts", {"url": "https://x/c.mp3", "clip_id": "c"}, agent)
         assert e.value.detail["code"] == "robot_timeout"
     run(main())
+
+
+@pytest.mark.parametrize("frame", [
+    {"type": "command", "command": "sg_config", "data": {"sensitivity": "medium"}},
+    {"type": "command", "command": "reload_dogs"},
+    {"type": "command", "command": "smart_plug", "data": {"action": "status"}},
+])
+def test_app_reopen_frames_reach_a_sleeping_robot_without_waking_it(robot, frame):
+    """2026-11-20: reopening the app re-sends sg_config, reload_dogs and a smart_plug status check;
+    they go to the sleeping robot as they are and it stays asleep."""
+    manager = get_connection_manager()
+
+    async def main():
+        robot.connect()
+        asleep_now(robot)
+        assert await manager.forward_command_to_robot("user_t1", DEV, dict(frame))
+        await asyncio.sleep(0.2)
+    run(main())
+    assert robot.commands() == [frame["command"]] and robot_state.get(DEV)["asleep"] is True
+    assert woke_hooks(robot) == []
+
+
+def test_smart_plug_switch_still_wakes_a_sleeping_robot(robot):
+    manager = get_connection_manager()
+
+    async def main():
+        robot.connect()
+        asleep_now(robot)
+        await manager.forward_command_to_robot("user_t1", DEV, {"type": "command", "command": "smart_plug",
+                                                                "data": {"action": "on"}})
+        await asyncio.sleep(0.2)
+    run(main())
+    assert robot.commands() == ["set_sleep", "smart_plug"]
